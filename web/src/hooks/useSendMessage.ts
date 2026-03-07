@@ -84,7 +84,20 @@ export function useSendMessage(options: {
       );
 
       const displayText = text || "[图片]";
-      setMessages((prev) => [...prev, { type: "human", content: displayText }]);
+      const optimisticHuman = {
+        type: "human" as const,
+        content: displayText,
+        ...(attachments?.length
+          ? {
+              attachments: attachments.map((a) => ({
+                type: "image" as const,
+                mimeType: a.mimeType,
+                data: a.data,
+              })),
+            }
+          : {}),
+      };
+      setMessages((prev) => [...prev, optimisticHuman]);
     },
     [input, files, loading, onAfterSend, setMessages, setCurrent, clearStreaming]
   );

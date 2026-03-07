@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { createConversation, deleteConversation } from "./api";
-import { Sidebar, ChatPanel, WelcomeBox, ConfigModal, DeleteConfirmModal } from "./components";
+import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal } from "./components";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 
 export default function App() {
@@ -120,6 +120,7 @@ export default function App() {
         ) : (
           <ChatPanel
             messages={messages}
+            conversationId={current.id}
             input={input}
             onInputChange={setInput}
             onSend={() => send(current.id)}
@@ -136,7 +137,7 @@ export default function App() {
         )}
       </main>
       {showConfig && (
-        <ConfigModal
+        <SettingsPanel
           onClose={() => setShowConfig(false)}
           onSaved={() => setShowConfig(false)}
         />

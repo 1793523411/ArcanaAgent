@@ -1,5 +1,5 @@
 import { ChatOpenAI } from "@langchain/openai";
-import { loadModelConfig } from "./config.js";
+import { loadModelConfig } from "../config/models.js";
 
 const cache = new Map<string, ChatOpenAI>();
 

@@ -5,13 +5,19 @@ import {
   createConversation,
   getConversation,
   getMessages,
-  getMessagesForContext,
   appendMessages,
   deleteConversation,
+  saveAttachmentFile,
+  getAttachmentAbsolutePath,
   type StoredMessage,
-} from "./storage.js";
-import { storedToLangChain, langChainToStored, getTextContent } from "./messages.js";
+} from "../storage/index.js";
+import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
+import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
+import { runAgent, streamAgentWithTokens } from "../agent/index.js";
+import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig } from "../config/userConfig.js";
+import { listSkillIds } from "../lib/skills.js";
+import { listModels } from "../config/models.js";
 
 function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -30,10 +36,11 @@ function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, un
   }
   return out;
 }
-import { runAgent, streamAgentWithTokens } from "./agent.js";
-import { loadUserConfig, saveUserConfig, type UserConfig } from "./userConfig.js";
-import { listSkillIds } from "./skills.js";
-import { listModels } from "./config.js";
+
+function convId(req: Request): string {
+  const id = req.params.id;
+  return Array.isArray(id) ? id[0] ?? "" : id;
+}
 
 export function getConversations(_req: Request, res: Response): void {
   try {
@@ -46,16 +53,12 @@ export function getConversations(_req: Request, res: Response): void {
 
 export function postConversations(_req: Request, res: Response): void {
   try {
-    const { id, meta } = createConversation();
+    const config = loadUserConfig();
+    const { id, meta } = createConversation(config.context);
     res.status(201).json(meta);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
-}
-
-function convId(req: Request): string {
-  const id = req.params.id;
-  return Array.isArray(id) ? id[0] ?? "" : id;
 }
 
 export function getConversationById(req: Request, res: Response): void {
@@ -97,6 +100,28 @@ export function getConversationMessages(req: Request, res: Response): void {
   }
 }
 
+export function getConversationAttachment(req: Request, res: Response): void {
+  const id = convId(req);
+  const filename = req.params.filename;
+  if (!filename || filename.includes("..")) {
+    res.status(400).json({ error: "Invalid filename" });
+    return;
+  }
+  if (!getConversation(id)) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const fileRef = `attachments/${filename}`;
+  const absPath = getAttachmentAbsolutePath(id, fileRef);
+  if (!absPath) {
+    res.status(404).json({ error: "Attachment not found" });
+    return;
+  }
+  res.sendFile(absPath, { maxAge: "1d" }, (err) => {
+    if (err) res.status(500).json({ error: String(err) });
+  });
+}
+
 export async function postConversationMessage(req: Request, res: Response): Promise<void> {
   const id = convId(req);
   const meta = getConversation(id);
@@ -130,15 +155,29 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ];
 
   const config = loadUserConfig();
-  const contextMessages = getMessagesForContext(id);
-  const lcMessages = contextMessages.map(storedToLangChain);
+  const displayText = text || "[图片]";
+  const storedAttachments: Array<{ type: "image"; file: string; mimeType?: string }> = [];
+  for (const a of attachments) {
+    if ((a.type === "image" || !a.type) && typeof a.data === "string") {
+      const fileRef = saveAttachmentFile(id, a.mimeType || "image/png", a.data);
+      storedAttachments.push({ type: "image", file: fileRef, mimeType: a.mimeType || "image/png" });
+    }
+  }
+  const humanMsg: StoredMessage = {
+    type: "human",
+    content: displayText,
+    ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
+  };
+  const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
+  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
-  const displayText = text || "[图片]";
+  saveFullContext(id, contextMessages, humanMsg, contextMeta);
+
   const existingMessages = getMessages(id);
   const isFirstMessage = existingMessages.length === 0;
   const newTitle = isFirstMessage && displayText ? (displayText.slice(0, 24).trim() || "新对话") : undefined;
-  appendMessages(id, [{ type: "human", content: displayText }], newTitle);
+  appendMessages(id, [humanMsg], newTitle);
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -166,7 +205,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       const part = chunk && typeof chunk === "object" ? (chunk as Record<string, { messages?: BaseMessage[] }>)[Object.keys(chunk as object)[0]] : undefined;
       if (part?.messages?.length) {
         for (const msg of part.messages) {
-          collectedStored.push(langChainToStored(msg));
+          const t = (msg as { _getType?: () => string })._getType?.();
+          if (t === "tool") continue;
+          const stored = langChainToStored(msg);
+          if (stored.type === "ai" && !(typeof stored.content === "string" && stored.content.trim())) continue;
+          collectedStored.push(stored);
         }
       }
     }
@@ -196,9 +239,12 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   }
 
   const config = loadUserConfig();
-  const contextMessages = getMessagesForContext(id);
-  const lcMessages = contextMessages.map(storedToLangChain);
+  const humanMsg: StoredMessage = { type: "human", content: text };
+  const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
+  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage(text));
+
+  saveFullContext(id, contextMessages, humanMsg, contextMeta);
 
   const existingMessagesSync = getMessages(id);
   const isFirstMessageSync = existingMessagesSync.length === 0;
@@ -252,11 +298,28 @@ export function getModels(_req: Request, res: Response): void {
 }
 
 export function putConfig(req: Request, res: Response): void {
-  const body = req.body as { enabledSkillIds?: string[]; mcpServers?: UserConfig["mcpServers"]; modelId?: string };
+  const body = req.body as {
+    enabledSkillIds?: string[];
+    mcpServers?: UserConfig["mcpServers"];
+    modelId?: string;
+    context?: Partial<ContextStrategyConfig>;
+  };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledSkillIds)) config.enabledSkillIds = body.enabledSkillIds;
   if (Array.isArray(body.mcpServers)) config.mcpServers = body.mcpServers;
   if (typeof body.modelId === "string") config.modelId = body.modelId;
+  if (body.context && typeof body.context === "object") {
+    config.context = config.context ?? {
+      strategy: "compress",
+      trimToLast: 20,
+      tokenThresholdPercent: 75,
+      compressKeepRecent: 20,
+    };
+    if (body.context.strategy === "compress" || body.context.strategy === "trim") config.context.strategy = body.context.strategy;
+    if (typeof body.context.trimToLast === "number" && body.context.trimToLast > 0) config.context.trimToLast = body.context.trimToLast;
+    if (typeof body.context.tokenThresholdPercent === "number" && body.context.tokenThresholdPercent > 0 && body.context.tokenThresholdPercent <= 100) config.context.tokenThresholdPercent = body.context.tokenThresholdPercent;
+    if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
+  }
   saveUserConfig(config);
   res.json(config);
 }

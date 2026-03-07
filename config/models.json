@@ -17,11 +17,21 @@
             "maxTokens": 8192
           },
           {
-            "id": "ep-m-20260228014104-b7vns",
+            "id": "doubao-seed-2-0-mini-260215",
             "name": "doubao-seed-2-0-mini-260215",
             "api": "openai-completions",
             "reasoning": false,
             "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "ep-m-20260228014104-b7vns",
+            "name": "deepseek-v3-2-251201",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text"],
             "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
             "contextWindow": 200000,
             "maxTokens": 8192

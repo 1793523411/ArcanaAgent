@@ -113,6 +113,7 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider: string;
+  supportsImage?: boolean;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {

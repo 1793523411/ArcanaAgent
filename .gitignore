@@ -21,6 +21,7 @@ ui/playwright-report/
 ui/test-results/
 packages/dashboard-next/.next/
 packages/dashboard-next/out/
+**/conversations/
 
 # Mise configuration files
 mise.toml
@@ -122,3 +123,4 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+config/models.json

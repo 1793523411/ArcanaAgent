@@ -3,6 +3,7 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "sim:context": "tsx src/scripts/simulate-context.ts",
     "build": "tsc",
     "start": "node dist/index.js"
   },

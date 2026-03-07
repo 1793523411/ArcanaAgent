@@ -5,6 +5,8 @@ import ChatInputBar, { type FileWithData } from "./ChatInputBar";
 
 interface Props {
   messages: StoredMessage[];
+  /** 当前对话 id，用于附件 URL */
+  conversationId?: string;
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
@@ -21,6 +23,7 @@ interface Props {
 
 export default function ChatPanel({
   messages,
+  conversationId,
   input,
   onInputChange,
   onSend,
@@ -38,7 +41,7 @@ export default function ChatPanel({
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
       <div className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(messages ?? []).map((m, i) => (
-          <MessageBubble key={i} message={m} />
+          <MessageBubble key={i} message={m} conversationId={conversationId} />
         ))}
         {(loading || streamingContent) && (
           <StreamingBubble content={streamingContent} status={streamingStatus} />

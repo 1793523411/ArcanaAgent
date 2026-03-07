@@ -65,10 +65,10 @@ export default function Sidebar({
         <button
           type="button"
           onClick={onOpenConfig}
-          aria-label="配置 Skill 与 MCP"
+          aria-label="全局设置"
           className="w-full py-2 px-3 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-[13px] cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
         >
-          配置 Skill / MCP
+          设置
         </button>
       </div>
     </aside>

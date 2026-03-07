@@ -1,13 +1,20 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
-import { getLLM } from "./llm.js";
-import { getSkillsByIds } from "./skills.js";
+import { getLLM } from "../llm/index.js";
+import { getSkillsByIds } from "../lib/skills.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
   const c = chunk.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) return c.map((x) => (typeof x === "string" ? x : (x as { text?: string })?.text ?? "")).join("");
+  return "";
+}
+
+function getTextFromMessage(msg: { content?: unknown }): string {
+  const c = msg.content;
   if (typeof c === "string") return c;
   if (Array.isArray(c)) return c.map((x) => (typeof x === "string" ? x : (x as { text?: string })?.text ?? "")).join("");
   return "";
@@ -77,7 +84,6 @@ export async function* streamAgent(
   }
 }
 
-/** Stream agent with token-level callback for real-time UI. Yields full state updates and calls onToken for each LLM content delta. */
 export async function* streamAgentWithTokens(
   messages: BaseMessage[],
   enabledSkillIds: string[],
@@ -118,10 +124,12 @@ export async function* streamAgentWithTokens(
       }
     }
     if (!fullChunk) break;
+    const fromChunk = getTextFromMessage(fullChunk);
+    const content = accumulatedContent || fromChunk;
     const finalMessage =
-      accumulatedContent
+      content || (fullChunk as AIMessage).tool_calls?.length
         ? new AIMessage({
-            content: accumulatedContent,
+            content: content || " ",
             tool_calls: (fullChunk as AIMessage).tool_calls ?? [],
           })
         : fullChunk;

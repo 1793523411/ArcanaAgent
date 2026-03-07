@@ -16,7 +16,7 @@ interface Props {
   placeholder?: string;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
-  models: Array<{ id: string; name: string; provider?: string }>;
+  models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
 }
@@ -67,6 +67,7 @@ export default function ChatInputBar({
   };
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
+  const supportsImage = currentModel?.supportsImage !== false;
 
   return (
     <form
@@ -82,9 +83,11 @@ export default function ChatInputBar({
           ${compact ? "px-3.5 py-2.5 rounded-3xl" : "px-4 py-3.5 rounded-2xl"}
         `}
       >
-        <input
-          ref={fileRef}
-          type="file"
+        {supportsImage && (
+          <>
+            <input
+              ref={fileRef}
+              type="file"
           accept={IMAGE_TYPES.join(",")}
           multiple
           className="hidden"
@@ -99,8 +102,10 @@ export default function ChatInputBar({
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48" />
-          </svg>
-        </button>
+            </svg>
+          </button>
+          </>
+        )}
         <input
           type="text"
           name="message"
@@ -172,7 +177,7 @@ export default function ChatInputBar({
           {loading ? "…" : "发送"}
         </button>
       </div>
-      {files.length > 0 && (
+      {supportsImage && files.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {files.map((f, i) => (
             <div
