@@ -123,3 +123,4 @@ dist/protocol.schema.json
 
 # Synthing
 **/.stfolder/
+config/models.json
