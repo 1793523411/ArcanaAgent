@@ -1,0 +1,82 @@
+@import "tailwindcss";
+
+/* Theme: dark, teal accent — Web Interface Guidelines */
+@theme {
+  --color-bg: #0f172a;
+  --color-surface: #1e293b;
+  --color-surface-hover: #334155;
+  --color-border: #334155;
+  --color-text: #f1f5f9;
+  --color-text-muted: #94a3b8;
+  --color-accent: #14b8a6;
+  --color-accent-hover: #2dd4bf;
+  --color-accent-dim: #0d9488;
+  --color-accent-alpha: rgba(20, 184, 166, 0.15);
+  --color-error-bg: rgba(239, 68, 68, 0.15);
+  --color-error-text: #fca5a5;
+  --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+  background-color: #0f172a;
+}
+
+body {
+  margin: 0;
+  background: #0f172a;
+  color: #f1f5f9;
+  min-height: 100vh;
+  font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* 输入框在已有边框的容器内，不需要额外的 focus 轮廓 */
+input[type="text"]:focus-visible {
+  outline: none;
+  outline-offset: 0;
+}
+
+button, a, [role="button"] {
+  touch-action: manipulation;
+}
+
+/* Loading dots animation */
+@keyframes loading-dots {
+  0%, 80%, 100% { transform: scale(0.6); opacity: 0.6; }
+  40% { transform: scale(1); opacity: 1; }
+}
+
+.loading-dots {
+  @apply inline-block w-1.5 h-1.5 rounded-full bg-accent shrink-0;
+  animation: loading-dots 0.6s ease-in-out infinite both;
+  position: relative;
+}
+.loading-dots::before,
+.loading-dots::after {
+  content: "";
+  @apply absolute left-2.5 top-0 w-1.5 h-1.5 rounded-full bg-accent;
+  animation: loading-dots 0.6s ease-in-out infinite both;
+}
+.loading-dots::before { animation-delay: -0.32s; }
+.loading-dots::after { left: 5px; animation-delay: -0.16s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-dots,
+  .loading-dots::before,
+  .loading-dots::after {
+    animation: none;
+    opacity: 1;
+  }
+}

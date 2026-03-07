@@ -1,0 +1,9 @@
+{
+  "enabledSkillIds": [
+    "get_time",
+    "echo",
+    "calculator"
+  ],
+  "mcpServers": [],
+  "modelId": "ep-m-20260228014104-b7vns"
+}

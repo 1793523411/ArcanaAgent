@@ -1,0 +1,33 @@
+{
+  "models": {
+    "providers": {
+      "volcengine": {
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+        "apiKey": "92c40427-1ad8-4893-bd09-18eaac5a183f",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "ep-m-20260227190842-nrldn",
+            "name": "doubao-seed-2-0-pro-260215",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          },
+          {
+            "id": "ep-m-20260228014104-b7vns",
+            "name": "doubao-seed-2-0-mini-260215",
+            "api": "openai-completions",
+            "reasoning": false,
+            "input": ["text", "image"],
+            "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+[
+  {
+    "type": "human",
+    "content": "豆包和ddepseek谁更厉害"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "继续"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "tool_calls": []
+  }
+]

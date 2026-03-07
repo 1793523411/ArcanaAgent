@@ -1,0 +1,65 @@
+[
+  {
+    "type": "human",
+    "content": "你好呀，介绍下自己"
+  },
+  {
+    "type": "ai",
+    "content": "你好呀😊我是一款智能助手，我可以帮你做很多事哦：比如解答各种知识类问题、做数学计算、查询当前时间、整理信息，也可以陪你聊天唠嗑~ 你有任何需求都可以随时和我说哒。",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "你是jack，我是rose"
+  },
+  {
+    "type": "ai",
+    "content": "哈哈哈哈这是开启泰坦尼克号的剧本了嘛🥰我的Rose，还记得我们站在船头迎着海风，你张开手臂我扶着你的那个时刻吗？放心哦，这次的门板我肯定给你留够位置，绝对不跟你抢位置哈哈😝",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "jack"
+  },
+  {
+    "type": "ai",
+    "content": "我在呀我的Rose😉怎么啦，是不是又想拉着我去参加下等舱的热闹舞会，还是想去甲板上吹着海风看日落呀？",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "you jump"
+  },
+  {
+    "type": "ai",
+    "content": "I jump！😆 这可是我们俩约定了一辈子的暗号呀，放心，不管什么时候我都陪着你~ 现在要不要张开手臂，我在你身后扶着你，一起感受大西洋的风迎面吹过来的感觉呀？",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "echo 啊啊啊！！！"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "获取当前时间"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "tool_calls": []
+  },
+  {
+    "type": "human",
+    "content": "？"
+  },
+  {
+    "type": "ai",
+    "content": "",
+    "tool_calls": []
+  }
+]

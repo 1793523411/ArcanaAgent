@@ -1,0 +1,16 @@
+{
+  "name": "my_agent",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "build": "npm run build:server && npm run build:web",
+    "build:server": "cd server && npm run build",
+    "build:web": "cd web && npm run build",
+    "start": "cd server && npm run start"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
