@@ -30,6 +30,8 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [mcpName, setMcpName] = useState("");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpEnv, setMcpEnv] = useState("");
+  const [mcpAdding, setMcpAdding] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
 
   useEffect(() => {
@@ -107,7 +109,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     }
   };
 
-  const handleAddMcpServer = () => {
+  const handleAddMcpServer = async () => {
     const name = mcpName.trim();
     const command = mcpCommand.trim();
     if (!name || !command) {
@@ -119,16 +121,44 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
       return;
     }
     const args = mcpArgs.trim() ? mcpArgs.trim().split(/\s+/) : [];
-    const newServer: McpServerConfig = { name, transport: "stdio", command, args };
-    setConfig({ ...config, mcpServers: [...config.mcpServers, newServer] });
+    const env: Record<string, string> = {};
+    for (const pair of mcpEnv.trim().split(/\s+/).filter(Boolean)) {
+      const eq = pair.indexOf("=");
+      if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
+    }
+    const newServer: McpServerConfig = {
+      name, transport: "stdio", command, args,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
+    const newServers = [...config.mcpServers, newServer];
     setMcpName("");
     setMcpCommand("");
     setMcpArgs("");
+    setMcpEnv("");
     setShowMcpForm(false);
+    setMcpAdding(true);
+    try {
+      const updated = await putConfig({ mcpServers: newServers });
+      setConfig((prev) => prev ? { ...prev, mcpServers: newServers } : prev);
+      setMcpStatus(updated.mcpStatus ?? []);
+      toast(`已添加 ${name}`, "success");
+    } catch (e) {
+      toast(`添加失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setMcpAdding(false);
+    }
   };
 
-  const handleRemoveMcpServer = (name: string) => {
-    setConfig({ ...config, mcpServers: config.mcpServers.filter((s) => s.name !== name) });
+  const handleRemoveMcpServer = async (name: string) => {
+    const newServers = config.mcpServers.filter((s) => s.name !== name);
+    try {
+      const updated = await putConfig({ mcpServers: newServers });
+      setConfig((prev) => prev ? { ...prev, mcpServers: newServers } : prev);
+      setMcpStatus(updated.mcpStatus ?? []);
+      toast(`已移除 ${name}`, "success");
+    } catch (e) {
+      toast(`移除失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
   };
 
   const getServerStatus = (name: string): McpStatusItem | undefined => {
@@ -342,18 +372,29 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                           className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
                         />
                       </label>
+                      <label className="block text-sm text-[var(--color-text)]">
+                        环境变量（空格分隔，KEY=VALUE 格式）
+                        <input
+                          type="text"
+                          value={mcpEnv}
+                          onChange={(e) => setMcpEnv(e.target.value)}
+                          placeholder="如: API_KEY=sk-xxx TIMEOUT=30"
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                        />
+                      </label>
                     </div>
                     <div className="flex gap-2">
                       <button
                         type="button"
                         onClick={handleAddMcpServer}
-                        className="px-4 py-2 rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium border-none cursor-pointer hover:bg-[var(--color-accent-hover)] transition-colors"
+                        disabled={mcpAdding}
+                        className="px-4 py-2 rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium border-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed hover:bg-[var(--color-accent-hover)] transition-colors"
                       >
-                        添加
+                        {mcpAdding ? "保存中…" : "添加"}
                       </button>
                       <button
                         type="button"
-                        onClick={() => { setShowMcpForm(false); setMcpName(""); setMcpCommand(""); setMcpArgs(""); }}
+                        onClick={() => { setShowMcpForm(false); setMcpName(""); setMcpCommand(""); setMcpArgs(""); setMcpEnv(""); }}
                         className="px-4 py-2 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-sm cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
                       >
                         取消

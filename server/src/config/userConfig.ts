@@ -9,6 +9,8 @@ export interface McpServerConfig {
   transport: "stdio";
   command: string;
   args: string[];
+  /** 传给子进程的环境变量，如 API Key */
+  env?: Record<string, string>;
 }
 
 export type ContextStrategy = "compress" | "trim";

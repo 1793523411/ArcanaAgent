@@ -10,6 +10,7 @@ interface McpConnection {
   transport: StdioClientTransport;
   tools: StructuredToolInterface[];
   serverName: string;
+  config: McpServerConfig;
 }
 
 const connections = new Map<string, McpConnection>();
@@ -42,7 +43,10 @@ function jsonSchemaToZod(schema: Record<string, unknown> | undefined): z.ZodObje
         field = z.array(z.any());
         break;
       case "object":
-        field = z.record(z.any());
+        // 递归处理嵌套对象
+        field = (prop.properties as Record<string, unknown>)
+          ? jsonSchemaToZod(prop as Record<string, unknown>)
+          : z.record(z.any());
         break;
       default:
         field = z.any();
@@ -81,10 +85,19 @@ function createLangChainTool(
   );
 }
 
+function configChanged(existing: McpConnection, next: McpServerConfig): boolean {
+  const a = existing.config;
+  if (a.command !== next.command) return true;
+  if (JSON.stringify(a.args) !== JSON.stringify(next.args)) return true;
+  if (JSON.stringify(a.env ?? {}) !== JSON.stringify(next.env ?? {})) return true;
+  return false;
+}
+
 async function connectServer(config: McpServerConfig): Promise<void> {
   const transport = new StdioClientTransport({
     command: config.command,
     args: config.args,
+    env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
   });
   const client = new Client({ name: "my-agent", version: "1.0.0" });
 
@@ -92,7 +105,7 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   const { tools: mcpTools } = await client.listTools();
   const lcTools = mcpTools.map((t) => createLangChainTool(t, client, config.name));
 
-  connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name });
+  connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name, config });
   console.log(`[MCP] Connected to "${config.name}" — ${lcTools.length} tool(s) available`);
 }
 
@@ -111,12 +124,18 @@ async function disconnectServer(name: string): Promise<void> {
 export async function connectToMcpServers(servers: McpServerConfig[]): Promise<void> {
   const desired = new Set(servers.map((s) => s.name));
 
+  // 断开已移除的服务器
   for (const name of [...connections.keys()]) {
     if (!desired.has(name)) await disconnectServer(name);
   }
 
   for (const server of servers) {
-    if (connections.has(server.name)) continue;
+    const existing = connections.get(server.name);
+    if (existing) {
+      // 配置未变化则跳过，变化则重连
+      if (!configChanged(existing, server)) continue;
+      await disconnectServer(server.name);
+    }
     try {
       await connectServer(server);
     } catch (e) {
