@@ -18,6 +18,14 @@ export function useSendMessage(options: {
   const [streamingToolLogs, setStreamingToolLogs] = useState<ToolLog[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
   const toolLogsRef = useRef<ToolLog[]>([]);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const abortStreaming = useCallback(() => {
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+  }, []);
 
   const clearStreaming = useCallback(() => {
     setStreamingContent("");
@@ -32,6 +40,11 @@ export function useSendMessage(options: {
       const text = (overrideText ?? input).trim();
       const toSend = overrideFiles ?? files;
       if ((!text && toSend.length === 0) || loading) return;
+
+      abortStreaming();
+      const controller = new AbortController();
+      abortRef.current = controller;
+
       setInput("");
       setFiles([]);
       setLoading(true);
@@ -93,6 +106,7 @@ export function useSendMessage(options: {
           if (key === "toolNode" && ms.length) setStreamingStatus("tool");
         },
         () => {
+          abortRef.current = null;
           setLoading(false);
           setStreamingStatus(null);
           onAfterSend(convId);
@@ -106,11 +120,13 @@ export function useSendMessage(options: {
             .catch(() => clearStreaming());
         },
         (err) => {
+          abortRef.current = null;
           setSendError(err);
           setLoading(false);
           clearStreaming();
         },
-        attachments
+        attachments,
+        controller.signal
       );
 
       const displayText = text || "[图片]";
@@ -129,7 +145,7 @@ export function useSendMessage(options: {
       };
       setMessages((prev) => [...prev, optimisticHuman]);
     },
-    [input, files, loading, onAfterSend, setMessages, setCurrent, clearStreaming]
+    [input, files, loading, onAfterSend, setMessages, setCurrent, clearStreaming, abortStreaming]
   );
 
   return {
@@ -145,5 +161,6 @@ export function useSendMessage(options: {
     streamingToolLogs,
     sendError,
     clearStreaming,
+    abortStreaming,
   };
 }

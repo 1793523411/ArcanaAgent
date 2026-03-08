@@ -46,16 +46,29 @@ export async function sendMessageStream(
   onChunk: (chunk: unknown) => void,
   onDone: () => void,
   onError: (err: string) => void,
-  attachments?: Attachment[]
+  attachments?: Attachment[],
+  signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${BASE}/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      ...(attachments?.length ? { attachments } : {}),
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/conversations/${conversationId}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+      body: JSON.stringify({
+        text,
+        ...(attachments?.length ? { attachments } : {}),
+      }),
+      signal,
+      cache: "no-store",
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return;
+    onError(String(e));
+    return;
+  }
   if (!res.ok) {
     onError(await res.text());
     return;
@@ -105,6 +118,7 @@ export async function sendMessageStream(
     }
     onDone();
   } catch (e) {
+    if ((e as Error).name === "AbortError") return;
     onError(String(e));
   }
 }

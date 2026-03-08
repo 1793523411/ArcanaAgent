@@ -5,7 +5,6 @@ import { echo } from "./echo.js";
 import { run_command } from "./run_command.js";
 import { read_file } from "./read_file.js";
 
-/** 所有已注册的 tool：key 为 tool id，value 为 LangChain tool */
 export const tools = {
   calculator,
   get_time,

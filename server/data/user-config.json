@@ -2,7 +2,9 @@
   "enabledToolIds": [
     "get_time",
     "echo",
-    "calculator"
+    "calculator",
+    "run_command",
+    "read_file"
   ],
   "mcpServers": [],
   "modelId": "doubao-seed-2-0-mini-260215",

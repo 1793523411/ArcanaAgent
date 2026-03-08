@@ -23,6 +23,7 @@ import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyCo
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
+import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 
 function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
@@ -47,6 +48,22 @@ function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, un
 function convId(req: Request): string {
   const id = req.params.id;
   return Array.isArray(id) ? id[0] ?? "" : id;
+}
+
+function buildSkillContext(convId: string): string {
+  const workspace = ensureWorkspace(convId);
+  const existingArtifacts = listArtifacts(convId);
+  const artifactListText = existingArtifacts.length > 0
+    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
+        `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
+      ).join("\n") +
+      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
+    : "";
+  return getSkillContextForAgent() +
+    `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
+    "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
+    "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
+    artifactListText;
 }
 
 export function getConversations(_req: Request, res: Response): void {
@@ -189,12 +206,19 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const flush = (res as unknown as { flush?: () => void }).flush?.bind(res);
+  if (res.socket) {
+    res.socket.setNoDelay(true);
+    res.socket.setTimeout(0);
+  }
+
   const write = (data: string) => {
     res.write(data);
-    flush?.();
+    if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
+      (res as unknown as { flush: () => void }).flush();
+    }
   };
 
   write("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
@@ -206,19 +230,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (token) write("data: " + JSON.stringify({ type: "reasoning", content: token }) + "\n\n");
   };
 
-  const workspace = ensureWorkspace(id);
-  const existingArtifacts = listArtifacts(id);
-  const artifactListText = existingArtifacts.length > 0
-    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
-        `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
-      ).join("\n") +
-      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
-    : "";
-  const skillContext = getSkillContextForAgent() +
-    `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
-    "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
-    "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
-    artifactListText;
+  const skillContext = buildSkillContext(id);
   const collectedStored: StoredMessage[] = [];
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
@@ -272,8 +284,6 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
-    // Attach tool logs to the last AI message that has real content,
-    // or the very last AI message if none has content
     if (pendingToolLogs.length > 0) {
       const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
       const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
@@ -281,13 +291,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         target.toolLogs = pendingToolLogs;
       }
     }
-    // Filter out AI messages with empty content EXCEPT the one carrying toolLogs
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
-    // If no AI message survived but we have streamed content or tool logs, create a fallback
     if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0)) {
       toStore.push({
         type: "ai",
@@ -334,8 +342,10 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const newTitleSync = isFirstMessageSync && text ? (text.slice(0, 24).trim() || "新对话") : undefined;
   appendMessages(id, [{ type: "human", content: text }], newTitleSync);
 
+  const skillContext = buildSkillContext(id);
+
   try {
-    const resultMessages = await runAgent(lcMessages, config.enabledToolIds);
+    const resultMessages = await runAgent(lcMessages, config.enabledToolIds, config.modelId, skillContext);
     const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -353,10 +363,11 @@ export async function postChat(req: Request, res: Response): Promise<void> {
     res.status(400).json({ error: "Missing or empty message" });
     return;
   }
-  const toolIds = Array.isArray(body.toolIds) ? body.toolIds : undefined;
+  const config = loadUserConfig();
+  const toolIds = Array.isArray(body.toolIds) ? body.toolIds : config.enabledToolIds;
   const messages = [new HumanMessage(text)];
   try {
-    const resultMessages = await runAgent(messages, toolIds);
+    const resultMessages = await runAgent(messages, toolIds, config.modelId);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
     res.json({ reply });
@@ -369,7 +380,8 @@ export function getConfig(_req: Request, res: Response): void {
   const config = loadUserConfig();
   const toolIds = listToolIds();
   const models = listModels();
-  res.json({ ...config, availableToolIds: toolIds, availableModels: models });
+  const mcpStatus = getMcpStatus();
+  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus });
 }
 
 export function getModels(_req: Request, res: Response): void {
@@ -422,7 +434,7 @@ export function deleteSkillById(req: Request, res: Response): void {
   }
 }
 
-export function putConfig(req: Request, res: Response): void {
+export async function putConfig(req: Request, res: Response): Promise<void> {
   const body = req.body as {
     enabledToolIds?: string[];
     mcpServers?: UserConfig["mcpServers"];
@@ -446,7 +458,17 @@ export function putConfig(req: Request, res: Response): void {
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
   }
   saveUserConfig(config);
-  res.json(config);
+
+  if (Array.isArray(body.mcpServers)) {
+    try {
+      await connectToMcpServers(config.mcpServers);
+    } catch (e) {
+      console.error("[MCP] Reconnection failed:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const mcpStatus = getMcpStatus();
+  res.json({ ...config, mcpStatus });
 }
 
 // ─── Artifact (workspace) routes ─────────────────────────────

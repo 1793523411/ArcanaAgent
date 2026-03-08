@@ -20,6 +20,8 @@ import {
   postSkillsUpload,
   deleteSkillById,
 } from "./api/routes.js";
+import { connectToMcpServers } from "./mcp/client.js";
+import { loadUserConfig } from "./config/userConfig.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -46,6 +48,11 @@ app.get("/skills", getSkillsList);
 app.post("/skills/upload", upload.single("zip"), postSkillsUpload);
 app.delete("/skills/:name", deleteSkillById);
 
-app.listen(port, () => {
+app.listen(port, async () => {
   console.log(`Server running at http://localhost:${port}`);
+  const config = loadUserConfig();
+  if (config.mcpServers.length > 0) {
+    console.log(`[MCP] Connecting to ${config.mcpServers.length} configured server(s)...`);
+    await connectToMcpServers(config.mcpServers);
+  }
 });
