@@ -18,9 +18,10 @@ const proseClasses = {
 interface Props {
   children: string;
   className?: string;
+  transformImageUrl?: (src: string) => string;
 }
 
-export default function MarkdownContent({ children, className = "" }: Props) {
+export default function MarkdownContent({ children, className = "", transformImageUrl }: Props) {
   return (
     <div className={`markdown-content break-words ${className}`}>
       <ReactMarkdown
@@ -46,6 +47,17 @@ export default function MarkdownContent({ children, className = "" }: Props) {
               {children}
             </a>
           ),
+          img: ({ src, alt }) => {
+            const resolved = src && transformImageUrl ? transformImageUrl(src) : src;
+            return (
+              <img
+                src={resolved}
+                alt={alt ?? ""}
+                className="max-w-full rounded-lg my-2"
+                loading="lazy"
+              />
+            );
+          },
         }}
       >
         {children}

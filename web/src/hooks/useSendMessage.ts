@@ -1,6 +1,6 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { sendMessageStream, getMessages, getConversation, type Attachment } from "../api";
-import type { ConversationMeta, StoredMessage, StreamingStatus } from "../types";
+import type { ConversationMeta, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
 
 export function useSendMessage(options: {
@@ -15,14 +15,16 @@ export function useSendMessage(options: {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingReasoning, setStreamingReasoning] = useState("");
   const [streamingStatus, setStreamingStatus] = useState<StreamingStatus>(null);
-  const [streamingToolCalls, setStreamingToolCalls] = useState<Array<{ name: string; input?: string }>>([]);
+  const [streamingToolLogs, setStreamingToolLogs] = useState<ToolLog[]>([]);
   const [sendError, setSendError] = useState<string | null>(null);
+  const toolLogsRef = useRef<ToolLog[]>([]);
 
   const clearStreaming = useCallback(() => {
     setStreamingContent("");
     setStreamingReasoning("");
     setStreamingStatus(null);
-    setStreamingToolCalls([]);
+    setStreamingToolLogs([]);
+    toolLogsRef.current = [];
   }, []);
 
   const send = useCallback(
@@ -36,7 +38,8 @@ export function useSendMessage(options: {
       setSendError(null);
       setStreamingContent("");
       setStreamingReasoning("");
-      setStreamingToolCalls([]);
+      setStreamingToolLogs([]);
+      toolLogsRef.current = [];
       setStreamingStatus("thinking");
 
       const attachments: Attachment[] | undefined = toSend.length
@@ -64,7 +67,18 @@ export function useSendMessage(options: {
           }
           if (obj.type === "tool_call" && typeof (obj as { name?: string }).name === "string") {
             const { name, input } = obj as { name: string; input?: string };
-            setStreamingToolCalls((prev) => [...prev, { name, input }]);
+            const newLog: ToolLog = { name, input: input ?? "", output: "" };
+            toolLogsRef.current = [...toolLogsRef.current, newLog];
+            setStreamingToolLogs([...toolLogsRef.current]);
+            return;
+          }
+          if (obj.type === "tool_result" && typeof (obj as { name?: string }).name === "string") {
+            const { name, output } = obj as { name: string; output?: string };
+            const logs = [...toolLogsRef.current];
+            const idx = logs.findIndex((tl) => tl.name === name && !tl.output);
+            if (idx >= 0) logs[idx] = { ...logs[idx], output: output ?? "" };
+            toolLogsRef.current = logs;
+            setStreamingToolLogs([...logs]);
             return;
           }
           const key = Object.keys(obj)[0];
@@ -128,7 +142,7 @@ export function useSendMessage(options: {
     streamingContent,
     streamingReasoning,
     streamingStatus,
-    streamingToolCalls,
+    streamingToolLogs,
     sendError,
     clearStreaming,
   };

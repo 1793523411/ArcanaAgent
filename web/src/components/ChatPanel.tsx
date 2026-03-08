@@ -6,7 +6,6 @@ import ChatInputBar, { type FileWithData } from "./ChatInputBar";
 
 interface Props {
   messages: StoredMessage[];
-  /** 当前对话 id，用于附件 URL */
   conversationId?: string;
   input: string;
   onInputChange: (value: string) => void;
@@ -15,13 +14,16 @@ interface Props {
   streamingContent: string;
   streamingReasoning: string;
   streamingStatus: StreamingStatus;
-  streamingToolCalls: Array<{ name: string; input?: string }>;
+  streamingToolLogs: Array<{ name: string; input: string; output: string }>;
   error: string | null;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
   models: Array<{ id: string; name: string; provider?: string }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  artifactCount?: number;
+  onToggleArtifacts?: () => void;
+  artifactsPanelOpen?: boolean;
 }
 
 export default function ChatPanel({
@@ -34,13 +36,16 @@ export default function ChatPanel({
   streamingContent,
   streamingReasoning,
   streamingStatus,
-  streamingToolCalls,
+  streamingToolLogs,
   error,
   files,
   onFilesChange,
   models,
   modelId,
   onModelChange,
+  artifactCount = 0,
+  onToggleArtifacts,
+  artifactsPanelOpen,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -51,7 +56,7 @@ export default function ChatPanel({
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [messages.length, loading, streamingContent, streamingReasoning, streamingToolCalls.length, error]);
+  }, [messages.length, loading, streamingContent, streamingReasoning, streamingToolLogs.length, error]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -59,8 +64,8 @@ export default function ChatPanel({
         {(messages ?? []).map((m, i) => (
           <MessageBubble key={i} message={m} conversationId={conversationId} />
         ))}
-        {(loading || streamingContent || streamingReasoning || streamingToolCalls.length > 0) && (
-          <StreamingBubble content={streamingContent} reasoning={streamingReasoning} status={streamingStatus} toolCalls={streamingToolCalls} isStreaming={loading} />
+        {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0) && (
+          <StreamingBubble content={streamingContent} reasoning={streamingReasoning} status={streamingStatus} toolLogs={streamingToolLogs} isStreaming={loading} />
         )}
         {error && (
           <div className="p-3 rounded-lg bg-[var(--color-error-bg)] text-[var(--color-error-text)]">
@@ -69,19 +74,40 @@ export default function ChatPanel({
         )}
       </div>
       <div className="shrink-0 p-4 border-t border-[var(--color-border)]">
-        <ChatInputBar
-          value={input}
-          onChange={onInputChange}
-          onSend={onSend}
-          loading={loading}
-          compact
-          placeholder="输入消息…"
-          files={files}
-          onFilesChange={onFilesChange}
-          models={models}
-          modelId={modelId}
-          onModelChange={onModelChange}
-        />
+        <div className="flex items-end gap-2">
+          <div className="flex-1">
+            <ChatInputBar
+              value={input}
+              onChange={onInputChange}
+              onSend={onSend}
+              loading={loading}
+              compact
+              placeholder="输入消息…"
+              files={files}
+              onFilesChange={onFilesChange}
+              models={models}
+              modelId={modelId}
+              onModelChange={onModelChange}
+            />
+          </div>
+          {artifactCount > 0 && onToggleArtifacts && (
+            <button
+              onClick={onToggleArtifacts}
+              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+                artifactsPanelOpen
+                  ? "bg-[var(--color-accent)] text-white"
+                  : "bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }`}
+              title="查看产物文件"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+              </svg>
+              {artifactCount}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

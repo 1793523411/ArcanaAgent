@@ -1,13 +1,45 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
-import { AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
 import { getLLM } from "../llm/index.js";
 import { streamChatCompletionsWithReasoning } from "../llm/streamWithReasoning.js";
+import type { ToolCallResult } from "../llm/streamWithReasoning.js";
 import { getToolsByIds } from "../tools/index.js";
+import type { StructuredToolInterface } from "@langchain/core/tools";
+import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { loadModelConfig } from "../config/models.js";
 import { getModelReasoning } from "../config/models.js";
+import { getSkillContextForAgent } from "../skills/manager.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
+
+const BASE_SYSTEM_PROMPT = `You are a powerful AI assistant with access to tools and skills.
+
+## Core Capabilities
+- Execute shell commands and scripts via the \`run_command\` tool
+- Read files via the \`read_file\` tool
+- Perform calculations, get current time, and more via other tools
+
+## How to Use Skills
+When a user's request matches an available skill:
+1. Read the skill's instructions carefully
+2. Follow the instructions step by step
+3. Use \`run_command\` to execute any scripts referenced in the skill
+4. If a script requires dependencies, install them first (e.g. \`pip install ...\`)
+5. Use \`read_file\` to check reference docs or saved outputs when needed
+
+## Guidelines
+- Always prefer using skill scripts when available — they are tested and reliable
+- For script execution, provide the full absolute path as shown in skill instructions
+- If a command fails, read the error and try to fix it (install missing deps, fix paths, etc.)
+- When a skill produces file output, read and present the results to the user
+- Be proactive: if a skill needs setup steps, handle them automatically`;
+
+function buildSystemPrompt(skillContext?: string): string {
+  return BASE_SYSTEM_PROMPT + (skillContext || getSkillContextForAgent());
+}
+
+const SYSTEM_PROMPT = buildSystemPrompt();
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
   const c = chunk.content;
@@ -37,16 +69,27 @@ function getReasoningFromMessage(msg: BaseMessage): string | undefined {
   return parts.trim() || undefined;
 }
 
+function safeParseArgs(argsStr: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(argsStr);
+    return typeof parsed === "object" && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+const CORE_TOOL_IDS = ["run_command", "read_file"];
+
 export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
-  const tools = getToolsByIds(
-    enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"]
-  );
+  const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
+  const mergedIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
+  const tools = getToolsByIds(mergedIds);
   const model = getLLM(modelId).bindTools(tools);
   const toolNode = new ToolNode(tools);
 
   const callModel = async (state: MessagesState) => {
     const response = await model.invoke([
-      new SystemMessage("You are a helpful assistant. Use tools when needed."),
+      new SystemMessage(SYSTEM_PROMPT),
       ...state.messages,
     ]);
     return { messages: [response] };
@@ -109,33 +152,72 @@ export async function* streamAgentWithTokens(
   onReasoningToken?: (token: string) => void,
   skillContext?: string
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
-  const systemText = "You are a helpful assistant. Use tools when needed." + (skillContext ?? "");
-  const systemMessage = new SystemMessage(systemText);
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const useReasoningStream = getModelReasoning(modelId) && typeof onReasoningToken === "function";
 
   if (useReasoningStream) {
     try {
       const { baseUrl, apiKey, modelId: resolved } = loadModelConfig(modelId);
-      const inputMessages = [systemMessage, ...messages];
-      const { content, reasoningContent } = await streamChatCompletionsWithReasoning(
-        baseUrl,
-        apiKey,
-        resolved,
-        inputMessages,
-        onToken,
-        onReasoningToken
-      );
-      const finalMessage = new AIMessage({ content: content || " " });
-      yield { llmCall: { messages: [finalMessage], ...(reasoningContent.trim() ? { reasoning: reasoningContent.trim() } : {}) } };
+      const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
+      const mergedToolIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
+      const lcTools = getToolsByIds(mergedToolIds);
+      const openAITools = lcTools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
+      const toolMap = new Map<string, StructuredToolInterface>(lcTools.map((t) => [t.name, t]));
+
+      let conversationMessages: BaseMessage[] = [systemMessage, ...messages];
+      const maxRounds = 15;
+
+      for (let round = 0; round < maxRounds; round++) {
+        const { content, reasoningContent, toolCalls } = await streamChatCompletionsWithReasoning(
+          baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, openAITools
+        );
+
+        const aiMsg = new AIMessage({
+          content: content || " ",
+          ...(toolCalls.length > 0 ? {
+            tool_calls: toolCalls.map((tc: ToolCallResult) => ({
+              id: tc.id, name: tc.name, args: safeParseArgs(tc.arguments),
+            })),
+          } : {}),
+        });
+        conversationMessages = [...conversationMessages, aiMsg];
+        yield {
+          llmCall: {
+            messages: [aiMsg],
+            ...(reasoningContent.trim() ? { reasoning: reasoningContent.trim() } : {}),
+          },
+        };
+
+        if (toolCalls.length === 0) return;
+
+        const toolMessages: BaseMessage[] = [];
+        for (const tc of toolCalls) {
+          const tool = toolMap.get(tc.name);
+          let result: string;
+          if (tool) {
+            try {
+              const args = safeParseArgs(tc.arguments);
+              result = String(await tool.invoke(args));
+            } catch (e) {
+              result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+            }
+          } else {
+            result = `[error] Unknown tool: ${tc.name}`;
+          }
+          toolMessages.push(new ToolMessage({ content: result, tool_call_id: tc.id, name: tc.name }));
+        }
+        conversationMessages = [...conversationMessages, ...toolMessages];
+        yield { toolNode: { messages: toolMessages } };
+      }
       return;
     } catch (e) {
       // 降级：走 LangChain 流（不包含 reasoning）
     }
   }
 
-  const tools = getToolsByIds(
-    enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"]
-  );
+  const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
+  const mergedIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
+  const tools = getToolsByIds(mergedIds);
   const toolNode = new ToolNode(tools);
   const model = getLLM(modelId).bindTools(tools);
   let state: BaseMessage[] = [...messages];

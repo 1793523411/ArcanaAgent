@@ -2,20 +2,24 @@ import { useState } from "react";
 import type { StoredMessage } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
+import ToolCallBlock from "./ToolCallBlock";
 
 interface Props {
   message: StoredMessage;
-  /** 当前对话 id，用于附件 URL（仅 human 消息需要） */
   conversationId?: string;
 }
 
 export default function MessageBubble({ message, conversationId }: Props) {
   const isHuman = message.type === "human";
-  const text = message.content || (message.type === "ai" ? "(该条回复内容未保存)" : "");
   const attachments = message.attachments ?? [];
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
+  const toolLogs = message.toolLogs ?? [];
+  const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
+  const text = hasContent
+    ? message.content
+    : (message.type === "ai" && toolLogs.length === 0 ? "(该条回复内容未保存)" : message.content || "");
 
   return (
     <div
@@ -54,6 +58,7 @@ export default function MessageBubble({ message, conversationId }: Props) {
             )}
           </div>
         )}
+        {toolLogs.length > 0 && <ToolCallBlock logs={toolLogs} defaultCollapsed />}
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (

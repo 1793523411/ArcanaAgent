@@ -17,12 +17,20 @@ export interface StoredAttachment {
   name?: string;
 }
 
+export interface ToolLog {
+  name: string;
+  input: string;
+  output: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
   /** 推理/思考过程（仅 ai，支持思考的模型） */
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
+  /** 工具执行日志，持久化展示用 */
+  toolLogs?: ToolLog[];
   attachments?: StoredAttachment[];
 }
 
@@ -47,3 +55,11 @@ export interface UserConfig {
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;
+
+export interface ArtifactMeta {
+  name: string;
+  path: string;
+  size: number;
+  mimeType: string;
+  modifiedAt: string;
+}

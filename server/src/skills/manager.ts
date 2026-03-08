@@ -16,12 +16,19 @@ export interface SkillMeta {
   userUploaded?: boolean;
 }
 
+export interface SkillFull extends SkillMeta {
+  /** SKILL.md 去掉 frontmatter 后的完整 body 内容 */
+  body: string;
+  /** skill 目录的绝对路径 */
+  dirPath: string;
+}
+
 const FRONTMATTER_REG = /^---\r?\n([\s\S]*?)\r?\n---/;
 const NAME_REG = /^name:\s*["']?([^"'\n]+)["']?\s*$/m;
 /** description 整行内容（可能含引号），用 .+ 避免在内容中的 " 处截断 */
 const DESC_LINE_REG = /^description:\s*(.+)$/m;
 
-function parseSkillMd(content: string): { name: string; description: string } | null {
+function parseSkillMd(content: string): { name: string; description: string; body: string } | null {
   const match = content.match(FRONTMATTER_REG);
   if (!match) return null;
   const fm = match[1];
@@ -33,7 +40,8 @@ function parseSkillMd(content: string): { name: string; description: string } | 
   if (description && ((description.startsWith('"') && description.endsWith('"')) || (description.startsWith("'") && description.endsWith("'")))) {
     description = description.slice(1, -1).trim();
   }
-  return { name, description };
+  const body = content.slice(match[0].length).trim();
+  return { name, description, body };
 }
 
 function safeName(name: string): boolean {
@@ -58,7 +66,34 @@ function listSkillsFromDir(dir: string, userUploaded: boolean): SkillMeta[] {
       const content = readFileSync(skillMdPath, "utf-8");
       const parsed = parseSkillMd(content);
       if (parsed && safeName(parsed.name)) {
-        result.push({ ...parsed, userUploaded });
+        result.push({ name: parsed.name, description: parsed.description, userUploaded });
+      }
+    } catch {
+      // skip invalid
+    }
+  }
+  return result;
+}
+
+function listFullSkillsFromDir(dir: string, userUploaded: boolean): SkillFull[] {
+  if (!existsSync(dir)) return [];
+  const result: SkillFull[] = [];
+  const dirs = readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory());
+  for (const d of dirs) {
+    const skillPath = join(dir, d.name);
+    const skillMdPath = join(skillPath, "SKILL.md");
+    if (!existsSync(skillMdPath)) continue;
+    try {
+      const content = readFileSync(skillMdPath, "utf-8");
+      const parsed = parseSkillMd(content);
+      if (parsed && safeName(parsed.name)) {
+        result.push({
+          name: parsed.name,
+          description: parsed.description,
+          body: parsed.body,
+          dirPath: skillPath,
+          userUploaded,
+        });
       }
     } catch {
       // skip invalid
@@ -78,12 +113,41 @@ export function listSkills(): SkillMeta[] {
   return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** 生成注入 Agent 系统提示的 Skill 说明文本（name + description），供模型在合适时按技能说明执行 */
+/** 列出所有 skill 的完整信息（含 body 和目录路径），同名时用户上传覆盖内置 */
+export function listFullSkills(): SkillFull[] {
+  ensureSkillsDir();
+  const builtin = listFullSkillsFromDir(BUILTIN_SKILLS_DIR, false);
+  const user = listFullSkillsFromDir(SKILLS_DIR, true);
+  const byName = new Map<string, SkillFull>();
+  for (const s of builtin) byName.set(s.name, s);
+  for (const s of user) byName.set(s.name, s);
+  return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * 生成注入 Agent 系统提示的完整 Skill 上下文。
+ * 包含每个 skill 的完整 SKILL.md body，并将 <SKILL_PATH> 替换为实际目录路径。
+ * 模型可通过 run_command tool 执行 skill 中引用的脚本。
+ */
 export function getSkillContextForAgent(): string {
-  const skills = listSkills();
+  const skills = listFullSkills();
   if (skills.length === 0) return "";
-  const lines = skills.map((s) => `- **${s.name}**: ${s.description}`).join("\n");
-  return `\n\n## Available Skills\nWhen the user's request matches a skill below, follow that skill's instructions.\n\n${lines}`;
+
+  const sections = skills.map((s) => {
+    const resolvedBody = s.body.replace(/<SKILL_PATH>/g, s.dirPath);
+    return `### Skill: ${s.name}\n**When to use**: ${s.description}\n**Skill directory**: ${s.dirPath}\n\n${resolvedBody}`;
+  });
+
+  return [
+    "\n\n## Available Skills",
+    "",
+    "You have access to the following skills. When the user's request matches a skill, " +
+      "follow that skill's instructions precisely. Use the `run_command` tool to execute " +
+      "any scripts referenced in the skill. Use the `read_file` tool to read skill reference " +
+      "docs or script outputs when needed.",
+    "",
+    ...sections,
+  ].join("\n");
 }
 
 /**

@@ -1,18 +1,17 @@
 import { useState, useEffect } from "react";
-import type { StreamingStatus } from "../types";
+import type { StreamingStatus, ToolLog } from "../types";
 import MarkdownContent from "./MarkdownContent";
+import ToolCallBlock from "./ToolCallBlock";
 
 interface Props {
   content: string;
   reasoning?: string;
   status: StreamingStatus;
-  /** 本次回复中已调用的工具，在思考区域展示 */
-  toolCalls?: Array<{ name: string; input?: string }>;
-  /** 是否仍在流式输出（思考过程在流式时展开，结束后折叠） */
+  toolLogs?: ToolLog[];
   isStreaming?: boolean;
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolCalls = [], isStreaming = false }: Props) {
+export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   useEffect(() => {
     if (!isStreaming && reasoning) setReasoningCollapsed(true);
@@ -20,8 +19,8 @@ export default function StreamingBubble({ content, reasoning, status, toolCalls 
   }, [isStreaming, reasoning]);
 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
-  const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
-  const showThinkingSection = isStreaming || hasReasoning || hasToolCalls;
+  const hasToolLogs = toolLogs.length > 0;
+  const showThinkingSection = isStreaming || hasReasoning;
 
   return (
     <div className="self-start max-w-[85%] py-3 px-4 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
@@ -37,30 +36,19 @@ export default function StreamingBubble({ content, reasoning, status, toolCalls 
             <span>思考过程</span>
           </button>
           {!reasoningCollapsed && (
-            <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto space-y-2">
-              {hasToolCalls && (
-                <div className="space-y-1">
-                  {toolCalls.map((tc, i) => (
-                    <div key={i} className="flex flex-wrap items-baseline gap-1.5 text-[var(--color-text-muted)]">
-                      <span className="font-medium text-[var(--color-accent)]">🔧 使用工具: {tc.name}</span>
-                      {tc.input && tc.input !== "{}" && (
-                        <span className="text-xs truncate max-w-[200px]" title={tc.input}>{tc.input}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {hasReasoning ? <MarkdownContent>{reasoning}</MarkdownContent> : !hasToolCalls && <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
+            <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto">
+              {hasReasoning ? <MarkdownContent>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
             </div>
           )}
         </div>
       )}
+      {hasToolLogs && <ToolCallBlock logs={toolLogs} />}
       {content ? (
         <MarkdownContent>{content}</MarkdownContent>
       ) : (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
           <span className="loading-dots" />
-          {status === "tool" ? "正在调用工具…" : "正在思考…"}
+          {status === "tool" ? "正在执行工具…" : "正在思考…"}
         </div>
       )}
     </div>

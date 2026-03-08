@@ -1,8 +1,8 @@
-import type { ConversationMeta, StoredMessage, UserConfig } from "../types";
+import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta } from "../types";
 
 const BASE = "/api";
 
-export type { ConversationMeta, StoredMessage, UserConfig };
+export type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta };
 
 export async function listConversations(): Promise<ConversationMeta[]> {
   const r = await fetch(`${BASE}/conversations`);
@@ -170,4 +170,22 @@ export async function deleteSkill(name: string): Promise<void> {
     const err = await r.json().catch(() => ({ error: r.statusText }));
     throw new Error(typeof err?.error === "string" ? err.error : "删除失败");
   }
+}
+
+// ─── Artifacts ─────────────────────────────────
+
+export async function getArtifacts(conversationId: string): Promise<ArtifactMeta[]> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/artifacts`);
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export function getArtifactUrl(conversationId: string, filePath: string): string {
+  return `${BASE}/conversations/${conversationId}/artifacts/${filePath}`;
+}
+
+export async function getArtifactText(conversationId: string, filePath: string): Promise<string> {
+  const r = await fetch(getArtifactUrl(conversationId, filePath));
+  if (!r.ok) throw new Error("Failed to fetch artifact");
+  return r.text();
 }

@@ -15,6 +15,12 @@ export interface StoredAttachment {
   file?: string;
 }
 
+export interface ToolLog {
+  name: string;
+  input: string;
+  output: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
@@ -22,6 +28,8 @@ export interface StoredMessage {
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
   tool_call_id?: string;
+  /** 工具执行日志（name + 输入 + 输出），持久化展示用 */
+  toolLogs?: ToolLog[];
   attachments?: StoredAttachment[];
 }
 
@@ -45,6 +53,7 @@ function conversationDir(id: string): string {
 }
 
 const ATTACHMENTS_DIR_NAME = "attachments";
+const WORKSPACE_DIR_NAME = "workspace";
 const SUMMARY_FILE = "summary.json";
 const CONTEXT_SNAPSHOT_FILE = "context.json";
 
@@ -276,4 +285,84 @@ export function deleteConversation(id: string): boolean {
   if (!existsSync(dir)) return false;
   rmSync(dir, { recursive: true });
   return true;
+}
+
+// ─── Workspace (artifacts) ─────────────────────────────────
+
+export interface ArtifactMeta {
+  name: string;
+  path: string;
+  size: number;
+  mimeType: string;
+  modifiedAt: string;
+}
+
+function workspaceDir(convId: string): string {
+  return join(conversationDir(convId), WORKSPACE_DIR_NAME);
+}
+
+export function ensureWorkspace(convId: string): string {
+  const dir = workspaceDir(convId);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+export function getWorkspacePath(convId: string): string {
+  return workspaceDir(convId);
+}
+
+const MIME_MAP: Record<string, string> = {
+  ".md": "text/markdown", ".txt": "text/plain", ".json": "application/json",
+  ".csv": "text/csv", ".html": "text/html", ".htm": "text/html",
+  ".js": "text/javascript", ".ts": "text/typescript", ".py": "text/x-python",
+  ".sh": "text/x-shellscript", ".yaml": "text/yaml", ".yml": "text/yaml",
+  ".xml": "application/xml", ".log": "text/plain",
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav",
+  ".mp4": "video/mp4", ".webm": "video/webm",
+};
+
+function guessMime(filename: string): string {
+  const ext = filename.slice(filename.lastIndexOf(".")).toLowerCase();
+  return MIME_MAP[ext] ?? "application/octet-stream";
+}
+
+import { statSync } from "fs";
+
+export function listArtifacts(convId: string): ArtifactMeta[] {
+  const dir = workspaceDir(convId);
+  if (!existsSync(dir)) return [];
+  return scanDir(dir, dir);
+}
+
+function scanDir(base: string, current: string): ArtifactMeta[] {
+  const result: ArtifactMeta[] = [];
+  const entries = readdirSync(current, { withFileTypes: true });
+  for (const entry of entries) {
+    const full = join(current, entry.name);
+    if (entry.isDirectory()) {
+      result.push(...scanDir(base, full));
+    } else if (entry.isFile()) {
+      const rel = full.slice(base.length + 1);
+      const stat = statSync(full);
+      result.push({
+        name: rel,
+        path: rel,
+        size: stat.size,
+        mimeType: guessMime(entry.name),
+        modifiedAt: stat.mtime.toISOString(),
+      });
+    }
+  }
+  return result.sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
+}
+
+export function getArtifactAbsolutePath(convId: string, filePath: string): string | null {
+  const dir = workspaceDir(convId);
+  const normalized = join(dir, filePath);
+  if (!normalized.startsWith(dir) || normalized === dir) return null;
+  if (!existsSync(normalized)) return null;
+  return normalized;
 }

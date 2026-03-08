@@ -7,6 +7,8 @@ import {
   getConversationById,
   getConversationMessages,
   getConversationAttachment,
+  getConversationArtifacts,
+  getConversationArtifactFile,
   postConversationMessage,
   postConversationMessageSync,
   deleteConversationById,
@@ -31,6 +33,8 @@ app.post("/conversations", postConversations);
 app.get("/conversations/:id", getConversationById);
 app.get("/conversations/:id/messages", getConversationMessages);
 app.get("/conversations/:id/attachments/:filename", getConversationAttachment);
+app.get("/conversations/:id/artifacts", getConversationArtifacts);
+app.get("/conversations/:id/artifacts/*", getConversationArtifactFile);
 app.post("/conversations/:id/messages", postConversationMessage);
 app.delete("/conversations/:id", deleteConversationById);
 app.post("/conversations/:id/messages/sync", postConversationMessageSync);

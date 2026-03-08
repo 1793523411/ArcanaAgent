@@ -9,6 +9,10 @@ import {
   deleteConversation,
   saveAttachmentFile,
   getAttachmentAbsolutePath,
+  listArtifacts,
+  getArtifactAbsolutePath,
+  ensureWorkspace,
+  getWorkspacePath,
   type StoredMessage,
 } from "../storage/index.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
@@ -202,28 +206,50 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (token) write("data: " + JSON.stringify({ type: "reasoning", content: token }) + "\n\n");
   };
 
-  const skillContext = getSkillContextForAgent();
+  const workspace = ensureWorkspace(id);
+  const existingArtifacts = listArtifacts(id);
+  const artifactListText = existingArtifacts.length > 0
+    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
+        `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
+      ).join("\n") +
+      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
+    : "";
+  const skillContext = getSkillContextForAgent() +
+    `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
+    "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
+    "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
+    artifactListText;
   const collectedStored: StoredMessage[] = [];
+  const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
+  let streamedContent = "";
+  let lastReasoning: string | undefined;
   try {
     for await (const chunk of streamAgentWithTokens(lcMessages, config.enabledToolIds, onToken, config.modelId, onReasoningToken, skillContext)) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key] : undefined;
-      if (part?.reasoning) write("data: " + JSON.stringify({ type: "reasoning", content: part.reasoning }) + "\n\n");
+      if (part?.reasoning) {
+        write("data: " + JSON.stringify({ type: "reasoning", content: part.reasoning }) + "\n\n");
+        lastReasoning = part.reasoning;
+      }
       if (key === "llmCall" && part?.messages?.length) {
-        const aiMsg = part.messages.find((m) => (m as { _getType?: () => string })._getType?.() === "ai") as { tool_calls?: Array<{ name: string; args?: string | object }> } | undefined;
+        const aiMsg = part.messages.find((m) => (m as { _getType?: () => string })._getType?.() === "ai") as { tool_calls?: Array<{ name: string; args?: string | object }>; content?: string } | undefined;
         const toolCalls = aiMsg?.tool_calls;
         if (Array.isArray(toolCalls) && toolCalls.length > 0) {
           for (const tc of toolCalls) {
             const input = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
             write("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
+            pendingToolLogs.push({ name: tc.name, input, output: "" });
           }
         }
       }
       if (key === "toolNode" && part?.messages?.length) {
         for (const msg of part.messages) {
-          const toolMsg = msg as { _getType?: () => string; name?: string };
+          const toolMsg = msg as { _getType?: () => string; name?: string; content?: string };
           if (toolMsg._getType?.() === "tool" && toolMsg.name) {
-            write("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name }) + "\n\n");
+            const output = typeof toolMsg.content === "string" ? toolMsg.content : "";
+            const pending = pendingToolLogs.filter((tl) => tl.name === toolMsg.name && !tl.output);
+            if (pending.length > 0) pending[0].output = output;
+            write("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
           }
         }
       }
@@ -236,14 +262,42 @@ export async function postConversationMessage(req: Request, res: Response): Prom
           const t = (msg as { _getType?: () => string })._getType?.();
           if (t === "tool") continue;
           const stored = langChainToStored(msg);
-          if (stored.type === "ai" && !(typeof stored.content === "string" && stored.content.trim())) continue;
-          if (stored.type === "ai" && reasoning) stored.reasoningContent = reasoning;
-          collectedStored.push(stored);
+          if (stored.type === "ai") {
+            if (typeof stored.content === "string" && stored.content.trim()) {
+              streamedContent = stored.content;
+            }
+            if (reasoning) stored.reasoningContent = reasoning;
+            collectedStored.push(stored);
+          }
         }
       }
     }
-    if (collectedStored.length > 0) {
-      appendMessages(id, collectedStored);
+    // Attach tool logs to the last AI message that has real content,
+    // or the very last AI message if none has content
+    if (pendingToolLogs.length > 0) {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+      if (target) {
+        target.toolLogs = pendingToolLogs;
+      }
+    }
+    // Filter out AI messages with empty content EXCEPT the one carrying toolLogs
+    const toStore = collectedStored.filter((m) => {
+      if (m.type !== "ai") return true;
+      if (m.toolLogs && m.toolLogs.length > 0) return true;
+      return typeof m.content === "string" && m.content.trim().length > 0;
+    });
+    // If no AI message survived but we have streamed content or tool logs, create a fallback
+    if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0)) {
+      toStore.push({
+        type: "ai",
+        content: streamedContent.trim() || "(工具已执行)",
+        ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
+        ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
+      });
+    }
+    if (toStore.length > 0) {
+      appendMessages(id, toStore);
     }
     write("data: [DONE]\n\n");
   } catch (e) {
@@ -393,4 +447,40 @@ export function putConfig(req: Request, res: Response): void {
   }
   saveUserConfig(config);
   res.json(config);
+}
+
+// ─── Artifact (workspace) routes ─────────────────────────────
+
+export function getConversationArtifacts(req: Request, res: Response): void {
+  const id = convId(req);
+  if (!getConversation(id)) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  try {
+    res.json(listArtifacts(id));
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getConversationArtifactFile(req: Request, res: Response): void {
+  const id = convId(req);
+  const filePath = req.params[0];
+  if (!filePath || filePath.includes("..")) {
+    res.status(400).json({ error: "Invalid file path" });
+    return;
+  }
+  if (!getConversation(id)) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const absPath = getArtifactAbsolutePath(id, filePath);
+  if (!absPath) {
+    res.status(404).json({ error: "Artifact not found" });
+    return;
+  }
+  res.sendFile(absPath, { maxAge: "1d" }, (err) => {
+    if (err) res.status(500).json({ error: String(err) });
+  });
 }
