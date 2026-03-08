@@ -52,7 +52,7 @@ export function listModels(): ModelInfo[] {
   return out;
 }
 
-export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: string; modelId: string } {
+export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: string; modelId: string; api: string } {
   const raw = readFileSync(configPath, "utf-8");
   const json = JSON.parse(raw) as {
     models: { providers: Record<string, ProviderConfig> };
@@ -82,6 +82,7 @@ export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: st
     baseUrl: providerCfg.baseUrl,
     apiKey,
     modelId: model.id,
+    api: model.api || providerCfg.api || "openai-completions",
   };
 }
 
