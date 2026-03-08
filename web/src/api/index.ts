@@ -137,3 +137,37 @@ export async function putConfig(config: Partial<UserConfig>): Promise<UserConfig
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+export interface SkillMeta {
+  name: string;
+  description: string;
+  userUploaded?: boolean;
+}
+
+export async function getSkills(): Promise<SkillMeta[]> {
+  const r = await fetch(`${BASE}/skills`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function uploadSkillZip(file: File): Promise<{ name: string; description: string }> {
+  const form = new FormData();
+  form.append("zip", file);
+  const r = await fetch(`${BASE}/skills/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(typeof err?.error === "string" ? err.error : "上传失败");
+  }
+  return r.json();
+}
+
+export async function deleteSkill(name: string): Promise<void> {
+  const r = await fetch(`${BASE}/skills/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(typeof err?.error === "string" ? err.error : "删除失败");
+  }
+}

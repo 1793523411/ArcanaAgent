@@ -101,6 +101,9 @@ package-lock.json
 .agents/
 .agents
 .agent/
+
+# 用户上传的 Skill（默认技能在项目根 skills/，不忽略）
+server/data/skills/
 skills-lock.json
 
 # Local iOS signing overrides

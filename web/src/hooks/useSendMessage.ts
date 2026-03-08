@@ -13,12 +13,16 @@ export function useSendMessage(options: {
   const [files, setFiles] = useState<FileWithData[]>([]);
   const [loading, setLoading] = useState(false);
   const [streamingContent, setStreamingContent] = useState("");
+  const [streamingReasoning, setStreamingReasoning] = useState("");
   const [streamingStatus, setStreamingStatus] = useState<StreamingStatus>(null);
+  const [streamingToolCalls, setStreamingToolCalls] = useState<Array<{ name: string; input?: string }>>([]);
   const [sendError, setSendError] = useState<string | null>(null);
 
   const clearStreaming = useCallback(() => {
     setStreamingContent("");
+    setStreamingReasoning("");
     setStreamingStatus(null);
+    setStreamingToolCalls([]);
   }, []);
 
   const send = useCallback(
@@ -31,6 +35,8 @@ export function useSendMessage(options: {
       setLoading(true);
       setSendError(null);
       setStreamingContent("");
+      setStreamingReasoning("");
+      setStreamingToolCalls([]);
       setStreamingStatus("thinking");
 
       const attachments: Attachment[] | undefined = toSend.length
@@ -52,8 +58,18 @@ export function useSendMessage(options: {
             setStreamingContent((c) => c + obj.content);
             return;
           }
+          if (obj.type === "reasoning" && typeof obj.content === "string") {
+            setStreamingReasoning((r) => r + obj.content);
+            return;
+          }
+          if (obj.type === "tool_call" && typeof (obj as { name?: string }).name === "string") {
+            const { name, input } = obj as { name: string; input?: string };
+            setStreamingToolCalls((prev) => [...prev, { name, input }]);
+            return;
+          }
           const key = Object.keys(obj)[0];
-          const part = key ? (obj[key] as { messages?: Array<{ type?: string; content?: string }> }) : undefined;
+          const part = key ? (obj[key] as { messages?: Array<{ type?: string; content?: string }>; reasoning?: string }) : undefined;
+          if (part?.reasoning) setStreamingReasoning(part.reasoning);
           const ms = part?.messages ?? [];
           const last = ms[ms.length - 1];
           if (last && typeof last.content === "string" && last.content) {
@@ -110,7 +126,9 @@ export function useSendMessage(options: {
     send,
     loading,
     streamingContent,
+    streamingReasoning,
     streamingStatus,
+    streamingToolCalls,
     sendError,
     clearStreaming,
   };

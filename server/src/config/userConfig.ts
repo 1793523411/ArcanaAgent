@@ -24,7 +24,7 @@ export interface ContextStrategyConfig {
 }
 
 export interface UserConfig {
-  enabledSkillIds: string[];
+  enabledToolIds: string[];
   mcpServers: McpServerConfig[];
   modelId?: string;
   context?: ContextStrategyConfig;
@@ -38,7 +38,7 @@ const defaultContext: ContextStrategyConfig = {
 };
 
 const defaultConfig: UserConfig = {
-  enabledSkillIds: ["calculator", "get_time", "echo"],
+  enabledToolIds: ["calculator", "get_time", "echo"],
   mcpServers: [],
   context: defaultContext,
 };
@@ -59,7 +59,7 @@ export function loadUserConfig(): UserConfig {
     const parsed = JSON.parse(raw) as Partial<UserConfig>;
     const ctx = parsed.context && typeof parsed.context === "object" ? parsed.context : defaultContext;
     return {
-      enabledSkillIds: Array.isArray(parsed.enabledSkillIds) ? parsed.enabledSkillIds : defaultConfig.enabledSkillIds,
+      enabledToolIds: Array.isArray(parsed.enabledToolIds) ? parsed.enabledToolIds : (Array.isArray((parsed as { enabledSkillIds?: string[] }).enabledSkillIds) ? (parsed as { enabledSkillIds: string[] }).enabledSkillIds : defaultConfig.enabledToolIds),
       mcpServers: Array.isArray(parsed.mcpServers) ? parsed.mcpServers : defaultConfig.mcpServers,
       modelId: typeof parsed.modelId === "string" ? parsed.modelId : undefined,
       context: {

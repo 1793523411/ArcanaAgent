@@ -31,7 +31,7 @@ export default function WelcomeBox({
             🚀 你好，欢迎回来！
           </h1>
           <p className="m-0 text-[15px] leading-relaxed text-[var(--color-text-muted)]">
-            欢迎使用智能体对话。通过内置和自定义的 Skills，可以帮你搜索、计算、分析数据等，几乎可以做任何事情。
+            欢迎使用智能体对话。通过内置工具和 Skills，可以帮你搜索、计算、分析数据等，几乎可以做任何事情。
           </p>
         </div>
         <ChatInputBar

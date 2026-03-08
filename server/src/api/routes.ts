@@ -16,19 +16,22 @@ import { storedToLangChain, langChainToStored, getTextContent } from "../lib/mes
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig } from "../config/userConfig.js";
-import { listSkillIds } from "../lib/skills.js";
+import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
+import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
 
 function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(chunk)) {
     if (val && typeof val === "object" && "messages" in val && Array.isArray((val as { messages: BaseMessage[] }).messages)) {
-      const ms = (val as { messages: BaseMessage[] }).messages;
+      const v = val as { messages: BaseMessage[]; reasoning?: string };
+      const ms = v.messages;
       out[key] = {
         messages: ms.map((m) => ({
           type: m._getType(),
           content: typeof (m as { content?: string }).content === "string" ? (m as { content: string }).content : "",
         })),
+        ...(typeof v.reasoning === "string" ? { reasoning: v.reasoning } : {}),
       };
     } else {
       out[key] = val;
@@ -195,20 +198,46 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   const onToken = (token: string) => {
     if (token) write("data: " + JSON.stringify({ type: "token", content: token }) + "\n\n");
   };
+  const onReasoningToken = (token: string) => {
+    if (token) write("data: " + JSON.stringify({ type: "reasoning", content: token }) + "\n\n");
+  };
 
+  const skillContext = getSkillContextForAgent();
   const collectedStored: StoredMessage[] = [];
   try {
-    for await (const chunk of streamAgentWithTokens(lcMessages, config.enabledSkillIds, onToken, config.modelId)) {
+    for await (const chunk of streamAgentWithTokens(lcMessages, config.enabledToolIds, onToken, config.modelId, onReasoningToken, skillContext)) {
+      const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
+      const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key] : undefined;
+      if (part?.reasoning) write("data: " + JSON.stringify({ type: "reasoning", content: part.reasoning }) + "\n\n");
+      if (key === "llmCall" && part?.messages?.length) {
+        const aiMsg = part.messages.find((m) => (m as { _getType?: () => string })._getType?.() === "ai") as { tool_calls?: Array<{ name: string; args?: string | object }> } | undefined;
+        const toolCalls = aiMsg?.tool_calls;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          for (const tc of toolCalls) {
+            const input = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
+            write("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
+          }
+        }
+      }
+      if (key === "toolNode" && part?.messages?.length) {
+        for (const msg of part.messages) {
+          const toolMsg = msg as { _getType?: () => string; name?: string };
+          if (toolMsg._getType?.() === "tool" && toolMsg.name) {
+            write("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name }) + "\n\n");
+          }
+        }
+      }
       const serializable = serializeStreamChunk(chunk);
       const payload = JSON.stringify(serializable);
       write(`data: ${payload}\n\n`);
-      const part = chunk && typeof chunk === "object" ? (chunk as Record<string, { messages?: BaseMessage[] }>)[Object.keys(chunk as object)[0]] : undefined;
       if (part?.messages?.length) {
+        const reasoning = typeof part.reasoning === "string" ? part.reasoning : undefined;
         for (const msg of part.messages) {
           const t = (msg as { _getType?: () => string })._getType?.();
           if (t === "tool") continue;
           const stored = langChainToStored(msg);
           if (stored.type === "ai" && !(typeof stored.content === "string" && stored.content.trim())) continue;
+          if (stored.type === "ai" && reasoning) stored.reasoningContent = reasoning;
           collectedStored.push(stored);
         }
       }
@@ -252,7 +281,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   appendMessages(id, [{ type: "human", content: text }], newTitleSync);
 
   try {
-    const resultMessages = await runAgent(lcMessages, config.enabledSkillIds);
+    const resultMessages = await runAgent(lcMessages, config.enabledToolIds);
     const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -264,16 +293,16 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 }
 
 export async function postChat(req: Request, res: Response): Promise<void> {
-  const body = req.body as { message?: string; skillIds?: string[] };
+  const body = req.body as { message?: string; toolIds?: string[] };
   const text = typeof body?.message === "string" ? body.message.trim() : "";
   if (!text) {
     res.status(400).json({ error: "Missing or empty message" });
     return;
   }
-  const skillIds = Array.isArray(body.skillIds) ? body.skillIds : undefined;
+  const toolIds = Array.isArray(body.toolIds) ? body.toolIds : undefined;
   const messages = [new HumanMessage(text)];
   try {
-    const resultMessages = await runAgent(messages, skillIds);
+    const resultMessages = await runAgent(messages, toolIds);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
     res.json({ reply });
@@ -284,9 +313,9 @@ export async function postChat(req: Request, res: Response): Promise<void> {
 
 export function getConfig(_req: Request, res: Response): void {
   const config = loadUserConfig();
-  const skillIds = listSkillIds();
+  const toolIds = listToolIds();
   const models = listModels();
-  res.json({ ...config, availableSkillIds: skillIds, availableModels: models });
+  res.json({ ...config, availableToolIds: toolIds, availableModels: models });
 }
 
 export function getModels(_req: Request, res: Response): void {
@@ -297,15 +326,57 @@ export function getModels(_req: Request, res: Response): void {
   }
 }
 
+export function getSkillsList(_req: Request, res: Response): void {
+  try {
+    res.json(listSkills());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postSkillsUpload(req: Request, res: Response): Promise<void> {
+  const file = req.file as (Express.Multer.File & { buffer?: Buffer }) | undefined;
+  if (!file || !(file.buffer && Buffer.isBuffer(file.buffer))) {
+    res.status(400).json({ error: "请上传 ZIP 文件（字段名 zip）" });
+    return;
+  }
+  if (!file.originalname.toLowerCase().endsWith(".zip")) {
+    res.status(400).json({ error: "仅支持 .zip 格式" });
+    return;
+  }
+  try {
+    const result = installSkillFromZip(file.buffer);
+    res.status(201).json(result);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(400).json({ error: msg });
+  }
+}
+
+export function deleteSkillById(req: Request, res: Response): void {
+  const name = (Array.isArray(req.params.name) ? req.params.name[0] : req.params.name) ?? "";
+  if (!name) {
+    res.status(400).json({ error: "Missing skill name" });
+    return;
+  }
+  try {
+    deleteSkill(name);
+    res.status(204).send();
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(400).json({ error: msg });
+  }
+}
+
 export function putConfig(req: Request, res: Response): void {
   const body = req.body as {
-    enabledSkillIds?: string[];
+    enabledToolIds?: string[];
     mcpServers?: UserConfig["mcpServers"];
     modelId?: string;
     context?: Partial<ContextStrategyConfig>;
   };
   const config = loadUserConfig();
-  if (Array.isArray(body.enabledSkillIds)) config.enabledSkillIds = body.enabledSkillIds;
+  if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
   if (Array.isArray(body.mcpServers)) config.mcpServers = body.mcpServers;
   if (typeof body.modelId === "string") config.modelId = body.modelId;
   if (body.context && typeof body.context === "object") {

@@ -28,7 +28,9 @@ export default function App() {
     send,
     loading,
     streamingContent,
+    streamingReasoning,
     streamingStatus,
+    streamingToolCalls,
     sendError,
     clearStreaming,
   } = useSendMessage({
@@ -126,7 +128,9 @@ export default function App() {
             onSend={() => send(current.id)}
             loading={loading}
             streamingContent={streamingContent}
+            streamingReasoning={streamingReasoning}
             streamingStatus={streamingStatus}
+            streamingToolCalls={streamingToolCalls}
             error={error}
             files={files}
             onFilesChange={setFiles}

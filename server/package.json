@@ -11,13 +11,17 @@
     "@langchain/core": "^0.3.28",
     "@langchain/langgraph": "^0.2.74",
     "@langchain/openai": "^0.3.14",
+    "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
     "express": "^4.21.0",
+    "multer": "^2.1.1",
     "zod": "^3.24.0"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
+    "@types/multer": "^2.1.0",
     "@types/node": "^22.10.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"

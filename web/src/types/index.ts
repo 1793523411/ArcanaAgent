@@ -20,6 +20,8 @@ export interface StoredAttachment {
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
+  /** 推理/思考过程（仅 ai，支持思考的模型） */
+  reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
   attachments?: StoredAttachment[];
 }
@@ -36,9 +38,9 @@ export interface ContextStrategyConfig {
 }
 
 export interface UserConfig {
-  enabledSkillIds: string[];
+  enabledToolIds: string[];
   mcpServers: unknown[];
-  availableSkillIds?: string[];
+  availableToolIds?: string[];
   modelId?: string;
   availableModels?: Array<{ id: string; name: string; provider: string }>;
   context?: ContextStrategyConfig;

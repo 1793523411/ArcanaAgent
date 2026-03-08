@@ -1,13 +1,14 @@
 # 网页端智能体 (Web Agent)
 
-一个最简单的网页端智能体应用：前端 React + TypeScript，后端 Express + TypeScript，Agent 使用 LangGraph，支持流式/非流式对话、历史会话（文件存储）、上下文压缩，以及可配置的 Demo Skill。
+一个最简单的网页端智能体应用：前端 React + TypeScript，后端 Express + TypeScript，Agent 使用 LangGraph，支持流式/非流式对话、历史会话（文件存储）、上下文压缩、可配置的 Tools，以及符合 SKILL.md 规范的 Demo Skill。
 
 ## 功能
 
 - **对话**：创建会话、发送消息、查看历史；数据存于本地文件，会话隔离。
 - **上下文**：每个会话单独管理，超过约 30 条消息时自动只保留最近 20 条参与推理（可压缩）。
 - **流式 / 非流式**：页面上对话使用流式接口实时展示；另有 `POST /chat` 与 `POST /conversations/:id/messages/sync` 支持非流式调用。
-- **Skill**：内置 Demo Skill（如 `calculator`、`get_time`、`echo`），可在「配置 Skill / MCP」中勾选启用。
+- **Tools**：内置工具（如 `calculator`、`get_time`、`echo`），可在「Tools / MCP」中勾选启用，供 Agent 在对话中调用。
+- **Skill**：默认技能在项目根目录 `skills/`（随仓库提交）；用户上传的 ZIP 安装到 `server/data/skills/`，可在设置中管理。
 - **模型**：通过 `config/models.json` 配置，默认使用火山引擎（Volcengine）豆包模型；API Key 可用环境变量 `VOLCENGINE_API_KEY` 覆盖。
 
 ## 目录结构
@@ -21,8 +22,12 @@ my_agent/
 │       ├── index.ts
 │       ├── agent.ts
 │       ├── storage.ts
-│       ├── skills.ts
+│       ├── tools/           # 可被 Agent 调用的工具 (calculator, get_time, echo)
 │       └── ...
+├── skills/                 # 默认 Skill（SKILL.md 规范，随仓库提交）
+│   └── demo/
+│       ├── SKILL.md
+│       └── scripts/
 ├── web/                     # 前端 (Vite + React)
 │   └── src/
 │       ├── App.tsx
@@ -85,7 +90,7 @@ npm run dev:web
 | POST | /conversations/:id/messages/sync | 发送消息（非流式） |
 | POST | /chat | 直接对话（非流式，无需会话 ID） |
 | GET | /config | 获取 Skill/MCP 配置 |
-| PUT | /config | 更新配置（enabledSkillIds、mcpServers） |
+| PUT | /config | 更新配置（enabledToolIds、mcpServers） |
 
 ## 技术栈
 

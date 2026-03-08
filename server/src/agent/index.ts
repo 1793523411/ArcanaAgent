@@ -2,7 +2,10 @@ import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
 import { getLLM } from "../llm/index.js";
-import { getSkillsByIds } from "../lib/skills.js";
+import { streamChatCompletionsWithReasoning } from "../llm/streamWithReasoning.js";
+import { getToolsByIds } from "../tools/index.js";
+import { loadModelConfig } from "../config/models.js";
+import { getModelReasoning } from "../config/models.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
@@ -20,9 +23,23 @@ function getTextFromMessage(msg: { content?: unknown }): string {
   return "";
 }
 
-export function buildAgent(enabledSkillIds: string[] = [], modelId?: string) {
-  const tools = getSkillsByIds(
-    enabledSkillIds.length ? enabledSkillIds : ["calculator", "get_time", "echo"]
+/** 从消息中提取推理/思考内容（additional_kwargs.reasoning_content 或 content 数组中 type 为 reasoning 的项） */
+function getReasoningFromMessage(msg: BaseMessage): string | undefined {
+  const m = msg as { additional_kwargs?: { reasoning_content?: string }; content?: unknown };
+  const fromKwargs = m.additional_kwargs?.reasoning_content;
+  if (typeof fromKwargs === "string" && fromKwargs.trim()) return fromKwargs.trim();
+  const c = m.content;
+  if (!Array.isArray(c)) return undefined;
+  const parts = c
+    .filter((x) => x && typeof x === "object" && (x as { type?: string }).type === "reasoning")
+    .map((x) => (typeof (x as { text?: string }).text === "string" ? (x as { text: string }).text : ""))
+    .join("");
+  return parts.trim() || undefined;
+}
+
+export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
+  const tools = getToolsByIds(
+    enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"]
   );
   const model = getLLM(modelId).bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -60,19 +77,19 @@ export function buildAgent(enabledSkillIds: string[] = [], modelId?: string) {
 
 export async function runAgent(
   messages: BaseMessage[],
-  enabledSkillIds: string[] = [],
+  enabledToolIds: string[] = [],
   modelId?: string
 ): Promise<BaseMessage[]> {
-  const agent = buildAgent(enabledSkillIds, modelId);
+  const agent = buildAgent(enabledToolIds, modelId);
   const result = await agent.invoke({ messages });
   return result.messages;
 }
 
 export async function* streamAgent(
   messages: BaseMessage[],
-  enabledSkillIds: string[] = []
+  enabledToolIds: string[] = []
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
-  const agent = buildAgent(enabledSkillIds);
+  const agent = buildAgent(enabledToolIds);
   const stream = await agent.stream(
     { messages },
     { streamMode: "updates" }
@@ -86,16 +103,41 @@ export async function* streamAgent(
 
 export async function* streamAgentWithTokens(
   messages: BaseMessage[],
-  enabledSkillIds: string[],
+  enabledToolIds: string[],
   onToken: (token: string) => void,
-  modelId?: string
+  modelId?: string,
+  onReasoningToken?: (token: string) => void,
+  skillContext?: string
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
-  const tools = getSkillsByIds(
-    enabledSkillIds.length ? enabledSkillIds : ["calculator", "get_time", "echo"]
+  const systemText = "You are a helpful assistant. Use tools when needed." + (skillContext ?? "");
+  const systemMessage = new SystemMessage(systemText);
+  const useReasoningStream = getModelReasoning(modelId) && typeof onReasoningToken === "function";
+
+  if (useReasoningStream) {
+    try {
+      const { baseUrl, apiKey, modelId: resolved } = loadModelConfig(modelId);
+      const inputMessages = [systemMessage, ...messages];
+      const { content, reasoningContent } = await streamChatCompletionsWithReasoning(
+        baseUrl,
+        apiKey,
+        resolved,
+        inputMessages,
+        onToken,
+        onReasoningToken
+      );
+      const finalMessage = new AIMessage({ content: content || " " });
+      yield { llmCall: { messages: [finalMessage], ...(reasoningContent.trim() ? { reasoning: reasoningContent.trim() } : {}) } };
+      return;
+    } catch (e) {
+      // 降级：走 LangChain 流（不包含 reasoning）
+    }
+  }
+
+  const tools = getToolsByIds(
+    enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"]
   );
   const toolNode = new ToolNode(tools);
   const model = getLLM(modelId).bindTools(tools);
-  const systemMessage = new SystemMessage("You are a helpful assistant. Use tools when needed.");
   let state: BaseMessage[] = [...messages];
 
   const shouldContinue = (last: BaseMessage): boolean => {
@@ -134,7 +176,8 @@ export async function* streamAgentWithTokens(
           })
         : fullChunk;
     state = [...state, finalMessage];
-    yield { llmCall: { messages: [finalMessage] } };
+    const reasoning = getReasoningFromMessage(fullChunk);
+    yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) break;
     const toolResult = await toolNode.invoke({ messages: state });
     const toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];

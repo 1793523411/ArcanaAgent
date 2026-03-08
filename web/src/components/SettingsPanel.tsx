@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { getConfig, putConfig } from "../api";
+import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
 import type { UserConfig, ContextStrategyConfig } from "../types";
 
 const DEFAULT_CONTEXT: ContextStrategyConfig = {
@@ -18,11 +18,20 @@ interface Props {
 export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "skills">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "tools" | "skills">("context");
+  const [skills, setSkills] = useState<SkillMeta[]>([]);
+  const [skillUploading, setSkillUploading] = useState(false);
+  const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     getConfig().then(setConfig);
   }, []);
+
+  useEffect(() => {
+    if (activeSection === "skills") {
+      getSkills().then(setSkills).catch(() => setSkills([]));
+    }
+  }, [activeSection]);
 
   const ctx = config?.context ?? DEFAULT_CONTEXT;
 
@@ -34,12 +43,12 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     });
   };
 
-  const toggleSkill = (id: string) => {
+  const toggleTool = (id: string) => {
     if (!config) return;
-    const enabled = config.enabledSkillIds.includes(id)
-      ? config.enabledSkillIds.filter((s) => s !== id)
-      : [...config.enabledSkillIds, id];
-    setConfig({ ...config, enabledSkillIds: enabled });
+    const enabled = config.enabledToolIds.includes(id)
+      ? config.enabledToolIds.filter((s) => s !== id)
+      : [...config.enabledToolIds, id];
+    setConfig({ ...config, enabledToolIds: enabled });
   };
 
   const handleSave = async () => {
@@ -48,7 +57,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     try {
       await putConfig({
         context: config.context ?? DEFAULT_CONTEXT,
-        enabledSkillIds: config.enabledSkillIds,
+        enabledToolIds: config.enabledToolIds,
         mcpServers: config.mcpServers,
       });
       onSaved();
@@ -59,9 +68,40 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   if (!config) return null;
 
+  const handleSkillZipChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !file.name.toLowerCase().endsWith(".zip")) {
+      setSkillUploadError("请选择 .zip 文件");
+      return;
+    }
+    setSkillUploadError(null);
+    setSkillUploading(true);
+    try {
+      await uploadSkillZip(file);
+      const list = await getSkills();
+      setSkills(list);
+    } catch (err) {
+      setSkillUploadError(err instanceof Error ? err.message : "上传失败");
+    } finally {
+      setSkillUploading(false);
+    }
+  };
+
+  const handleDeleteSkill = async (name: string) => {
+    if (!confirm(`确定删除技能「${name}」？`)) return;
+    try {
+      await deleteSkill(name);
+      setSkills((prev) => prev.filter((s) => s.name !== name));
+    } catch (err) {
+      setSkillUploadError(err instanceof Error ? err.message : "删除失败");
+    }
+  };
+
   const sections = [
     { id: "context" as const, label: "上下文策略" },
-    { id: "skills" as const, label: "Skill & MCP" },
+    { id: "tools" as const, label: "Tools & MCP" },
+    { id: "skills" as const, label: "Skills" },
   ] as const;
 
   return (
@@ -178,30 +218,87 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 </div>
               </section>
             )}
-            {activeSection === "skills" && (
-              <section aria-labelledby="skills-heading" className="space-y-4">
-                <h2 id="skills-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
-                  Skill / MCP
+            {activeSection === "tools" && (
+              <section aria-labelledby="tools-heading" className="space-y-4">
+                <h2 id="tools-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  Tools / MCP
                 </h2>
                 <p className="text-[13px] text-[var(--color-text-muted)]">
-                  勾选要启用的 Demo Skill，Agent 将可使用对应工具。MCP 管理后续可在此扩展。
+                  勾选要启用的工具，Agent 将可调用对应能力。MCP 管理后续可在此扩展。
                 </p>
                 <div className="flex flex-col gap-2">
-                  {(config.availableSkillIds ?? []).map((id) => (
+                  {(config.availableToolIds ?? []).map((id) => (
                     <label
                       key={id}
                       className="flex items-center gap-2.5 py-2 cursor-pointer text-[var(--color-text)]"
                     >
                       <input
                         type="checkbox"
-                        checked={config.enabledSkillIds.includes(id)}
-                        onChange={() => toggleSkill(id)}
+                        checked={config.enabledToolIds.includes(id)}
+                        onChange={() => toggleTool(id)}
                         className="rounded border-[var(--color-border)]"
                       />
                       <span>{id}</span>
                     </label>
                   ))}
                 </div>
+              </section>
+            )}
+            {activeSection === "skills" && (
+              <section aria-labelledby="skills-heading" className="space-y-4">
+                <h2 id="skills-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  Skills
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  上传符合 SKILL.md 规范的 ZIP 包安装技能。ZIP 内需包含 SKILL.md（YAML frontmatter 含 name、description）。
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors">
+                    <input
+                      type="file"
+                      accept=".zip"
+                      className="sr-only"
+                      disabled={skillUploading}
+                      onChange={handleSkillZipChange}
+                    />
+                    <span>{skillUploading ? "上传中…" : "上传 ZIP"}</span>
+                  </label>
+                  {skillUploadError && (
+                    <p className="text-[13px] text-[var(--color-error-text)]" role="alert">
+                      {skillUploadError}
+                    </p>
+                  )}
+                </div>
+                <ul className="list-none m-0 p-0 flex flex-col gap-2">
+                  {skills.length === 0 ? (
+                    <li className="text-[13px] text-[var(--color-text-muted)]">暂无已安装技能，请上传 ZIP。</li>
+                  ) : (
+                    skills.map((s) => (
+                      <li
+                        key={s.name}
+                        className="flex items-start justify-between gap-3 py-2 px-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-medium text-[var(--color-text)]">{s.name}</span>
+                          {s.description && (
+                            <p className="m-0 mt-0.5 text-[13px] text-[var(--color-text-muted)] line-clamp-2">
+                              {s.description}
+                            </p>
+                          )}
+                        </div>
+                        {s.userUploaded !== false && (
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteSkill(s.name)}
+                            className="shrink-0 px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </li>
+                    ))
+                  )}
+                </ul>
               </section>
             )}
             </div>
