@@ -23,7 +23,7 @@ function CopyIcon() {
   );
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false, modelName, modelId }: Props) {
+export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false, modelName }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
