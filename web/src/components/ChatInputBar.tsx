@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 
 export interface FileWithData {
@@ -47,6 +47,11 @@ export default function ChatInputBar({
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+
+  useEffect(() => {
+    if (loading) setModelMenuOpen(false);
+  }, [loading]);
 
   const autoResize = useCallback(() => {
     const el = textareaRef.current;
@@ -172,8 +177,8 @@ export default function ChatInputBar({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {models.length > 1 ? (
-              <DropdownMenu.Root>
+            {models.length > 1 && !loading ? (
+              <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                 <DropdownMenu.Trigger asChild>
                   <button
                     type="button"
