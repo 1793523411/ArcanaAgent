@@ -25,25 +25,6 @@ import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 
-function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(chunk)) {
-    if (val && typeof val === "object" && "messages" in val && Array.isArray((val as { messages: BaseMessage[] }).messages)) {
-      const v = val as { messages: BaseMessage[]; reasoning?: string };
-      const ms = v.messages;
-      out[key] = {
-        messages: ms.map((m) => ({
-          type: m._getType(),
-          content: typeof (m as { content?: string }).content === "string" ? (m as { content: string }).content : "",
-        })),
-        ...(typeof v.reasoning === "string" ? { reasoning: v.reasoning } : {}),
-      };
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
 
 function convId(req: Request): string {
   const id = req.params.id;
@@ -281,9 +262,6 @@ export async function postConversationMessage(req: Request, res: Response): Prom
           }
         }
       }
-      const serializable = serializeStreamChunk(chunk);
-      const payload = JSON.stringify(serializable);
-      write(`data: ${payload}\n\n`);
       if (part?.messages?.length) {
         const reasoning = typeof part.reasoning === "string" ? part.reasoning : undefined;
         for (const msg of part.messages) {
@@ -305,6 +283,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
       if (target) {
         target.toolLogs = pendingToolLogs;
+        if (!target.content || !target.content.trim()) {
+          target.content = streamedContent.trim() || "(工具已执行)";
+        }
       }
     }
     const toStore = collectedStored.filter((m) => {
@@ -324,12 +305,12 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       appendMessages(id, toStore);
     }
     flushNow();
-    res.write("data: [DONE]\n\n");
   } catch (e) {
     flushNow();
     res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
   } finally {
     if (flushTimer !== null) clearTimeout(flushTimer);
+    res.write("data: [DONE]\n\n");
     res.end();
   }
 }

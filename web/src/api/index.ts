@@ -80,6 +80,12 @@ export async function sendMessageStream(
   }
   const dec = new TextDecoder();
   let buf = "";
+  let settled = false;
+  const settle = (cb: () => void) => {
+    if (settled) return;
+    settled = true;
+    cb();
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -91,12 +97,12 @@ export async function sendMessageStream(
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
           if (data === "[DONE]") {
-            onDone();
+            settle(onDone);
             return;
           }
           try {
             const parsed = JSON.parse(data);
-            if (parsed?.error) onError(parsed.error);
+            if (parsed?.error) settle(() => onError(parsed.error));
             else onChunk(parsed);
           } catch {
             // skip
@@ -109,17 +115,17 @@ export async function sendMessageStream(
       if (data !== "[DONE]") {
         try {
           const parsed = JSON.parse(data);
-          if (parsed?.error) onError(parsed.error);
+          if (parsed?.error) settle(() => onError(parsed.error));
           else onChunk(parsed);
         } catch {
           // skip
         }
       }
     }
-    onDone();
+    settle(onDone);
   } catch (e) {
     if ((e as Error).name === "AbortError") return;
-    onError(String(e));
+    settle(() => onError(String(e)));
   }
 }
 
@@ -128,6 +134,7 @@ export interface ModelInfo {
   name: string;
   provider: string;
   supportsImage?: boolean;
+  supportsReasoning?: boolean;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {

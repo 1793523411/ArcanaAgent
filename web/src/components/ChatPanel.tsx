@@ -18,7 +18,7 @@ interface Props {
   error: string | null;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
-  models: Array<{ id: string; name: string; provider?: string }>;
+  models: Array<{ id: string; name: string; provider?: string; supportsReasoning?: boolean }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
   artifactCount?: number;
@@ -65,7 +65,7 @@ export default function ChatPanel({
           <MessageBubble key={i} message={m} conversationId={conversationId} />
         ))}
         {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0) && (
-          <StreamingBubble content={streamingContent} reasoning={streamingReasoning} status={streamingStatus} toolLogs={streamingToolLogs} isStreaming={loading} />
+          <StreamingBubble content={streamingContent} reasoning={streamingReasoning} status={streamingStatus} toolLogs={streamingToolLogs} isStreaming={loading} supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true} />
         )}
         {error && (
           <div className="p-3 rounded-lg bg-[var(--color-error-bg)] text-[var(--color-error-text)]">

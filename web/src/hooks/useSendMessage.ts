@@ -142,23 +142,6 @@ export function useSendMessage(options: {
             setStreamingToolLogs([...logs]);
             return;
           }
-          const key = Object.keys(obj)[0];
-          const part = key ? (obj[key] as { messages?: Array<{ type?: string; content?: string }>; reasoning?: string }) : undefined;
-          if (part?.reasoning) {
-            pendingReasoningRef.current += part.reasoning;
-            scheduleFlush();
-          }
-          const ms = part?.messages ?? [];
-          const last = ms[ms.length - 1];
-          if (last && typeof last.content === "string" && last.content) {
-            pendingStatusRef.current = null;
-            pendingContentRef.current += last.content;
-            scheduleFlush();
-          }
-          if (key === "toolNode" && ms.length) {
-            pendingStatusRef.current = "tool";
-            scheduleFlush();
-          }
         },
         () => {
           if (rafRef.current !== null) {

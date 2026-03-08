@@ -9,9 +9,10 @@ interface Props {
   status: StreamingStatus;
   toolLogs?: ToolLog[];
   isStreaming?: boolean;
+  supportsReasoning?: boolean;
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false }: Props) {
+export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -39,7 +40,7 @@ export default function StreamingBubble({ content, reasoning, status, toolLogs =
 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const hasToolLogs = toolLogs.length > 0;
-  const showThinkingSection = isStreaming || hasReasoning;
+  const showThinkingSection = hasReasoning || (isStreaming && supportsReasoning);
 
   return (
     <div className="self-start max-w-[85%] py-3 px-4 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">

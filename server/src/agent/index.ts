@@ -30,6 +30,12 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
 
+**CRITICAL — Always provide a final text response:**
+- After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
+- NEVER end your turn with only tool calls and no text — the user needs to see a human-readable summary.
+- If tools produced data or files, present the key results, not just "done".
+- If a multi-step task is complete, provide a structured summary of what was accomplished.
+
 **Error handling:**
 - If a tool fails, read the error carefully, diagnose the issue, and retry with a fix
 - Common fixes: install missing dependencies, correct file paths, adjust permissions, fix syntax
@@ -204,13 +210,15 @@ export async function* streamAgentWithTokens(
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
       let conversationMessages: BaseMessage[] = [systemMessage, ...messages];
-      const maxRounds = 15;
+      const maxRounds = 50;
 
+      let lastHadContent = false;
       for (let round = 0; round < maxRounds; round++) {
         const { content, reasoningContent, toolCalls } = await streamChatCompletionsWithReasoning(
           baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, openAITools
         );
 
+        lastHadContent = !!(content && content.trim());
         const aiMsg = new AIMessage({
           content: content || " ",
           ...(toolCalls.length > 0 ? {
@@ -248,6 +256,19 @@ export async function* streamAgentWithTokens(
         conversationMessages = [...conversationMessages, ...toolMessages];
         yield { toolNode: { messages: toolMessages } };
       }
+
+      if (!lastHadContent) {
+        const { content: finalContent, reasoningContent: finalReasoning } = await streamChatCompletionsWithReasoning(
+          baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, []
+        );
+        const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+        yield {
+          llmCall: {
+            messages: [summaryMsg],
+            ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
+          },
+        };
+      }
       return;
     } catch (e) {
       console.warn("[Agent] Reasoning stream failed, falling back to standard LangChain stream:", e instanceof Error ? e.message : String(e));
@@ -257,7 +278,9 @@ export async function* streamAgentWithTokens(
   const tools = getAllTools();
   const toolNode = new ToolNode(tools);
   const model = getLLM(modelId).bindTools(tools);
+  const modelNoTools = getLLM(modelId);
   let state: BaseMessage[] = [...messages];
+  const maxRounds = 50;
 
   const shouldContinue = (last: BaseMessage): boolean => {
     return !!(
@@ -268,7 +291,8 @@ export async function* streamAgentWithTokens(
     );
   };
 
-  while (true) {
+  let lastHadContent = false;
+  for (let round = 0; round < maxRounds; round++) {
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
@@ -287,6 +311,7 @@ export async function* streamAgentWithTokens(
     if (!fullChunk) break;
     const fromChunk = getTextFromMessage(fullChunk);
     const content = accumulatedContent || fromChunk;
+    lastHadContent = !!(content && content.trim());
     const finalMessage =
       content || (fullChunk as AIMessage).tool_calls?.length
         ? new AIMessage({
@@ -302,5 +327,19 @@ export async function* streamAgentWithTokens(
     const toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+  }
+
+  if (!lastHadContent && state.length > messages.length) {
+    const summaryStream = await modelNoTools.stream([systemMessage, ...state]);
+    let summaryContent = "";
+    for await (const chunk of summaryStream) {
+      const text = getTextFromChunk(chunk);
+      if (text) {
+        onToken(text);
+        summaryContent += text;
+      }
+    }
+    const summaryMsg = new AIMessage({ content: summaryContent || "(已达到最大工具调用轮次)" });
+    yield { llmCall: { messages: [summaryMsg] } };
   }
 }

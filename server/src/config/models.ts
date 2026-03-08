@@ -28,6 +28,7 @@ export interface ModelInfo {
   name: string;
   provider: string;
   supportsImage?: boolean;
+  supportsReasoning?: boolean;
 }
 
 export function listModels(): ModelInfo[] {
@@ -44,6 +45,7 @@ export function listModels(): ModelInfo[] {
         name: m.name,
         provider,
         supportsImage: input.includes("image"),
+        supportsReasoning: (m as { reasoning?: boolean }).reasoning === true,
       });
     }
   }
