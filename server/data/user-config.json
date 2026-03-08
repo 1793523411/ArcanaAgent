@@ -7,7 +7,7 @@
     "read_file"
   ],
   "mcpServers": [],
-  "modelId": "gemini-3-flash-preview",
+  "modelId": "doubao-seed-2-0-mini-260215",
   "context": {
     "strategy": "compress",
     "trimToLast": 20,

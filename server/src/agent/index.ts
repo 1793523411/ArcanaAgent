@@ -1,15 +1,12 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
-import { getLLM } from "../llm/index.js";
-import { streamChatCompletionsWithReasoning } from "../llm/streamWithReasoning.js";
-import type { ToolCallResult } from "../llm/streamWithReasoning.js";
+import { getModelAdapter } from "../llm/adapter.js";
+import type { ToolCallResult } from "../llm/adapter.js";
 import { getToolsByIds, listToolIds } from "../tools/index.js";
 import { getMcpTools } from "../mcp/client.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
-import { loadModelConfig } from "../config/models.js";
-import { getModelReasoning } from "../config/models.js";
 import { getSkillContextForAgent } from "../skills/manager.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
@@ -96,10 +93,31 @@ function getReasoningFromMessage(msg: BaseMessage): string | undefined {
   const c = m.content;
   if (!Array.isArray(c)) return undefined;
   const parts = c
-    .filter((x) => x && typeof x === "object" && (x as { type?: string }).type === "reasoning")
-    .map((x) => (typeof (x as { text?: string }).text === "string" ? (x as { text: string }).text : ""))
+    .filter((x) => x && typeof x === "object" && (
+      (x as { type?: string }).type === "reasoning" ||
+      (x as { type?: string }).type === "thinking"
+    ))
+    .map((x) => {
+      const obj = x as { text?: string; thinking?: string };
+      return typeof obj.thinking === "string" ? obj.thinking : (obj.text ?? "");
+    })
     .join("");
   return parts.trim() || undefined;
+}
+
+function getReasoningFromChunk(chunk: { content?: unknown }): string {
+  const c = chunk.content;
+  if (!Array.isArray(c)) return "";
+  return c
+    .filter((x) => x && typeof x === "object" && (
+      (x as { type?: string }).type === "reasoning" ||
+      (x as { type?: string }).type === "thinking"
+    ))
+    .map((x) => {
+      const obj = x as { text?: string; thinking?: string };
+      return typeof obj.thinking === "string" ? obj.thinking : (obj.text ?? "");
+    })
+    .join("");
 }
 
 function safeParseArgs(argsStr: string): Record<string, unknown> {
@@ -120,7 +138,7 @@ function getAllTools(): StructuredToolInterface[] {
 
 export function buildAgent(modelId?: string) {
   const tools = getAllTools();
-  const model = getLLM(modelId).bindTools(tools);
+  const model = getModelAdapter(modelId).getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
 
   const callModel = async (state: MessagesState) => {
@@ -161,7 +179,7 @@ export async function runAgent(
 ): Promise<BaseMessage[]> {
   const tools = getAllTools();
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
-  const model = getLLM(modelId).bindTools(tools);
+  const model = getModelAdapter(modelId).getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
 
   const callModel = async (state: MessagesState) => {
@@ -200,11 +218,11 @@ export async function* streamAgentWithTokens(
   skillContext?: string
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
-  const useReasoningStream = getModelReasoning(modelId) && typeof onReasoningToken === "function";
+  const adapter = getModelAdapter(modelId);
+  const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
 
   if (useReasoningStream) {
     try {
-      const { baseUrl, apiKey, modelId: resolved } = loadModelConfig(modelId);
       const tools = getAllTools();
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
@@ -214,8 +232,8 @@ export async function* streamAgentWithTokens(
 
       let lastHadContent = false;
       for (let round = 0; round < maxRounds; round++) {
-        const { content, reasoningContent, toolCalls } = await streamChatCompletionsWithReasoning(
-          baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, openAITools
+        const { content, reasoningContent, toolCalls } = await adapter.streamSingleTurn(
+          conversationMessages, onToken, onReasoningToken!, openAITools
         );
 
         lastHadContent = !!(content && content.trim());
@@ -258,8 +276,8 @@ export async function* streamAgentWithTokens(
       }
 
       if (!lastHadContent) {
-        const { content: finalContent, reasoningContent: finalReasoning } = await streamChatCompletionsWithReasoning(
-          baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, []
+        const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
+          conversationMessages, onToken, onReasoningToken!, []
         );
         const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
         yield {
@@ -277,8 +295,8 @@ export async function* streamAgentWithTokens(
 
   const tools = getAllTools();
   const toolNode = new ToolNode(tools);
-  const model = getLLM(modelId).bindTools(tools);
-  const modelNoTools = getLLM(modelId);
+  const model = adapter.getLLM().bindTools(tools);
+  const modelNoTools = adapter.getLLM();
   let state: BaseMessage[] = [...messages];
   const maxRounds = 50;
 
@@ -296,14 +314,20 @@ export async function* streamAgentWithTokens(
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
+    let accumulatedReasoning = "";
     for await (const chunk of stream) {
       const text = getTextFromChunk(chunk);
       if (text) {
         onToken(text);
         accumulatedContent += text;
       }
-      if (fullChunk && "merge" in fullChunk && typeof (fullChunk as { merge: (other: BaseMessage) => BaseMessage }).merge === "function") {
-        fullChunk = (fullChunk as { merge: (other: BaseMessage) => BaseMessage }).merge(chunk as BaseMessage) as BaseMessage;
+      const reasoningChunk = getReasoningFromChunk(chunk);
+      if (reasoningChunk) {
+        accumulatedReasoning += reasoningChunk;
+        if (onReasoningToken) onReasoningToken(reasoningChunk);
+      }
+      if (fullChunk && "concat" in fullChunk && typeof (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat === "function") {
+        fullChunk = (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat(chunk as BaseMessage) as BaseMessage;
       } else {
         fullChunk = chunk as BaseMessage;
       }
@@ -320,7 +344,7 @@ export async function* streamAgentWithTokens(
           })
         : fullChunk;
     state = [...state, finalMessage];
-    const reasoning = getReasoningFromMessage(fullChunk);
+    const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) break;
     const toolResult = await toolNode.invoke({ messages: state });

@@ -68,7 +68,8 @@ export async function streamChatCompletionsWithReasoning(
   messages: BaseMessage[],
   onToken: (token: string) => void,
   onReasoningToken: (token: string) => void,
-  tools?: Array<Record<string, unknown>>
+  tools?: Array<Record<string, unknown>>,
+  temperature = 0
 ): Promise<StreamReasoningResult> {
   const openAIMessages = messages.map(messageToOpenAI);
   const url = baseUrl.replace(/\/$/, "") + "/chat/completions";
@@ -77,7 +78,7 @@ export async function streamChatCompletionsWithReasoning(
     model: modelId,
     messages: openAIMessages,
     stream: true,
-    temperature: 0,
+    temperature,
   };
   if (tools && tools.length > 0) {
     body.tools = tools;
