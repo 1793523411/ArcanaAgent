@@ -20,7 +20,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "tools" | "mcp" | "skills">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
@@ -55,21 +55,12 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     });
   };
 
-  const toggleTool = (id: string) => {
-    if (!config) return;
-    const enabled = config.enabledToolIds.includes(id)
-      ? config.enabledToolIds.filter((s) => s !== id)
-      : [...config.enabledToolIds, id];
-    setConfig({ ...config, enabledToolIds: enabled });
-  };
-
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
     try {
       const updated = await putConfig({
         context: config.context ?? DEFAULT_CONTEXT,
-        enabledToolIds: config.enabledToolIds,
         mcpServers: config.mcpServers,
       });
       setMcpStatus(updated.mcpStatus ?? []);
@@ -146,7 +137,6 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   const sections = [
     { id: "context" as const, label: "上下文策略" },
-    { id: "tools" as const, label: "Tools" },
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
   ] as const;
@@ -262,32 +252,6 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                       </label>
                     )}
                   </div>
-                </div>
-              </section>
-            )}
-            {activeSection === "tools" && (
-              <section aria-labelledby="tools-heading" className="space-y-4">
-                <h2 id="tools-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
-                  内置工具
-                </h2>
-                <p className="text-[13px] text-[var(--color-text-muted)]">
-                  勾选要启用的工具，Agent 将可调用对应能力。run_command 和 read_file 为核心工具，始终启用。
-                </p>
-                <div className="flex flex-col gap-2">
-                  {(config.availableToolIds ?? []).map((id) => (
-                    <label
-                      key={id}
-                      className="flex items-center gap-2.5 py-2 cursor-pointer text-[var(--color-text)]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={config.enabledToolIds.includes(id)}
-                        onChange={() => toggleTool(id)}
-                        className="rounded border-[var(--color-border)]"
-                      />
-                      <span>{id}</span>
-                    </label>
-                  ))}
                 </div>
               </section>
             )}

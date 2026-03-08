@@ -4,7 +4,7 @@ import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/c
 import { getLLM } from "../llm/index.js";
 import { streamChatCompletionsWithReasoning } from "../llm/streamWithReasoning.js";
 import type { ToolCallResult } from "../llm/streamWithReasoning.js";
-import { getToolsByIds } from "../tools/index.js";
+import { getToolsByIds, listToolIds } from "../tools/index.js";
 import { getMcpTools } from "../mcp/client.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
@@ -105,18 +105,15 @@ function safeParseArgs(argsStr: string): Record<string, unknown> {
   }
 }
 
-const CORE_TOOL_IDS = ["run_command", "read_file"];
-
-function getAllTools(enabledToolIds: string[]): StructuredToolInterface[] {
-  const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
-  const mergedIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
-  const builtIn = getToolsByIds(mergedIds);
+function getAllTools(): StructuredToolInterface[] {
+  const allIds = listToolIds();
+  const builtIn = getToolsByIds(allIds);
   const mcp = getMcpTools();
   return [...builtIn, ...mcp];
 }
 
-export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
-  const tools = getAllTools(enabledToolIds);
+export function buildAgent(modelId?: string) {
+  const tools = getAllTools();
   const model = getLLM(modelId).bindTools(tools);
   const toolNode = new ToolNode(tools);
 
@@ -153,11 +150,10 @@ export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
 
 export async function runAgent(
   messages: BaseMessage[],
-  enabledToolIds: string[] = [],
   modelId?: string,
   skillContext?: string
 ): Promise<BaseMessage[]> {
-  const tools = getAllTools(enabledToolIds);
+  const tools = getAllTools();
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const model = getLLM(modelId).bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -192,7 +188,6 @@ export async function runAgent(
 
 export async function* streamAgentWithTokens(
   messages: BaseMessage[],
-  enabledToolIds: string[],
   onToken: (token: string) => void,
   modelId?: string,
   onReasoningToken?: (token: string) => void,
@@ -204,7 +199,7 @@ export async function* streamAgentWithTokens(
   if (useReasoningStream) {
     try {
       const { baseUrl, apiKey, modelId: resolved } = loadModelConfig(modelId);
-      const tools = getAllTools(enabledToolIds);
+      const tools = getAllTools();
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
@@ -259,7 +254,7 @@ export async function* streamAgentWithTokens(
     }
   }
 
-  const tools = getAllTools(enabledToolIds);
+  const tools = getAllTools();
   const toolNode = new ToolNode(tools);
   const model = getLLM(modelId).bindTools(tools);
   let state: BaseMessage[] = [...messages];

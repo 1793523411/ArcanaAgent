@@ -4,6 +4,7 @@ import { get_time } from "./get_time.js";
 import { echo } from "./echo.js";
 import { run_command } from "./run_command.js";
 import { read_file } from "./read_file.js";
+import { write_file } from "./write_file.js";
 
 export const tools = {
   calculator,
@@ -11,6 +12,7 @@ export const tools = {
   echo,
   run_command,
   read_file,
+  write_file,
 } as const;
 
 export type ToolId = keyof typeof tools;

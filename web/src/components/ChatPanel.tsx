@@ -73,9 +73,9 @@ export default function ChatPanel({
           </div>
         )}
       </div>
-      <div className="shrink-0 p-4 border-t border-[var(--color-border)]">
+      <div className="shrink-0 px-4 py-3 border-t border-[var(--color-border)]">
         <div className="flex items-end gap-2">
-          <div className="flex-1">
+          <div className="flex-1 min-w-0">
             <ChatInputBar
               value={input}
               onChange={onInputChange}
@@ -93,10 +93,10 @@ export default function ChatPanel({
           {artifactCount > 0 && onToggleArtifacts && (
             <button
               onClick={onToggleArtifacts}
-              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium transition-colors ${
+              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
                 artifactsPanelOpen
                   ? "bg-[var(--color-accent)] text-white"
-                  : "bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
               }`}
               title="查看产物文件"
             >

@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { sendMessageStream, getMessages, getConversation, type Attachment } from "../api";
 import type { ConversationMeta, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
@@ -20,6 +20,41 @@ export function useSendMessage(options: {
   const toolLogsRef = useRef<ToolLog[]>([]);
   const abortRef = useRef<AbortController | null>(null);
 
+  const pendingContentRef = useRef("");
+  const pendingReasoningRef = useRef("");
+  const pendingStatusRef = useRef<StreamingStatus | undefined>(undefined);
+  const rafRef = useRef<number | null>(null);
+
+  const flushPending = useCallback(() => {
+    rafRef.current = null;
+    if (pendingStatusRef.current !== undefined) {
+      setStreamingStatus(pendingStatusRef.current);
+      pendingStatusRef.current = undefined;
+    }
+    if (pendingContentRef.current) {
+      const batch = pendingContentRef.current;
+      pendingContentRef.current = "";
+      setStreamingContent((c) => c + batch);
+    }
+    if (pendingReasoningRef.current) {
+      const batch = pendingReasoningRef.current;
+      pendingReasoningRef.current = "";
+      setStreamingReasoning((r) => r + batch);
+    }
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (rafRef.current === null) {
+      rafRef.current = requestAnimationFrame(flushPending);
+    }
+  }, [flushPending]);
+
+  useEffect(() => {
+    return () => {
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
+
   const abortStreaming = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort();
@@ -28,6 +63,13 @@ export function useSendMessage(options: {
   }, []);
 
   const clearStreaming = useCallback(() => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    pendingContentRef.current = "";
+    pendingReasoningRef.current = "";
+    pendingStatusRef.current = undefined;
     setStreamingContent("");
     setStreamingReasoning("");
     setStreamingStatus(null);
@@ -53,6 +95,9 @@ export function useSendMessage(options: {
       setStreamingReasoning("");
       setStreamingToolLogs([]);
       toolLogsRef.current = [];
+      pendingContentRef.current = "";
+      pendingReasoningRef.current = "";
+      pendingStatusRef.current = undefined;
       setStreamingStatus("thinking");
 
       const attachments: Attachment[] | undefined = toSend.length
@@ -66,16 +111,19 @@ export function useSendMessage(options: {
           const obj = chunk as Record<string, unknown>;
           if (obj.type === "status") {
             const s = obj.status as string;
-            setStreamingStatus(s === "tool" ? "tool" : s === "thinking" ? "thinking" : null);
+            pendingStatusRef.current = s === "tool" ? "tool" : s === "thinking" ? "thinking" : null;
+            scheduleFlush();
             return;
           }
           if (obj.type === "token" && typeof obj.content === "string") {
-            setStreamingStatus(null);
-            setStreamingContent((c) => c + obj.content);
+            pendingStatusRef.current = null;
+            pendingContentRef.current += obj.content;
+            scheduleFlush();
             return;
           }
           if (obj.type === "reasoning" && typeof obj.content === "string") {
-            setStreamingReasoning((r) => r + obj.content);
+            pendingReasoningRef.current += obj.content;
+            scheduleFlush();
             return;
           }
           if (obj.type === "tool_call" && typeof (obj as { name?: string }).name === "string") {
@@ -96,16 +144,28 @@ export function useSendMessage(options: {
           }
           const key = Object.keys(obj)[0];
           const part = key ? (obj[key] as { messages?: Array<{ type?: string; content?: string }>; reasoning?: string }) : undefined;
-          if (part?.reasoning) setStreamingReasoning(part.reasoning);
+          if (part?.reasoning) {
+            pendingReasoningRef.current += part.reasoning;
+            scheduleFlush();
+          }
           const ms = part?.messages ?? [];
           const last = ms[ms.length - 1];
           if (last && typeof last.content === "string" && last.content) {
-            setStreamingStatus(null);
-            setStreamingContent((c) => c + last.content);
+            pendingStatusRef.current = null;
+            pendingContentRef.current += last.content;
+            scheduleFlush();
           }
-          if (key === "toolNode" && ms.length) setStreamingStatus("tool");
+          if (key === "toolNode" && ms.length) {
+            pendingStatusRef.current = "tool";
+            scheduleFlush();
+          }
         },
         () => {
+          if (rafRef.current !== null) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+          }
+          flushPending();
           abortRef.current = null;
           setLoading(false);
           setStreamingStatus(null);
@@ -120,6 +180,11 @@ export function useSendMessage(options: {
             .catch(() => clearStreaming());
         },
         (err) => {
+          if (rafRef.current !== null) {
+            cancelAnimationFrame(rafRef.current);
+            rafRef.current = null;
+          }
+          flushPending();
           abortRef.current = null;
           setSendError(err);
           setLoading(false);
@@ -145,7 +210,7 @@ export function useSendMessage(options: {
       };
       setMessages((prev) => [...prev, optimisticHuman]);
     },
-    [input, files, loading, onAfterSend, setMessages, setCurrent, clearStreaming, abortStreaming]
+    [input, files, loading, onAfterSend, setMessages, setCurrent, clearStreaming, abortStreaming, scheduleFlush, flushPending]
   );
 
   return {

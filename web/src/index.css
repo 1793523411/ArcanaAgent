@@ -43,7 +43,8 @@ body {
 }
 
 /* 输入框在已有边框的容器内，不需要额外的 focus 轮廓 */
-input[type="text"]:focus-visible {
+input[type="text"]:focus-visible,
+textarea:focus-visible {
   outline: none;
   outline-offset: 0;
 }

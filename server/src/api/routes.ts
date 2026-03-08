@@ -210,18 +210,34 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   res.flushHeaders();
 
   if (res.socket) {
-    res.socket.setNoDelay(true);
     res.socket.setTimeout(0);
   }
 
-  const write = (data: string) => {
-    res.write(data);
-    if (typeof (res as unknown as { flush?: () => void }).flush === "function") {
-      (res as unknown as { flush: () => void }).flush();
+  const FLUSH_INTERVAL = 30;
+  let writeBuf = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushNow = () => {
+    if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    if (writeBuf) {
+      res.write(writeBuf);
+      writeBuf = "";
     }
   };
 
-  write("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
+  const write = (data: string) => {
+    writeBuf += data;
+    if (flushTimer === null) {
+      flushTimer = setTimeout(flushNow, FLUSH_INTERVAL);
+    }
+  };
+
+  const writeImmediate = (data: string) => {
+    writeBuf += data;
+    flushNow();
+  };
+
+  writeImmediate("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
 
   const onToken = (token: string) => {
     if (token) write("data: " + JSON.stringify({ type: "token", content: token }) + "\n\n");
@@ -236,7 +252,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let streamedContent = "";
   let lastReasoning: string | undefined;
   try {
-    for await (const chunk of streamAgentWithTokens(lcMessages, config.enabledToolIds, onToken, config.modelId, onReasoningToken, skillContext)) {
+    for await (const chunk of streamAgentWithTokens(lcMessages, onToken, config.modelId, onReasoningToken, skillContext)) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key] : undefined;
       if (part?.reasoning) {
@@ -249,7 +265,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         if (Array.isArray(toolCalls) && toolCalls.length > 0) {
           for (const tc of toolCalls) {
             const input = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
-            write("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
+            writeImmediate("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
             pendingToolLogs.push({ name: tc.name, input, output: "" });
           }
         }
@@ -261,7 +277,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             const output = typeof toolMsg.content === "string" ? toolMsg.content : "";
             const pending = pendingToolLogs.filter((tl) => tl.name === toolMsg.name && !tl.output);
             if (pending.length > 0) pending[0].output = output;
-            write("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
+            writeImmediate("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
           }
         }
       }
@@ -307,10 +323,13 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (toStore.length > 0) {
       appendMessages(id, toStore);
     }
-    write("data: [DONE]\n\n");
+    flushNow();
+    res.write("data: [DONE]\n\n");
   } catch (e) {
-    write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
+    flushNow();
+    res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
   } finally {
+    if (flushTimer !== null) clearTimeout(flushTimer);
     res.end();
   }
 }
@@ -345,7 +364,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const skillContext = buildSkillContext(id);
 
   try {
-    const resultMessages = await runAgent(lcMessages, config.enabledToolIds, config.modelId, skillContext);
+    const resultMessages = await runAgent(lcMessages, config.modelId, skillContext);
     const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -357,17 +376,16 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 }
 
 export async function postChat(req: Request, res: Response): Promise<void> {
-  const body = req.body as { message?: string; toolIds?: string[] };
+  const body = req.body as { message?: string };
   const text = typeof body?.message === "string" ? body.message.trim() : "";
   if (!text) {
     res.status(400).json({ error: "Missing or empty message" });
     return;
   }
   const config = loadUserConfig();
-  const toolIds = Array.isArray(body.toolIds) ? body.toolIds : config.enabledToolIds;
   const messages = [new HumanMessage(text)];
   try {
-    const resultMessages = await runAgent(messages, toolIds, config.modelId);
+    const resultMessages = await runAgent(messages, config.modelId);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
     res.json({ reply });
