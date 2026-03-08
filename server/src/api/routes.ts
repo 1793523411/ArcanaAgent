@@ -464,12 +464,11 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
   }
   saveUserConfig(config);
 
+  // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
   if (Array.isArray(body.mcpServers)) {
-    try {
-      await connectToMcpServers(config.mcpServers);
-    } catch (e) {
+    connectToMcpServers(config.mcpServers).catch((e) => {
       console.error("[MCP] Reconnection failed:", e instanceof Error ? e.message : String(e));
-    }
+    });
   }
 
   const mcpStatus = getMcpStatus();

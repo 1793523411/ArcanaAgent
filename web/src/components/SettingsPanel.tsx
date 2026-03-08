@@ -27,10 +27,13 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   // MCP form state
   const [showMcpForm, setShowMcpForm] = useState(false);
+  const [mcpTransport, setMcpTransport] = useState<"stdio" | "streamablehttp">("stdio");
   const [mcpName, setMcpName] = useState("");
   const [mcpCommand, setMcpCommand] = useState("");
   const [mcpArgs, setMcpArgs] = useState("");
   const [mcpEnv, setMcpEnv] = useState("");
+  const [mcpUrl, setMcpUrl] = useState("");
+  const [mcpHeaders, setMcpHeaders] = useState("");
   const [mcpAdding, setMcpAdding] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
 
@@ -111,30 +114,37 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   const handleAddMcpServer = async () => {
     const name = mcpName.trim();
-    const command = mcpCommand.trim();
-    if (!name || !command) {
-      toast("名称和命令不能为空", "error");
+    if (!name) {
+      toast("名称不能为空", "error");
       return;
     }
     if (config.mcpServers.some((s) => s.name === name)) {
       toast("名称已存在", "error");
       return;
     }
-    const args = mcpArgs.trim() ? mcpArgs.trim().split(/\s+/) : [];
-    const env: Record<string, string> = {};
-    for (const pair of mcpEnv.trim().split(/\s+/).filter(Boolean)) {
-      const eq = pair.indexOf("=");
-      if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
+    let newServer: McpServerConfig;
+    if (mcpTransport === "streamablehttp") {
+      const url = mcpUrl.trim();
+      if (!url) { toast("URL 不能为空", "error"); return; }
+      const headers: Record<string, string> = {};
+      for (const pair of mcpHeaders.trim().split(/\n/).filter(Boolean)) {
+        const eq = pair.indexOf(":");
+        if (eq > 0) headers[pair.slice(0, eq).trim()] = pair.slice(eq + 1).trim();
+      }
+      newServer = { name, transport: "streamablehttp", url, ...(Object.keys(headers).length > 0 ? { headers } : {}) };
+    } else {
+      const command = mcpCommand.trim();
+      if (!command) { toast("命令不能为空", "error"); return; }
+      const args = mcpArgs.trim() ? mcpArgs.trim().split(/\s+/) : [];
+      const env: Record<string, string> = {};
+      for (const pair of mcpEnv.trim().split(/\s+/).filter(Boolean)) {
+        const eq = pair.indexOf("=");
+        if (eq > 0) env[pair.slice(0, eq)] = pair.slice(eq + 1);
+      }
+      newServer = { name, transport: "stdio", command, args, ...(Object.keys(env).length > 0 ? { env } : {}) };
     }
-    const newServer: McpServerConfig = {
-      name, transport: "stdio", command, args,
-      ...(Object.keys(env).length > 0 ? { env } : {}),
-    };
     const newServers = [...config.mcpServers, newServer];
-    setMcpName("");
-    setMcpCommand("");
-    setMcpArgs("");
-    setMcpEnv("");
+    setMcpName(""); setMcpCommand(""); setMcpArgs(""); setMcpEnv(""); setMcpUrl(""); setMcpHeaders("");
     setShowMcpForm(false);
     setMcpAdding(true);
     try {
@@ -324,7 +334,9 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                             )}
                           </div>
                           <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
-                            {server.command} {server.args.join(" ")}
+                            {server.transport === "streamablehttp"
+                              ? server.url
+                              : `${server.command} ${server.args.join(" ")}`}
                           </p>
                         </div>
                         <button
@@ -342,46 +354,85 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 {showMcpForm ? (
                   <div className="space-y-3 p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
                     <div className="space-y-2">
+                      <div className="flex gap-2">
+                        {(["stdio", "streamablehttp"] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            onClick={() => setMcpTransport(t)}
+                            className={`px-3 py-1 rounded text-xs border transition-colors ${mcpTransport === t ? "bg-[var(--color-accent)] text-white border-[var(--color-accent)]" : "bg-transparent border-[var(--color-border)] text-[var(--color-text-muted)] hover:border-[var(--color-accent)]"}`}
+                          >
+                            {t}
+                          </button>
+                        ))}
+                      </div>
                       <label className="block text-sm text-[var(--color-text)]">
                         名称
                         <input
                           type="text"
                           value={mcpName}
                           onChange={(e) => setMcpName(e.target.value)}
-                          placeholder="如: filesystem"
+                          placeholder="如: context7"
                           className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
                         />
                       </label>
-                      <label className="block text-sm text-[var(--color-text)]">
-                        命令
-                        <input
-                          type="text"
-                          value={mcpCommand}
-                          onChange={(e) => setMcpCommand(e.target.value)}
-                          placeholder="如: npx"
-                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
-                        />
-                      </label>
-                      <label className="block text-sm text-[var(--color-text)]">
-                        参数（空格分隔）
-                        <input
-                          type="text"
-                          value={mcpArgs}
-                          onChange={(e) => setMcpArgs(e.target.value)}
-                          placeholder="如: -y @modelcontextprotocol/server-filesystem /tmp"
-                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
-                        />
-                      </label>
-                      <label className="block text-sm text-[var(--color-text)]">
-                        环境变量（空格分隔，KEY=VALUE 格式）
-                        <input
-                          type="text"
-                          value={mcpEnv}
-                          onChange={(e) => setMcpEnv(e.target.value)}
-                          placeholder="如: API_KEY=sk-xxx TIMEOUT=30"
-                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
-                        />
-                      </label>
+                      {mcpTransport === "streamablehttp" ? (
+                        <>
+                          <label className="block text-sm text-[var(--color-text)]">
+                            URL
+                            <input
+                              type="text"
+                              value={mcpUrl}
+                              onChange={(e) => setMcpUrl(e.target.value)}
+                              placeholder="如: https://mcp.example.com"
+                              className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                            />
+                          </label>
+                          <label className="block text-sm text-[var(--color-text)]">
+                            Headers（每行一条，Key: Value 格式）
+                            <textarea
+                              value={mcpHeaders}
+                              onChange={(e) => setMcpHeaders(e.target.value)}
+                              placeholder={"如: Authorization: Bearer YOUR_TOKEN"}
+                              rows={3}
+                              className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm font-mono resize-none"
+                            />
+                          </label>
+                        </>
+                      ) : (
+                        <>
+                          <label className="block text-sm text-[var(--color-text)]">
+                            命令
+                            <input
+                              type="text"
+                              value={mcpCommand}
+                              onChange={(e) => setMcpCommand(e.target.value)}
+                              placeholder="如: npx"
+                              className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                            />
+                          </label>
+                          <label className="block text-sm text-[var(--color-text)]">
+                            参数（空格分隔）
+                            <input
+                              type="text"
+                              value={mcpArgs}
+                              onChange={(e) => setMcpArgs(e.target.value)}
+                              placeholder="如: -y @upstash/context7-mcp"
+                              className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                            />
+                          </label>
+                          <label className="block text-sm text-[var(--color-text)]">
+                            环境变量（空格分隔，KEY=VALUE 格式）
+                            <input
+                              type="text"
+                              value={mcpEnv}
+                              onChange={(e) => setMcpEnv(e.target.value)}
+                              placeholder="如: API_KEY=sk-xxx"
+                              className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                            />
+                          </label>
+                        </>
+                      )}
                     </div>
                     <div className="flex gap-2">
                       <button
@@ -394,7 +445,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                       </button>
                       <button
                         type="button"
-                        onClick={() => { setShowMcpForm(false); setMcpName(""); setMcpCommand(""); setMcpArgs(""); setMcpEnv(""); }}
+                        onClick={() => { setShowMcpForm(false); setMcpName(""); setMcpCommand(""); setMcpArgs(""); setMcpEnv(""); setMcpUrl(""); setMcpHeaders(""); }}
                         className="px-4 py-2 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-sm cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
                       >
                         取消

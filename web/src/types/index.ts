@@ -37,14 +37,20 @@ export interface ContextStrategyConfig {
   compressKeepRecent: number;
 }
 
-export interface McpServerConfig {
-  name: string;
-  transport: "stdio";
-  command: string;
-  args: string[];
-  /** 传给子进程的环境变量，如 API Key */
-  env?: Record<string, string>;
-}
+export type McpServerConfig =
+  | {
+      name: string;
+      transport: "stdio";
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      name: string;
+      transport: "streamablehttp";
+      url: string;
+      headers?: Record<string, string>;
+    };
 
 export interface McpStatusItem {
   name: string;
