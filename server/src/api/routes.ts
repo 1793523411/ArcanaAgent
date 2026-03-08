@@ -273,6 +273,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
               streamedContent = stored.content;
             }
             if (reasoning) stored.reasoningContent = reasoning;
+            if (config.modelId) stored.modelId = config.modelId;
             collectedStored.push(stored);
           }
         }
@@ -297,6 +298,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       toStore.push({
         type: "ai",
         content: streamedContent.trim() || "(工具已执行)",
+        ...(config.modelId ? { modelId: config.modelId } : {}),
         ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
       });
@@ -346,7 +348,11 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 
   try {
     const resultMessages = await runAgent(lcMessages, config.modelId, skillContext);
-    const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
+    const newStored: StoredMessage[] = resultMessages.map((m) => {
+      const s = langChainToStored(m);
+      if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
+      return s;
+    });
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";

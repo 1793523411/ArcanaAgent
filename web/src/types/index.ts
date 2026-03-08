@@ -22,6 +22,8 @@ export interface ToolLog {
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
+  /** 产出该条 AI 回复的模型 ID */
+  modelId?: string;
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
   toolLogs?: ToolLog[];
