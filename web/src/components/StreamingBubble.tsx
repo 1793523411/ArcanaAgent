@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import type { StreamingStatus, ToolLog } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
@@ -9,18 +9,38 @@ interface Props {
   status: StreamingStatus;
   toolLogs?: ToolLog[];
   isStreaming?: boolean;
+  supportsReasoning?: boolean;
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false }: Props) {
+export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
+  const reasoningRef = useRef<HTMLDivElement>(null);
+  const userScrolledRef = useRef(false);
+
   useEffect(() => {
     if (!isStreaming && reasoning) setReasoningCollapsed(true);
-    else if (isStreaming) setReasoningCollapsed(false);
+    else if (isStreaming) {
+      setReasoningCollapsed(false);
+      userScrolledRef.current = false;
+    }
   }, [isStreaming, reasoning]);
+
+  useEffect(() => {
+    const el = reasoningRef.current;
+    if (!el || !isStreaming || reasoningCollapsed || userScrolledRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [reasoning, isStreaming, reasoningCollapsed]);
+
+  const handleReasoningScroll = () => {
+    const el = reasoningRef.current;
+    if (!el || !isStreaming) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    userScrolledRef.current = distanceFromBottom > 30;
+  };
 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const hasToolLogs = toolLogs.length > 0;
-  const showThinkingSection = isStreaming || hasReasoning;
+  const showThinkingSection = hasReasoning || (isStreaming && supportsReasoning);
 
   return (
     <div className="self-start max-w-[85%] py-3 px-4 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
@@ -36,7 +56,11 @@ export default function StreamingBubble({ content, reasoning, status, toolLogs =
             <span>思考过程</span>
           </button>
           {!reasoningCollapsed && (
-            <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto">
+            <div
+              ref={reasoningRef}
+              onScroll={handleReasoningScroll}
+              className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto"
+            >
               {hasReasoning ? <MarkdownContent>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
             </div>
           )}

@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
-import type { UserConfig, ContextStrategyConfig } from "../types";
+import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem } from "../types";
+import { useToast } from "./Toast";
 
 const DEFAULT_CONTEXT: ContextStrategyConfig = {
   strategy: "compress",
@@ -16,15 +17,26 @@ interface Props {
 }
 
 export default function SettingsPanel({ onClose, onSaved }: Props) {
+  const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "tools" | "skills">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
 
+  // MCP form state
+  const [showMcpForm, setShowMcpForm] = useState(false);
+  const [mcpName, setMcpName] = useState("");
+  const [mcpCommand, setMcpCommand] = useState("");
+  const [mcpArgs, setMcpArgs] = useState("");
+  const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
+
   useEffect(() => {
-    getConfig().then(setConfig);
+    getConfig().then((c) => {
+      setConfig(c);
+      setMcpStatus(c.mcpStatus ?? []);
+    });
   }, []);
 
   useEffect(() => {
@@ -43,24 +55,19 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     });
   };
 
-  const toggleTool = (id: string) => {
-    if (!config) return;
-    const enabled = config.enabledToolIds.includes(id)
-      ? config.enabledToolIds.filter((s) => s !== id)
-      : [...config.enabledToolIds, id];
-    setConfig({ ...config, enabledToolIds: enabled });
-  };
-
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
     try {
-      await putConfig({
+      const updated = await putConfig({
         context: config.context ?? DEFAULT_CONTEXT,
-        enabledToolIds: config.enabledToolIds,
         mcpServers: config.mcpServers,
       });
+      setMcpStatus(updated.mcpStatus ?? []);
+      toast("设置已保存", "success");
       onSaved();
+    } catch (e) {
+      toast(`保存失败: ${e instanceof Error ? e.message : String(e)}`, "error");
     } finally {
       setSaving(false);
     }
@@ -81,6 +88,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
       await uploadSkillZip(file);
       const list = await getSkills();
       setSkills(list);
+      toast("技能安装成功", "success");
     } catch (err) {
       setSkillUploadError(err instanceof Error ? err.message : "上传失败");
     } finally {
@@ -93,14 +101,43 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     try {
       await deleteSkill(name);
       setSkills((prev) => prev.filter((s) => s.name !== name));
+      toast("技能已删除", "success");
     } catch (err) {
-      setSkillUploadError(err instanceof Error ? err.message : "删除失败");
+      toast(err instanceof Error ? err.message : "删除失败", "error");
     }
+  };
+
+  const handleAddMcpServer = () => {
+    const name = mcpName.trim();
+    const command = mcpCommand.trim();
+    if (!name || !command) {
+      toast("名称和命令不能为空", "error");
+      return;
+    }
+    if (config.mcpServers.some((s) => s.name === name)) {
+      toast("名称已存在", "error");
+      return;
+    }
+    const args = mcpArgs.trim() ? mcpArgs.trim().split(/\s+/) : [];
+    const newServer: McpServerConfig = { name, transport: "stdio", command, args };
+    setConfig({ ...config, mcpServers: [...config.mcpServers, newServer] });
+    setMcpName("");
+    setMcpCommand("");
+    setMcpArgs("");
+    setShowMcpForm(false);
+  };
+
+  const handleRemoveMcpServer = (name: string) => {
+    setConfig({ ...config, mcpServers: config.mcpServers.filter((s) => s.name !== name) });
+  };
+
+  const getServerStatus = (name: string): McpStatusItem | undefined => {
+    return mcpStatus.find((s) => s.name === name);
   };
 
   const sections = [
     { id: "context" as const, label: "上下文策略" },
-    { id: "tools" as const, label: "Tools & MCP" },
+    { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
   ] as const;
 
@@ -218,30 +255,124 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 </div>
               </section>
             )}
-            {activeSection === "tools" && (
-              <section aria-labelledby="tools-heading" className="space-y-4">
-                <h2 id="tools-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
-                  Tools / MCP
+            {activeSection === "mcp" && (
+              <section aria-labelledby="mcp-heading" className="space-y-4">
+                <h2 id="mcp-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  MCP Servers
                 </h2>
                 <p className="text-[13px] text-[var(--color-text-muted)]">
-                  勾选要启用的工具，Agent 将可调用对应能力。MCP 管理后续可在此扩展。
+                  连接 MCP (Model Context Protocol) 服务器以扩展 Agent 的工具能力。配置后点击"保存"生效。
                 </p>
+
+                {config.mcpServers.length === 0 && !showMcpForm && (
+                  <div className="text-[13px] text-[var(--color-text-muted)] py-4">
+                    暂未配置 MCP 服务器。点击下方按钮添加。
+                  </div>
+                )}
+
                 <div className="flex flex-col gap-2">
-                  {(config.availableToolIds ?? []).map((id) => (
-                    <label
-                      key={id}
-                      className="flex items-center gap-2.5 py-2 cursor-pointer text-[var(--color-text)]"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={config.enabledToolIds.includes(id)}
-                        onChange={() => toggleTool(id)}
-                        className="rounded border-[var(--color-border)]"
-                      />
-                      <span>{id}</span>
-                    </label>
-                  ))}
+                  {config.mcpServers.map((server) => {
+                    const status = getServerStatus(server.name);
+                    return (
+                      <div
+                        key={server.name}
+                        className="flex items-start justify-between gap-3 p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-[var(--color-text)]">{server.name}</span>
+                            {status ? (
+                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                {status.toolCount} tool{status.toolCount !== 1 ? "s" : ""}
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
+                                <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                                未连接
+                              </span>
+                            )}
+                          </div>
+                          <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
+                            {server.command} {server.args.join(" ")}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveMcpServer(server.name)}
+                          className="shrink-0 px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                        >
+                          删除
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
+
+                {showMcpForm ? (
+                  <div className="space-y-3 p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+                    <div className="space-y-2">
+                      <label className="block text-sm text-[var(--color-text)]">
+                        名称
+                        <input
+                          type="text"
+                          value={mcpName}
+                          onChange={(e) => setMcpName(e.target.value)}
+                          placeholder="如: filesystem"
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                        />
+                      </label>
+                      <label className="block text-sm text-[var(--color-text)]">
+                        命令
+                        <input
+                          type="text"
+                          value={mcpCommand}
+                          onChange={(e) => setMcpCommand(e.target.value)}
+                          placeholder="如: npx"
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                        />
+                      </label>
+                      <label className="block text-sm text-[var(--color-text)]">
+                        参数（空格分隔）
+                        <input
+                          type="text"
+                          value={mcpArgs}
+                          onChange={(e) => setMcpArgs(e.target.value)}
+                          placeholder="如: -y @modelcontextprotocol/server-filesystem /tmp"
+                          className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={handleAddMcpServer}
+                        className="px-4 py-2 rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium border-none cursor-pointer hover:bg-[var(--color-accent-hover)] transition-colors"
+                      >
+                        添加
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setShowMcpForm(false); setMcpName(""); setMcpCommand(""); setMcpArgs(""); }}
+                        className="px-4 py-2 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-sm cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setShowMcpForm(true)}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-dashed border-[var(--color-border)] text-[var(--color-text-muted)] text-sm cursor-pointer hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    添加 MCP Server
+                  </button>
+                )}
               </section>
             )}
             {activeSection === "skills" && (
@@ -271,7 +402,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 </div>
                 <ul className="list-none m-0 p-0 flex flex-col gap-2">
                   {skills.length === 0 ? (
-                    <li className="text-[13px] text-[var(--color-text-muted)]">暂无已安装技能，请上传 ZIP。</li>
+                    <li className="text-[13px] text-[var(--color-text-muted)]">暂无已安装技能，请上传 ZIP 或将技能放入 skills/ 目录。</li>
                   ) : (
                     skills.map((s) => (
                       <li
@@ -279,7 +410,12 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                         className="flex items-start justify-between gap-3 py-2 px-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
                       >
                         <div className="min-w-0">
-                          <span className="font-medium text-[var(--color-text)]">{s.name}</span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-[var(--color-text)]">{s.name}</span>
+                            {s.userUploaded === false && (
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]">内置</span>
+                            )}
+                          </div>
                           {s.description && (
                             <p className="m-0 mt-0.5 text-[13px] text-[var(--color-text-muted)] line-clamp-2">
                               {s.description}

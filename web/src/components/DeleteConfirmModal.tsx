@@ -6,6 +6,7 @@ interface Props {
   onConfirm: () => void;
   title?: string;
   description?: string;
+  loading?: boolean;
 }
 
 export default function DeleteConfirmModal({
@@ -14,6 +15,7 @@ export default function DeleteConfirmModal({
   onConfirm,
   title = "删除会话",
   description = "确定要删除此会话吗？删除后无法恢复。",
+  loading = false,
 }: Props) {
   return (
     <AlertDialog.Root open={open} onOpenChange={onOpenChange}>
@@ -33,8 +35,9 @@ export default function DeleteConfirmModal({
             <AlertDialog.Cancel asChild>
               <button
                 type="button"
+                disabled={loading}
                 className="px-4 py-2.5 rounded-lg border border-[var(--color-border)] text-[var(--color-text)]
-                  cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
+                  cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors disabled:opacity-50"
               >
                 取消
               </button>
@@ -43,10 +46,11 @@ export default function DeleteConfirmModal({
               <button
                 type="button"
                 onClick={onConfirm}
+                disabled={loading}
                 className="px-4 py-2.5 rounded-lg bg-[var(--color-error-bg)] text-[var(--color-error-text)]
-                  font-medium cursor-pointer hover:opacity-90 transition-opacity border-none"
+                  font-medium cursor-pointer hover:opacity-90 transition-opacity border-none disabled:opacity-50"
               >
-                删除
+                {loading ? "删除中…" : "删除"}
               </button>
             </AlertDialog.Action>
           </div>

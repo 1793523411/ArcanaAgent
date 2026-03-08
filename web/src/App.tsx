@@ -1,12 +1,15 @@
-import { useState, useEffect, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate, useMatch } from "react-router-dom";
 import { createConversation, deleteConversation, getArtifacts } from "./api";
 import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
+import { useToast } from "./components/Toast";
 
 export default function App() {
-  const { conversationId: conversationIdFromUrl } = useParams<{ conversationId: string }>();
+  const match = useMatch("/c/:conversationId");
+  const conversationIdFromUrl = match?.params.conversationId;
   const navigate = useNavigate();
+  const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
@@ -35,18 +38,26 @@ export default function App() {
     streamingToolLogs,
     sendError,
     clearStreaming,
+    abortStreaming,
   } = useSendMessage({
     onAfterSend: loadList,
     setMessages,
     setCurrent,
   });
 
+  const prevConvIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    if (!current) return;
-    clearStreaming();
+    const prevId = prevConvIdRef.current;
+    const newId = current?.id;
+    prevConvIdRef.current = newId;
+
+    if (prevId && newId && prevId !== newId) {
+      abortStreaming();
+      clearStreaming();
+    }
     setShowArtifacts(false);
     setArtifactCount(0);
-  }, [current?.id, clearStreaming]);
+  }, [current?.id, clearStreaming, abortStreaming]);
 
   const refreshArtifactCount = useCallback(() => {
     if (!current) return;
@@ -70,20 +81,26 @@ export default function App() {
     setDeleteTargetId(id);
   };
 
+  const [deleting, setDeleting] = useState(false);
+
   const handleDeleteConfirm = async () => {
     if (!deleteTargetId) return;
     const id = deleteTargetId;
-    setDeleteTargetId(null);
+    setDeleting(true);
     try {
       await deleteConversation(id);
+      setDeleteTargetId(null);
       loadList();
       if (current?.id === id) {
         navigate("/");
         setCurrent(null);
         setMessages([]);
       }
-    } catch {
-      // could toast
+      toast("对话已删除", "success");
+    } catch (e) {
+      toast(`删除失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -94,8 +111,8 @@ export default function App() {
       loadList();
       navigate(`/c/${meta.id}`);
       send(meta.id);
-    } catch {
-      // handled
+    } catch (e) {
+      toast(`创建对话失败: ${e instanceof Error ? e.message : String(e)}`, "error");
     }
   };
 
@@ -176,6 +193,7 @@ export default function App() {
         open={deleteTargetId !== null}
         onOpenChange={(open) => !open && setDeleteTargetId(null)}
         onConfirm={handleDeleteConfirm}
+        loading={deleting}
       />
     </div>
   );

@@ -6,6 +6,35 @@ import { existsSync } from "fs";
 const MAX_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
+const DANGEROUS_PATTERNS = [
+  /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(-[a-zA-Z]*r[a-zA-Z]*\s+)?\/\s*$/,
+  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)?(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/\s*$/,
+  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/\s*$/,
+  /\brm\s+-rf\s+\/\b/,
+  /\brm\s+-fr\s+\/\b/,
+  /\bmkfs\b/,
+  /\bdd\s+.*\bof=\/dev\/[sh]d/,
+  /\b:(){ :\|:& };:/,
+  /\bshutdown\b/,
+  /\breboot\b/,
+  /\binit\s+0\b/,
+  /\bhalt\b/,
+  />\s*\/dev\/[sh]d/,
+  /\bchmod\s+-R\s+777\s+\/\s*$/,
+  /\bchown\s+-R\s+.*\s+\/\s*$/,
+  /\bformat\s+[cCdD]:/,
+];
+
+function isDangerous(command: string): string | null {
+  const trimmed = command.trim();
+  for (const pattern of DANGEROUS_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return `Blocked: this command matches a dangerous pattern (${pattern.source}). If you really need this, ask the user to run it manually.`;
+    }
+  }
+  return null;
+}
+
 function truncate(s: string, max: number): string {
   if (Buffer.byteLength(s) <= max) return s;
   const buf = Buffer.from(s);
@@ -16,6 +45,9 @@ function truncate(s: string, max: number): string {
 
 export const run_command = tool(
   async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
+    const blocked = isDangerous(input.command);
+    if (blocked) return blocked;
+
     const timeoutMs = Math.min(input.timeout_ms ?? 30_000, MAX_TIMEOUT_MS);
     const cwd = input.working_directory && existsSync(input.working_directory) ? input.working_directory : process.cwd();
 
@@ -47,7 +79,8 @@ export const run_command = tool(
     name: "run_command",
     description:
       "Execute a shell command. Use for running skill scripts, installing dependencies, " +
-      "or any system operation. Returns stdout, stderr, and exit code.",
+      "or any system operation. Returns stdout, stderr, and exit code. " +
+      "Dangerous system-level commands (rm -rf /, mkfs, dd, shutdown, etc.) are blocked for safety.",
     schema: z.object({
       command: z.string().describe("The shell command to execute, e.g. 'python script.py --arg value' or 'bash hello.sh'"),
       timeout_ms: z.number().optional().describe("Max execution time in milliseconds (default 30000, max 120000)"),

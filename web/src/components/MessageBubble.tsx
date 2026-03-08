@@ -19,7 +19,7 @@ export default function MessageBubble({ message, conversationId }: Props) {
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
   const text = hasContent
     ? message.content
-    : (message.type === "ai" && toolLogs.length === 0 ? "(该条回复内容未保存)" : message.content || "");
+    : (message.type === "ai" && toolLogs.length === 0 ? "(该条回复内容未保存)" : "");
 
   return (
     <div
@@ -62,7 +62,7 @@ export default function MessageBubble({ message, conversationId }: Props) {
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (
-          <MarkdownContent>{text}</MarkdownContent>
+          text ? <MarkdownContent>{text}</MarkdownContent> : null
         )}
       </div>
     </div>

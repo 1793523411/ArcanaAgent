@@ -4,7 +4,8 @@ import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/c
 import { getLLM } from "../llm/index.js";
 import { streamChatCompletionsWithReasoning } from "../llm/streamWithReasoning.js";
 import type { ToolCallResult } from "../llm/streamWithReasoning.js";
-import { getToolsByIds } from "../tools/index.js";
+import { getToolsByIds, listToolIds } from "../tools/index.js";
+import { getMcpTools } from "../mcp/client.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { loadModelConfig } from "../config/models.js";
@@ -13,27 +14,60 @@ import { getSkillContextForAgent } from "../skills/manager.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
-const BASE_SYSTEM_PROMPT = `You are a powerful AI assistant with access to tools and skills.
+const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
-## Core Capabilities
-- Execute shell commands and scripts via the \`run_command\` tool
-- Read files via the \`read_file\` tool
-- Perform calculations, get current time, and more via other tools
+## Communication
+- **Match the user's language**: respond in Chinese if they write in Chinese, English for English, etc. Never mix languages unnecessarily.
+- **Be concise**: avoid filler, preambles like "Sure!" or "Of course!", and unnecessary verbosity. Get straight to the point.
+- **Format clearly**: use Markdown — code blocks with language tags, headers for structure, bullet points for lists, tables for comparisons.
+- **Show results**: after tool execution, summarize what happened and present outputs clearly. Don't just say "done" — show the key results.
 
-## How to Use Skills
-When a user's request matches an available skill:
-1. Read the skill's instructions carefully
-2. Follow the instructions step by step
-3. Use \`run_command\` to execute any scripts referenced in the skill
-4. If a script requires dependencies, install them first (e.g. \`pip install ...\`)
-5. Use \`read_file\` to check reference docs or saved outputs when needed
+## Tool Usage Strategy
+You have access to built-in tools (run_command, read_file, calculator, get_time, etc.) and possibly MCP tools from external servers.
 
-## Guidelines
-- Always prefer using skill scripts when available — they are tested and reliable
-- For script execution, provide the full absolute path as shown in skill instructions
-- If a command fails, read the error and try to fix it (install missing deps, fix paths, etc.)
-- When a skill produces file output, read and present the results to the user
-- Be proactive: if a skill needs setup steps, handle them automatically`;
+**When to use tools vs. direct response:**
+- Answer from knowledge when no system interaction is needed
+- Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
+- For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
+
+**CRITICAL — Always provide a final text response:**
+- After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
+- NEVER end your turn with only tool calls and no text — the user needs to see a human-readable summary.
+- If tools produced data or files, present the key results, not just "done".
+- If a multi-step task is complete, provide a structured summary of what was accomplished.
+
+**Error handling:**
+- If a tool fails, read the error carefully, diagnose the issue, and retry with a fix
+- Common fixes: install missing dependencies, correct file paths, adjust permissions, fix syntax
+- If repeated failures occur, explain the issue to the user and suggest alternatives
+- Never silently ignore errors — always report what happened
+
+## Skills
+Skills are specialized, tested capabilities defined in SKILL.md files. When a user's request matches a skill:
+1. Follow the skill's instructions precisely — they are tested and reliable
+2. Execute scripts with their full absolute paths via run_command
+3. Install dependencies automatically if needed (pip install, npm install, etc.)
+4. Use read_file to check reference docs or saved outputs when mentioned
+5. Handle setup steps proactively without asking the user
+6. Present skill outputs clearly and completely
+
+## MCP Tools
+Tools from MCP servers are prefixed with their server name (e.g., mcp_servername__toolname). Use them like any other tool — call with the required parameters as described.
+
+## Safety
+- **NEVER** execute destructive system commands (rm -rf /, mkfs, dd to disk, shutdown, reboot, etc.)
+- **NEVER** read or expose credentials, private keys, API keys, or sensitive environment variables
+- **NEVER** modify system-critical files (/etc/passwd, /etc/shadow, boot configs, etc.)
+- For potentially risky operations, briefly state what you plan to do before executing
+- When uncertain about safety, ask the user for confirmation
+
+## Workspace & Artifacts
+Each conversation has a dedicated workspace directory. Save ALL generated files (search results, downloads, processed data, etc.) to this workspace using absolute paths. The user can preview these files directly in the UI.
+
+## Context Awareness
+- Earlier parts of this conversation may have been summarized (marked as [此前对话摘要]) to save context space. Treat summaries as reliable context.
+- If the user references something not in your available context, acknowledge this honestly and ask for clarification rather than guessing.
+- When the conversation is long, briefly recap relevant context before diving into a complex task.`;
 
 function buildSystemPrompt(skillContext?: string): string {
   return BASE_SYSTEM_PROMPT + (skillContext || getSkillContextForAgent());
@@ -55,7 +89,6 @@ function getTextFromMessage(msg: { content?: unknown }): string {
   return "";
 }
 
-/** 从消息中提取推理/思考内容（additional_kwargs.reasoning_content 或 content 数组中 type 为 reasoning 的项） */
 function getReasoningFromMessage(msg: BaseMessage): string | undefined {
   const m = msg as { additional_kwargs?: { reasoning_content?: string }; content?: unknown };
   const fromKwargs = m.additional_kwargs?.reasoning_content;
@@ -78,12 +111,15 @@ function safeParseArgs(argsStr: string): Record<string, unknown> {
   }
 }
 
-const CORE_TOOL_IDS = ["run_command", "read_file"];
+function getAllTools(): StructuredToolInterface[] {
+  const allIds = listToolIds();
+  const builtIn = getToolsByIds(allIds);
+  const mcp = getMcpTools();
+  return [...builtIn, ...mcp];
+}
 
-export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
-  const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
-  const mergedIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
-  const tools = getToolsByIds(mergedIds);
+export function buildAgent(modelId?: string) {
+  const tools = getAllTools();
   const model = getLLM(modelId).bindTools(tools);
   const toolNode = new ToolNode(tools);
 
@@ -120,33 +156,44 @@ export function buildAgent(enabledToolIds: string[] = [], modelId?: string) {
 
 export async function runAgent(
   messages: BaseMessage[],
-  enabledToolIds: string[] = [],
-  modelId?: string
+  modelId?: string,
+  skillContext?: string
 ): Promise<BaseMessage[]> {
-  const agent = buildAgent(enabledToolIds, modelId);
-  const result = await agent.invoke({ messages });
-  return result.messages;
-}
+  const tools = getAllTools();
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
+  const model = getLLM(modelId).bindTools(tools);
+  const toolNode = new ToolNode(tools);
 
-export async function* streamAgent(
-  messages: BaseMessage[],
-  enabledToolIds: string[] = []
-): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
-  const agent = buildAgent(enabledToolIds);
-  const stream = await agent.stream(
-    { messages },
-    { streamMode: "updates" }
-  );
-  for await (const chunk of stream) {
-    if (chunk && typeof chunk === "object") {
-      yield chunk as Record<string, { messages?: BaseMessage[] }>;
-    }
-  }
+  const callModel = async (state: MessagesState) => {
+    const response = await model.invoke([systemMessage, ...state.messages]);
+    return { messages: [response] };
+  };
+
+  const shouldContinue = (state: MessagesState): "toolNode" | typeof END => {
+    const lastMessage = state.messages[state.messages.length - 1];
+    if (
+      lastMessage &&
+      "tool_calls" in lastMessage &&
+      Array.isArray(lastMessage.tool_calls) &&
+      lastMessage.tool_calls.length > 0
+    ) return "toolNode";
+    return END;
+  };
+
+  const graph = new StateGraph(MessagesAnnotation)
+    .addNode("llmCall", callModel)
+    .addNode("toolNode", toolNode)
+    .addEdge(START, "llmCall")
+    .addConditionalEdges("llmCall", shouldContinue, ["toolNode", END])
+    .addEdge("toolNode", "llmCall")
+    .compile();
+
+  const result = await graph.invoke({ messages });
+  return result.messages;
 }
 
 export async function* streamAgentWithTokens(
   messages: BaseMessage[],
-  enabledToolIds: string[],
   onToken: (token: string) => void,
   modelId?: string,
   onReasoningToken?: (token: string) => void,
@@ -158,20 +205,20 @@ export async function* streamAgentWithTokens(
   if (useReasoningStream) {
     try {
       const { baseUrl, apiKey, modelId: resolved } = loadModelConfig(modelId);
-      const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
-      const mergedToolIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
-      const lcTools = getToolsByIds(mergedToolIds);
-      const openAITools = lcTools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
-      const toolMap = new Map<string, StructuredToolInterface>(lcTools.map((t) => [t.name, t]));
+      const tools = getAllTools();
+      const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
+      const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
       let conversationMessages: BaseMessage[] = [systemMessage, ...messages];
-      const maxRounds = 15;
+      const maxRounds = 50;
 
+      let lastHadContent = false;
       for (let round = 0; round < maxRounds; round++) {
         const { content, reasoningContent, toolCalls } = await streamChatCompletionsWithReasoning(
           baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, openAITools
         );
 
+        lastHadContent = !!(content && content.trim());
         const aiMsg = new AIMessage({
           content: content || " ",
           ...(toolCalls.length > 0 ? {
@@ -209,18 +256,31 @@ export async function* streamAgentWithTokens(
         conversationMessages = [...conversationMessages, ...toolMessages];
         yield { toolNode: { messages: toolMessages } };
       }
+
+      if (!lastHadContent) {
+        const { content: finalContent, reasoningContent: finalReasoning } = await streamChatCompletionsWithReasoning(
+          baseUrl, apiKey, resolved, conversationMessages, onToken, onReasoningToken!, []
+        );
+        const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+        yield {
+          llmCall: {
+            messages: [summaryMsg],
+            ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
+          },
+        };
+      }
       return;
     } catch (e) {
-      // 降级：走 LangChain 流（不包含 reasoning）
+      console.warn("[Agent] Reasoning stream failed, falling back to standard LangChain stream:", e instanceof Error ? e.message : String(e));
     }
   }
 
-  const userTools = enabledToolIds.length ? enabledToolIds : ["calculator", "get_time", "echo"];
-  const mergedIds = [...new Set([...CORE_TOOL_IDS, ...userTools])];
-  const tools = getToolsByIds(mergedIds);
+  const tools = getAllTools();
   const toolNode = new ToolNode(tools);
   const model = getLLM(modelId).bindTools(tools);
+  const modelNoTools = getLLM(modelId);
   let state: BaseMessage[] = [...messages];
+  const maxRounds = 50;
 
   const shouldContinue = (last: BaseMessage): boolean => {
     return !!(
@@ -231,7 +291,8 @@ export async function* streamAgentWithTokens(
     );
   };
 
-  while (true) {
+  let lastHadContent = false;
+  for (let round = 0; round < maxRounds; round++) {
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
@@ -250,6 +311,7 @@ export async function* streamAgentWithTokens(
     if (!fullChunk) break;
     const fromChunk = getTextFromMessage(fullChunk);
     const content = accumulatedContent || fromChunk;
+    lastHadContent = !!(content && content.trim());
     const finalMessage =
       content || (fullChunk as AIMessage).tool_calls?.length
         ? new AIMessage({
@@ -265,5 +327,19 @@ export async function* streamAgentWithTokens(
     const toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+  }
+
+  if (!lastHadContent && state.length > messages.length) {
+    const summaryStream = await modelNoTools.stream([systemMessage, ...state]);
+    let summaryContent = "";
+    for await (const chunk of summaryStream) {
+      const text = getTextFromChunk(chunk);
+      if (text) {
+        onToken(text);
+        summaryContent += text;
+      }
+    }
+    const summaryMsg = new AIMessage({ content: summaryContent || "(已达到最大工具调用轮次)" });
+    yield { llmCall: { messages: [summaryMsg] } };
   }
 }

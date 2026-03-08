@@ -8,9 +8,11 @@
     "start": "node dist/index.js"
   },
   "dependencies": {
+    "@langchain/anthropic": "^0.3.34",
     "@langchain/core": "^0.3.28",
     "@langchain/langgraph": "^0.2.74",
     "@langchain/openai": "^0.3.14",
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
     "express": "^4.21.0",

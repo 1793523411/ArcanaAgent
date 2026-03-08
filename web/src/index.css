@@ -43,7 +43,8 @@ body {
 }
 
 /* 输入框在已有边框的容器内，不需要额外的 focus 轮廓 */
-input[type="text"]:focus-visible {
+input[type="text"]:focus-visible,
+textarea:focus-visible {
   outline: none;
   outline-offset: 0;
 }
@@ -79,6 +80,15 @@ button, a, [role="button"] {
     animation: none;
     opacity: 1;
   }
+}
+
+/* Toast animation */
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(0.75rem) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-toast-in {
+  animation: toast-in 0.2s ease-out;
 }
 
 /* Terminal cursor blink */

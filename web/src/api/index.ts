@@ -46,16 +46,29 @@ export async function sendMessageStream(
   onChunk: (chunk: unknown) => void,
   onDone: () => void,
   onError: (err: string) => void,
-  attachments?: Attachment[]
+  attachments?: Attachment[],
+  signal?: AbortSignal
 ): Promise<void> {
-  const res = await fetch(`${BASE}/conversations/${conversationId}/messages`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      text,
-      ...(attachments?.length ? { attachments } : {}),
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/conversations/${conversationId}/messages`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Accept": "text/event-stream",
+      },
+      body: JSON.stringify({
+        text,
+        ...(attachments?.length ? { attachments } : {}),
+      }),
+      signal,
+      cache: "no-store",
+    });
+  } catch (e) {
+    if ((e as Error).name === "AbortError") return;
+    onError(String(e));
+    return;
+  }
   if (!res.ok) {
     onError(await res.text());
     return;
@@ -67,6 +80,12 @@ export async function sendMessageStream(
   }
   const dec = new TextDecoder();
   let buf = "";
+  let settled = false;
+  const settle = (cb: () => void) => {
+    if (settled) return;
+    settled = true;
+    cb();
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -78,12 +97,12 @@ export async function sendMessageStream(
         if (line.startsWith("data: ")) {
           const data = line.slice(6);
           if (data === "[DONE]") {
-            onDone();
+            settle(onDone);
             return;
           }
           try {
             const parsed = JSON.parse(data);
-            if (parsed?.error) onError(parsed.error);
+            if (parsed?.error) settle(() => onError(parsed.error));
             else onChunk(parsed);
           } catch {
             // skip
@@ -96,16 +115,17 @@ export async function sendMessageStream(
       if (data !== "[DONE]") {
         try {
           const parsed = JSON.parse(data);
-          if (parsed?.error) onError(parsed.error);
+          if (parsed?.error) settle(() => onError(parsed.error));
           else onChunk(parsed);
         } catch {
           // skip
         }
       }
     }
-    onDone();
+    settle(onDone);
   } catch (e) {
-    onError(String(e));
+    if ((e as Error).name === "AbortError") return;
+    settle(() => onError(String(e)));
   }
 }
 
@@ -114,6 +134,7 @@ export interface ModelInfo {
   name: string;
   provider: string;
   supportsImage?: boolean;
+  supportsReasoning?: boolean;
 }
 
 export async function getModels(): Promise<ModelInfo[]> {

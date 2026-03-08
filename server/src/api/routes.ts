@@ -23,30 +23,28 @@ import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyCo
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
+import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 
-function serializeStreamChunk(chunk: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(chunk)) {
-    if (val && typeof val === "object" && "messages" in val && Array.isArray((val as { messages: BaseMessage[] }).messages)) {
-      const v = val as { messages: BaseMessage[]; reasoning?: string };
-      const ms = v.messages;
-      out[key] = {
-        messages: ms.map((m) => ({
-          type: m._getType(),
-          content: typeof (m as { content?: string }).content === "string" ? (m as { content: string }).content : "",
-        })),
-        ...(typeof v.reasoning === "string" ? { reasoning: v.reasoning } : {}),
-      };
-    } else {
-      out[key] = val;
-    }
-  }
-  return out;
-}
 
 function convId(req: Request): string {
   const id = req.params.id;
   return Array.isArray(id) ? id[0] ?? "" : id;
+}
+
+function buildSkillContext(convId: string): string {
+  const workspace = ensureWorkspace(convId);
+  const existingArtifacts = listArtifacts(convId);
+  const artifactListText = existingArtifacts.length > 0
+    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
+        `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
+      ).join("\n") +
+      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
+    : "";
+  return getSkillContextForAgent() +
+    `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
+    "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
+    "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
+    artifactListText;
 }
 
 export function getConversations(_req: Request, res: Response): void {
@@ -189,15 +187,38 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
 
-  const flush = (res as unknown as { flush?: () => void }).flush?.bind(res);
-  const write = (data: string) => {
-    res.write(data);
-    flush?.();
+  if (res.socket) {
+    res.socket.setTimeout(0);
+  }
+
+  const FLUSH_INTERVAL = 30;
+  let writeBuf = "";
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const flushNow = () => {
+    if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
+    if (writeBuf) {
+      res.write(writeBuf);
+      writeBuf = "";
+    }
   };
 
-  write("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
+  const write = (data: string) => {
+    writeBuf += data;
+    if (flushTimer === null) {
+      flushTimer = setTimeout(flushNow, FLUSH_INTERVAL);
+    }
+  };
+
+  const writeImmediate = (data: string) => {
+    writeBuf += data;
+    flushNow();
+  };
+
+  writeImmediate("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
 
   const onToken = (token: string) => {
     if (token) write("data: " + JSON.stringify({ type: "token", content: token }) + "\n\n");
@@ -206,25 +227,13 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (token) write("data: " + JSON.stringify({ type: "reasoning", content: token }) + "\n\n");
   };
 
-  const workspace = ensureWorkspace(id);
-  const existingArtifacts = listArtifacts(id);
-  const artifactListText = existingArtifacts.length > 0
-    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
-        `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
-      ).join("\n") +
-      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
-    : "";
-  const skillContext = getSkillContextForAgent() +
-    `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
-    "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
-    "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
-    artifactListText;
+  const skillContext = buildSkillContext(id);
   const collectedStored: StoredMessage[] = [];
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
   let lastReasoning: string | undefined;
   try {
-    for await (const chunk of streamAgentWithTokens(lcMessages, config.enabledToolIds, onToken, config.modelId, onReasoningToken, skillContext)) {
+    for await (const chunk of streamAgentWithTokens(lcMessages, onToken, config.modelId, onReasoningToken, skillContext)) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key] : undefined;
       if (part?.reasoning) {
@@ -237,7 +246,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         if (Array.isArray(toolCalls) && toolCalls.length > 0) {
           for (const tc of toolCalls) {
             const input = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
-            write("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
+            writeImmediate("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
             pendingToolLogs.push({ name: tc.name, input, output: "" });
           }
         }
@@ -249,13 +258,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             const output = typeof toolMsg.content === "string" ? toolMsg.content : "";
             const pending = pendingToolLogs.filter((tl) => tl.name === toolMsg.name && !tl.output);
             if (pending.length > 0) pending[0].output = output;
-            write("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
+            writeImmediate("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
           }
         }
       }
-      const serializable = serializeStreamChunk(chunk);
-      const payload = JSON.stringify(serializable);
-      write(`data: ${payload}\n\n`);
       if (part?.messages?.length) {
         const reasoning = typeof part.reasoning === "string" ? part.reasoning : undefined;
         for (const msg of part.messages) {
@@ -272,22 +278,21 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
-    // Attach tool logs to the last AI message that has real content,
-    // or the very last AI message if none has content
     if (pendingToolLogs.length > 0) {
       const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
       const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
       if (target) {
         target.toolLogs = pendingToolLogs;
+        if (!target.content || !target.content.trim()) {
+          target.content = streamedContent.trim() || "(工具已执行)";
+        }
       }
     }
-    // Filter out AI messages with empty content EXCEPT the one carrying toolLogs
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
-    // If no AI message survived but we have streamed content or tool logs, create a fallback
     if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0)) {
       toStore.push({
         type: "ai",
@@ -299,10 +304,13 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (toStore.length > 0) {
       appendMessages(id, toStore);
     }
-    write("data: [DONE]\n\n");
+    flushNow();
   } catch (e) {
-    write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
+    flushNow();
+    res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
   } finally {
+    if (flushTimer !== null) clearTimeout(flushTimer);
+    res.write("data: [DONE]\n\n");
     res.end();
   }
 }
@@ -334,8 +342,10 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const newTitleSync = isFirstMessageSync && text ? (text.slice(0, 24).trim() || "新对话") : undefined;
   appendMessages(id, [{ type: "human", content: text }], newTitleSync);
 
+  const skillContext = buildSkillContext(id);
+
   try {
-    const resultMessages = await runAgent(lcMessages, config.enabledToolIds);
+    const resultMessages = await runAgent(lcMessages, config.modelId, skillContext);
     const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -347,16 +357,16 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 }
 
 export async function postChat(req: Request, res: Response): Promise<void> {
-  const body = req.body as { message?: string; toolIds?: string[] };
+  const body = req.body as { message?: string };
   const text = typeof body?.message === "string" ? body.message.trim() : "";
   if (!text) {
     res.status(400).json({ error: "Missing or empty message" });
     return;
   }
-  const toolIds = Array.isArray(body.toolIds) ? body.toolIds : undefined;
+  const config = loadUserConfig();
   const messages = [new HumanMessage(text)];
   try {
-    const resultMessages = await runAgent(messages, toolIds);
+    const resultMessages = await runAgent(messages, config.modelId);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
     res.json({ reply });
@@ -369,7 +379,8 @@ export function getConfig(_req: Request, res: Response): void {
   const config = loadUserConfig();
   const toolIds = listToolIds();
   const models = listModels();
-  res.json({ ...config, availableToolIds: toolIds, availableModels: models });
+  const mcpStatus = getMcpStatus();
+  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus });
 }
 
 export function getModels(_req: Request, res: Response): void {
@@ -422,7 +433,7 @@ export function deleteSkillById(req: Request, res: Response): void {
   }
 }
 
-export function putConfig(req: Request, res: Response): void {
+export async function putConfig(req: Request, res: Response): Promise<void> {
   const body = req.body as {
     enabledToolIds?: string[];
     mcpServers?: UserConfig["mcpServers"];
@@ -446,7 +457,17 @@ export function putConfig(req: Request, res: Response): void {
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
   }
   saveUserConfig(config);
-  res.json(config);
+
+  if (Array.isArray(body.mcpServers)) {
+    try {
+      await connectToMcpServers(config.mcpServers);
+    } catch (e) {
+      console.error("[MCP] Reconnection failed:", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  const mcpStatus = getMcpStatus();
+  res.json({ ...config, mcpStatus });
 }
 
 // ─── Artifact (workspace) routes ─────────────────────────────
