@@ -1,15 +1,19 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { McpServerConfig } from "../config/userConfig.js";
 
+type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport;
+
 interface McpConnection {
   client: Client;
-  transport: StdioClientTransport;
+  transport: AnyTransport;
   tools: StructuredToolInterface[];
   serverName: string;
+  config: McpServerConfig;
 }
 
 const connections = new Map<string, McpConnection>();
@@ -42,7 +46,10 @@ function jsonSchemaToZod(schema: Record<string, unknown> | undefined): z.ZodObje
         field = z.array(z.any());
         break;
       case "object":
-        field = z.record(z.any());
+        // 递归处理嵌套对象
+        field = (prop.properties as Record<string, unknown>)
+          ? jsonSchemaToZod(prop as Record<string, unknown>)
+          : z.record(z.any());
         break;
       default:
         field = z.any();
@@ -81,19 +88,40 @@ function createLangChainTool(
   );
 }
 
-async function connectServer(config: McpServerConfig): Promise<void> {
-  const transport = new StdioClientTransport({
-    command: config.command,
-    args: config.args,
-  });
-  const client = new Client({ name: "my-agent", version: "1.0.0" });
+function configChanged(existing: McpConnection, next: McpServerConfig): boolean {
+  const a = existing.config;
+  if (a.transport !== next.transport) return true;
+  if (a.transport === "stdio" && next.transport === "stdio") {
+    if (a.command !== next.command) return true;
+    if (JSON.stringify(a.args) !== JSON.stringify(next.args)) return true;
+    if (JSON.stringify(a.env ?? {}) !== JSON.stringify(next.env ?? {})) return true;
+  }
+  if (a.transport === "streamablehttp" && next.transport === "streamablehttp") {
+    if (a.url !== next.url) return true;
+    if (JSON.stringify(a.headers ?? {}) !== JSON.stringify(next.headers ?? {})) return true;
+  }
+  return false;
+}
 
+async function connectServer(config: McpServerConfig): Promise<void> {
+  let transport: AnyTransport;
+  if (config.transport === "streamablehttp") {
+    transport = new StreamableHTTPClientTransport(new URL(config.url), {
+      requestInit: config.headers ? { headers: config.headers } : undefined,
+    });
+  } else {
+    transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+      env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
+    });
+  }
+  const client = new Client({ name: "my-agent", version: "1.0.0" });
   await client.connect(transport);
   const { tools: mcpTools } = await client.listTools();
   const lcTools = mcpTools.map((t) => createLangChainTool(t, client, config.name));
-
-  connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name });
-  console.log(`[MCP] Connected to "${config.name}" — ${lcTools.length} tool(s) available`);
+  connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name, config });
+  console.log(`[MCP] Connected to "${config.name}" (${config.transport}) — ${lcTools.length} tool(s) available`);
 }
 
 async function disconnectServer(name: string): Promise<void> {
@@ -111,12 +139,18 @@ async function disconnectServer(name: string): Promise<void> {
 export async function connectToMcpServers(servers: McpServerConfig[]): Promise<void> {
   const desired = new Set(servers.map((s) => s.name));
 
+  // 断开已移除的服务器
   for (const name of [...connections.keys()]) {
     if (!desired.has(name)) await disconnectServer(name);
   }
 
   for (const server of servers) {
-    if (connections.has(server.name)) continue;
+    const existing = connections.get(server.name);
+    if (existing) {
+      // 配置未变化则跳过，变化则重连
+      if (!configChanged(existing, server)) continue;
+      await disconnectServer(server.name);
+    }
     try {
       await connectServer(server);
     } catch (e) {

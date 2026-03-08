@@ -106,6 +106,9 @@ package-lock.json
 server/data/skills/
 skills-lock.json
 
+# 用户本地配置（包含 MCP、model 等个人设置，不提交到 git）
+server/data/user-config.json
+
 # Local iOS signing overrides
 apps/ios/LocalSigning.xcconfig
 

@@ -62,10 +62,19 @@ export default function ChatPanel({
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
       <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(messages ?? []).map((m, i) => (
-          <MessageBubble key={i} message={m} conversationId={conversationId} />
+          <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
         ))}
         {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0) && (
-          <StreamingBubble content={streamingContent} reasoning={streamingReasoning} status={streamingStatus} toolLogs={streamingToolLogs} isStreaming={loading} supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true} />
+          <StreamingBubble
+          content={streamingContent}
+          reasoning={streamingReasoning}
+          status={streamingStatus}
+          toolLogs={streamingToolLogs}
+          isStreaming={loading}
+          supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
+          modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
+          modelId={modelId}
+        />
         )}
         {error && (
           <div className="p-3 rounded-lg bg-[var(--color-error-bg)] text-[var(--color-error-text)]">

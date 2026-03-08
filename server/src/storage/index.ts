@@ -24,6 +24,8 @@ export interface ToolLog {
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
+  /** 产出该条 AI 回复的模型 ID */
+  modelId?: string;
   /** 推理/思考过程（仅 ai，支持思考的模型） */
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;

@@ -4,12 +4,20 @@ import { join } from "path";
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
 const CONFIG_PATH = join(DATA_DIR, "user-config.json");
 
-export interface McpServerConfig {
-  name: string;
-  transport: "stdio";
-  command: string;
-  args: string[];
-}
+export type McpServerConfig =
+  | {
+      name: string;
+      transport: "stdio";
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      name: string;
+      transport: "streamablehttp";
+      url: string;
+      headers?: Record<string, string>;
+    };
 
 export type ContextStrategy = "compress" | "trim";
 

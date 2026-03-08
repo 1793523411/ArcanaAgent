@@ -273,6 +273,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
               streamedContent = stored.content;
             }
             if (reasoning) stored.reasoningContent = reasoning;
+            if (config.modelId) stored.modelId = config.modelId;
             collectedStored.push(stored);
           }
         }
@@ -297,6 +298,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       toStore.push({
         type: "ai",
         content: streamedContent.trim() || "(工具已执行)",
+        ...(config.modelId ? { modelId: config.modelId } : {}),
         ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
       });
@@ -346,7 +348,11 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 
   try {
     const resultMessages = await runAgent(lcMessages, config.modelId, skillContext);
-    const newStored: StoredMessage[] = resultMessages.map(langChainToStored);
+    const newStored: StoredMessage[] = resultMessages.map((m) => {
+      const s = langChainToStored(m);
+      if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
+      return s;
+    });
     appendMessages(id, newStored);
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
@@ -458,12 +464,11 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
   }
   saveUserConfig(config);
 
+  // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
   if (Array.isArray(body.mcpServers)) {
-    try {
-      await connectToMcpServers(config.mcpServers);
-    } catch (e) {
+    connectToMcpServers(config.mcpServers).catch((e) => {
       console.error("[MCP] Reconnection failed:", e instanceof Error ? e.message : String(e));
-    }
+    });
   }
 
   const mcpStatus = getMcpStatus();

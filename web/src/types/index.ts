@@ -22,6 +22,8 @@ export interface ToolLog {
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
+  /** 产出该条 AI 回复的模型 ID */
+  modelId?: string;
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
   toolLogs?: ToolLog[];
@@ -35,12 +37,20 @@ export interface ContextStrategyConfig {
   compressKeepRecent: number;
 }
 
-export interface McpServerConfig {
-  name: string;
-  transport: "stdio";
-  command: string;
-  args: string[];
-}
+export type McpServerConfig =
+  | {
+      name: string;
+      transport: "stdio";
+      command: string;
+      args: string[];
+      env?: Record<string, string>;
+    }
+  | {
+      name: string;
+      transport: "streamablehttp";
+      url: string;
+      headers?: Record<string, string>;
+    };
 
 export interface McpStatusItem {
   name: string;

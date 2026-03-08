@@ -20,7 +20,7 @@ const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant wit
 - **Show results**: after tool execution, summarize what happened and present outputs clearly. Don't just say "done" — show the key results.
 
 ## Tool Usage Strategy
-You have access to built-in tools (run_command, read_file, calculator, get_time, etc.) and possibly MCP tools from external servers.
+You have access to built-in tools (run_command, read_file, calculator, get_time, etc.) and MCP tools from external servers (listed below if connected).
 
 **When to use tools vs. direct response:**
 - Answer from knowledge when no system interaction is needed
@@ -48,9 +48,6 @@ Skills are specialized, tested capabilities defined in SKILL.md files. When a us
 5. Handle setup steps proactively without asking the user
 6. Present skill outputs clearly and completely
 
-## MCP Tools
-Tools from MCP servers are prefixed with their server name (e.g., mcp_servername__toolname). Use them like any other tool — call with the required parameters as described.
-
 ## Safety
 - **NEVER** execute destructive system commands (rm -rf /, mkfs, dd to disk, shutdown, reboot, etc.)
 - **NEVER** read or expose credentials, private keys, API keys, or sensitive environment variables
@@ -66,11 +63,16 @@ Each conversation has a dedicated workspace directory. Save ALL generated files 
 - If the user references something not in your available context, acknowledge this honestly and ask for clarification rather than guessing.
 - When the conversation is long, briefly recap relevant context before diving into a complex task.`;
 
-function buildSystemPrompt(skillContext?: string): string {
-  return BASE_SYSTEM_PROMPT + (skillContext || getSkillContextForAgent());
+function buildMcpToolsSection(): string {
+  const mcpTools = getMcpTools();
+  if (mcpTools.length === 0) return "";
+  const lines = mcpTools.map((t) => `- \`${t.name}\`: ${t.description ?? t.name}`);
+  return `\n\n## Available MCP Tools\nThe following MCP tools are currently connected and ready to use. Call them directly without asking the user for tool names:\n${lines.join("\n")}`;
 }
 
-const SYSTEM_PROMPT = buildSystemPrompt();
+function buildSystemPrompt(skillContext?: string): string {
+  return BASE_SYSTEM_PROMPT + buildMcpToolsSection() + (skillContext || getSkillContextForAgent());
+}
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
   const c = chunk.content;
@@ -143,7 +145,7 @@ export function buildAgent(modelId?: string) {
 
   const callModel = async (state: MessagesState) => {
     const response = await model.invoke([
-      new SystemMessage(SYSTEM_PROMPT),
+      new SystemMessage(buildSystemPrompt()),
       ...state.messages,
     ]);
     return { messages: [response] };
