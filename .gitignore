@@ -135,3 +135,5 @@ config/models.json
 .trae/**/*
 
 **/logs/*
+
+skills/**/

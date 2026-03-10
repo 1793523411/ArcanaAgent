@@ -1,0 +1,18 @@
+{
+  "enabledToolIds": [
+    "calculator",
+    "get_time",
+    "echo",
+    "run_command",
+    "read_file",
+    "write_file"
+  ],
+  "mcpServers": [],
+  "modelId": "ep-m-20260227190842-nrldn",
+  "context": {
+    "strategy": "compress",
+    "trimToLast": 20,
+    "tokenThresholdPercent": 75,
+    "compressKeepRecent": 20
+  }
+}

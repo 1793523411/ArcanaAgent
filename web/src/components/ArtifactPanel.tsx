@@ -54,6 +54,11 @@ export default function ArtifactPanel({ conversationId, onClose }: Props) {
   useEffect(() => {
     if (!selected) { setTextContent(null); return; }
     const mime = selected.mimeType;
+    if (mime === "text/html") {
+      setTextContent(null);
+      setLoading(false);
+      return;
+    }
     if (mime.startsWith("text/") || mime === "application/json") {
       setLoading(true);
       getArtifactText(conversationId, selected.path)
@@ -329,6 +334,10 @@ function FilePreview({
 
   if (mime === "application/pdf") {
     return <iframe src={url} className="w-full h-full border-0" title={artifact.name} />;
+  }
+
+  if (mime === "text/html") {
+    return <iframe src={url} className="w-full h-full border-0 rounded-b-lg" title={artifact.name} sandbox="allow-scripts allow-same-origin" />;
   }
 
   if (mime === "text/markdown" && textContent !== null) {

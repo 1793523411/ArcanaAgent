@@ -132,6 +132,16 @@ function safeParseArgs(argsStr: string): Record<string, unknown> {
   }
 }
 
+const WRITE_FILE_SCHEMA_HINT = `write_file 需要 path（字符串）以及 content（字符串）或 content_base64（Base64 字符串）二选一。大段 HTML/CSS 强烈建议用 content_base64 传参，避免 JSON 转义问题。`;
+
+function getWriteFileArgsError(args: Record<string, unknown>): string | null {
+  if (typeof args.path !== "string" || args.path.trim() === "") return "缺少或无效的 path（必须为非空字符串）";
+  const hasContent = typeof args.content === "string" && args.content.length > 0;
+  const hasBase64 = typeof args.content_base64 === "string" && args.content_base64.length > 0;
+  if (!hasContent && !hasBase64) return "必须提供 content 或 content_base64 之一。大段 HTML 请用 content_base64。";
+  return null;
+}
+
 function getAllTools(): StructuredToolInterface[] {
   const allIds = listToolIds();
   const builtIn = getToolsByIds(allIds);
@@ -279,11 +289,25 @@ export async function* streamAgentWithTokens(
           const tool = toolMap.get(tc.name);
           let result: string;
           if (tool) {
-            try {
-              const args = safeParseArgs(tc.arguments);
-              result = String(await tool.invoke(args));
-            } catch (e) {
-              result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+            const args = safeParseArgs(tc.arguments);
+            if (tc.name === "write_file") {
+              const argsErr = getWriteFileArgsError(args as { path?: unknown; content?: unknown });
+              if (argsErr) {
+                result = `[error] ${argsErr} ${WRITE_FILE_SCHEMA_HINT}`;
+              } else {
+                try {
+                  result = String(await tool.invoke(args));
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  result = msg.includes("expected schema") ? `[error] ${msg} ${WRITE_FILE_SCHEMA_HINT}` : `[error] ${msg}`;
+                }
+              }
+            } else {
+              try {
+                result = String(await tool.invoke(args));
+              } catch (e) {
+                result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+              }
             }
           } else {
             result = `[error] Unknown tool: ${tc.name}`;
@@ -369,7 +393,20 @@ export async function* streamAgentWithTokens(
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) break;
     const toolResult = await toolNode.invoke({ messages: state });
-    const toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
+    let toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
+    toolMessages = toolMessages.map((m: BaseMessage) => {
+      if (m._getType() !== "tool") return m;
+      const content = typeof m.content === "string" ? m.content : "";
+      const tm = m as { name?: string; tool_call_id?: string };
+      if (tm.name === "write_file" && content.includes("expected schema")) {
+        return new ToolMessage({
+          content: `[error] 工具参数格式不符合要求。${WRITE_FILE_SCHEMA_HINT}`,
+          tool_call_id: tm.tool_call_id ?? "",
+          name: tm.name ?? "write_file",
+        });
+      }
+      return m;
+    });
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
   }
