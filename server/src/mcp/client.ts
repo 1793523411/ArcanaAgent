@@ -5,6 +5,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { McpServerConfig } from "../config/userConfig.js";
+import { logMCP } from "../lib/logger.js";
 
 type AnyTransport = StdioClientTransport | StreamableHTTPClientTransport;
 
@@ -42,9 +43,35 @@ function jsonSchemaToZod(schema: Record<string, unknown> | undefined): z.ZodObje
       case "boolean":
         field = z.boolean();
         break;
-      case "array":
-        field = z.array(z.any());
+      case "array": {
+        // 正确处理数组的 items 字段
+        const items = prop.items as Record<string, unknown> | undefined;
+        if (items && typeof items === "object") {
+          const itemType = items.type as string | undefined;
+          let itemSchema: z.ZodTypeAny;
+          switch (itemType) {
+            case "string":
+              itemSchema = z.string();
+              break;
+            case "number":
+            case "integer":
+              itemSchema = z.number();
+              break;
+            case "boolean":
+              itemSchema = z.boolean();
+              break;
+            case "object":
+              itemSchema = jsonSchemaToZod(items);
+              break;
+            default:
+              itemSchema = z.any();
+          }
+          field = z.array(itemSchema);
+        } else {
+          field = z.array(z.any());
+        }
         break;
+      }
       case "object":
         // 递归处理嵌套对象
         field = (prop.properties as Record<string, unknown>)
@@ -121,7 +148,7 @@ async function connectServer(config: McpServerConfig): Promise<void> {
   const { tools: mcpTools } = await client.listTools();
   const lcTools = mcpTools.map((t) => createLangChainTool(t, client, config.name));
   connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name, config });
-  console.log(`[MCP] Connected to "${config.name}" (${config.transport}) — ${lcTools.length} tool(s) available`);
+  logMCP("connect", config.name, `${lcTools.length} tool(s) available`);
 }
 
 async function disconnectServer(name: string): Promise<void> {
@@ -133,7 +160,7 @@ async function disconnectServer(name: string): Promise<void> {
     /* best effort */
   }
   connections.delete(name);
-  console.log(`[MCP] Disconnected from "${name}"`);
+  logMCP("disconnect", name);
 }
 
 export async function connectToMcpServers(servers: McpServerConfig[]): Promise<void> {
@@ -154,7 +181,7 @@ export async function connectToMcpServers(servers: McpServerConfig[]): Promise<v
     try {
       await connectServer(server);
     } catch (e) {
-      console.error(`[MCP] Failed to connect to "${server.name}":`, e instanceof Error ? e.message : String(e));
+      logMCP("error", server.name, e instanceof Error ? e.message : String(e));
     }
   }
 }

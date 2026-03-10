@@ -10,8 +10,12 @@ export async function listConversations(): Promise<ConversationMeta[]> {
   return r.json();
 }
 
-export async function createConversation(): Promise<ConversationMeta> {
-  const r = await fetch(`${BASE}/conversations`, { method: "POST" });
+export async function createConversation(title?: string): Promise<ConversationMeta> {
+  const r = await fetch(`${BASE}/conversations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(title ? { title } : {}),
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

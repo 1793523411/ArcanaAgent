@@ -19,6 +19,7 @@ interface Props {
   models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  disabled?: boolean;
 }
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -44,6 +45,7 @@ export default function ChatInputBar({
   models,
   modelId,
   onModelChange,
+  disabled = false,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -141,8 +143,8 @@ export default function ChatInputBar({
               onSend();
             }
           }}
-          placeholder={loading ? "AI 正在思考中…" : placeholder}
-          disabled={loading}
+          placeholder={loading || disabled ? "AI 正在思考中…" : placeholder}
+          disabled={loading || disabled}
           className={`
             w-full p-0 bg-transparent border-none text-[var(--color-text)]
             outline-none resize-none overflow-y-auto leading-relaxed
@@ -166,7 +168,7 @@ export default function ChatInputBar({
                   type="button"
                   onClick={() => fileRef.current?.click()}
                   aria-label="上传图片"
-                  disabled={loading}
+                  disabled={loading || disabled}
                   className="p-1.5 rounded-lg text-[var(--color-text-muted)] flex items-center justify-center disabled:cursor-not-allowed hover:bg-[var(--color-surface-hover)] transition-colors"
                 >
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -177,12 +179,12 @@ export default function ChatInputBar({
             )}
           </div>
           <div className="flex items-center gap-2">
-            {models.length > 1 && !loading ? (
+            {models.length > 1 && !loading && !disabled ? (
               <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                 <DropdownMenu.Trigger asChild>
                   <button
                     type="button"
-                    disabled={loading}
+                    disabled={loading || disabled}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
                   >
                     <span>{currentModel?.name ?? "模型"}</span>
@@ -221,8 +223,8 @@ export default function ChatInputBar({
             )}
             <button
               type="submit"
-              disabled={loading || (!value.trim() && files.length === 0)}
-              aria-label={loading ? "发送中" : "发送"}
+              disabled={loading || disabled || (!value.trim() && files.length === 0)}
+              aria-label={loading || disabled ? "发送中" : "发送"}
               className="p-2 rounded-full bg-[var(--color-accent)] text-white border-none hover:not-disabled:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">

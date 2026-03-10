@@ -24,6 +24,7 @@ interface Props {
   artifactCount?: number;
   onToggleArtifacts?: () => void;
   artifactsPanelOpen?: boolean;
+  isTaskExecuting?: boolean;
 }
 
 export default function ChatPanel({
@@ -46,6 +47,7 @@ export default function ChatPanel({
   artifactCount = 0,
   onToggleArtifacts,
   artifactsPanelOpen,
+  isTaskExecuting = false,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -64,6 +66,12 @@ export default function ChatPanel({
         {(messages ?? []).map((m, i) => (
           <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
         ))}
+        {isTaskExecuting && !loading && (
+          <div className="p-4 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] text-sm flex items-center gap-3">
+            <div className="animate-spin h-5 w-5 border-2 border-[var(--color-accent)] border-t-transparent rounded-full"></div>
+            <span>定时任务正在执行中，Agent 正在处理您的请求...</span>
+          </div>
+        )}
         {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0) && (
           <StreamingBubble
           content={streamingContent}
@@ -74,6 +82,7 @@ export default function ChatPanel({
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
           modelId={modelId}
+          conversationId={conversationId}
         />
         )}
         {error && (
@@ -89,14 +98,15 @@ export default function ChatPanel({
               value={input}
               onChange={onInputChange}
               onSend={onSend}
-              loading={loading}
+              loading={loading || isTaskExecuting}
               compact
-              placeholder="输入消息…"
+              placeholder={isTaskExecuting ? "定时任务执行中，请稍候..." : "输入消息…"}
               files={files}
               onFilesChange={onFilesChange}
               models={models}
               modelId={modelId}
               onModelChange={onModelChange}
+              disabled={isTaskExecuting}
             />
           </div>
           {artifactCount > 0 && onToggleArtifacts && (

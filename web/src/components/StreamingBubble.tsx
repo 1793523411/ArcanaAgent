@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import type { StreamingStatus, ToolLog } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
+import { getArtifactUrl } from "../api";
 
 interface Props {
   content: string;
@@ -12,6 +13,7 @@ interface Props {
   supportsReasoning?: boolean;
   modelName?: string;
   modelId?: string;
+  conversationId?: string;
 }
 
 function CopyIcon() {
@@ -23,7 +25,7 @@ function CopyIcon() {
   );
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false, modelName }: Props) {
+export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false, modelName, conversationId }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
@@ -64,6 +66,21 @@ export default function StreamingBubble({ content, reasoning, status, toolLogs =
     } catch {
       /* ignore */
     }
+  };
+
+  // 转换图片 URL：将本地路径转换为 artifact URL
+  const transformImageUrl = (src: string) => {
+    // 如果是绝对 URL 或 data URI，直接返回
+    if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:")) {
+      return src;
+    }
+    // 如果没有 conversationId，无法转换，返回原路径
+    if (!conversationId) {
+      return src;
+    }
+    // 处理相对路径，转换为 artifact URL
+    const cleaned = src.startsWith("./") ? src.slice(2) : src;
+    return getArtifactUrl(conversationId, cleaned);
   };
 
   return (
@@ -111,14 +128,14 @@ export default function StreamingBubble({ content, reasoning, status, toolLogs =
               onScroll={handleReasoningScroll}
               className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto"
             >
-              {hasReasoning ? <MarkdownContent>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
+              {hasReasoning ? <MarkdownContent transformImageUrl={transformImageUrl}>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
             </div>
           )}
         </div>
       )}
       {hasToolLogs && <ToolCallBlock logs={toolLogs} />}
       {content ? (
-        <MarkdownContent>{content}</MarkdownContent>
+        <MarkdownContent transformImageUrl={transformImageUrl}>{content}</MarkdownContent>
       ) : (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
           <span className="loading-dots" />

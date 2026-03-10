@@ -7,6 +7,7 @@ interface Props {
   onDelete: (id: string, e: React.MouseEvent) => void;
   onNewConversation: () => void;
   onOpenConfig: () => void;
+  onOpenScheduledTasks: () => void;
 }
 
 export default function Sidebar({
@@ -16,6 +17,7 @@ export default function Sidebar({
   onDelete,
   onNewConversation,
   onOpenConfig,
+  onOpenScheduledTasks,
 }: Props) {
   return (
     <aside className="w-[260px] h-full border-r border-[var(--color-border)] bg-[var(--color-surface)] flex flex-col shrink-0 min-h-0">
@@ -61,7 +63,16 @@ export default function Sidebar({
           </div>
         ))}
       </nav>
-      <div className="p-2 border-t border-[var(--color-border)]">
+      <div className="p-2 border-t border-[var(--color-border)] space-y-2">
+        <button
+          type="button"
+          onClick={onOpenScheduledTasks}
+          aria-label="定时任务"
+          className="w-full py-2 px-3 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-[13px] cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors flex items-center justify-center gap-2"
+        >
+          <span>⏰</span>
+          <span>定时任务</span>
+        </button>
         <button
           type="button"
           onClick={onOpenConfig}

@@ -1,16 +1,47 @@
 {
-  "name": "my_agent",
-  "private": true,
+  "name": "rule-agent",
+  "version": "1.0.0",
+  "description": "AI-powered rule engine with scheduled tasks and agent workflows",
+  "type": "module",
+  "bin": {
+    "rule-agent": "./cli.js"
+  },
+  "main": "./server/dist/index.js",
+  "files": [
+    "cli.js",
+    "server/dist",
+    "server/public",
+    "config/models.example.json",
+    "README.md",
+    "CONFIGURATION.md"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "automation",
+    "scheduler",
+    "workflow"
+  ],
+  "author": "",
+  "license": "MIT",
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
     "dev:server": "cd server && npm run dev",
     "dev:web": "cd web && npm run dev",
-    "build": "npm run build:server && npm run build:web",
+    "build": "npm run build:server && npm run build:web && npm run copy:web",
     "build:server": "cd server && npm run build",
     "build:web": "cd web && npm run build",
-    "start": "cd server && npm run start"
+    "copy:web": "rm -rf server/public && mkdir -p server/public && cp -r web/dist/* server/public/",
+    "start": "cd server && npm run start",
+    "prepare": "npm run build"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2"
   },
   "devDependencies": {
     "concurrently": "^9.1.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

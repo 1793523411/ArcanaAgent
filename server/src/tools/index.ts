@@ -1,15 +1,9 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
-import { calculator } from "./calculator.js";
-import { get_time } from "./get_time.js";
-import { echo } from "./echo.js";
 import { run_command } from "./run_command.js";
 import { read_file } from "./read_file.js";
 import { write_file } from "./write_file.js";
 
 export const tools = {
-  calculator,
-  get_time,
-  echo,
   run_command,
   read_file,
   write_file,

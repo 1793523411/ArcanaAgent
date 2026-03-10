@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
+import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
 import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem } from "../types";
 import { useToast } from "./Toast";
@@ -24,6 +25,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
+  const [deleteSkillTarget, setDeleteSkillTarget] = useState<string | null>(null);
 
   // MCP form state
   const [showMcpForm, setShowMcpForm] = useState(false);
@@ -102,10 +104,10 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   };
 
   const handleDeleteSkill = async (name: string) => {
-    if (!confirm(`确定删除技能「${name}」？`)) return;
     try {
       await deleteSkill(name);
       setSkills((prev) => prev.filter((s) => s.name !== name));
+      setDeleteSkillTarget(null);
       toast("技能已删除", "success");
     } catch (err) {
       toast(err instanceof Error ? err.message : "删除失败", "error");
@@ -182,6 +184,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   ] as const;
 
   return (
+    <>
     <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60 z-[100]" />
@@ -517,7 +520,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                         {s.userUploaded !== false && (
                           <button
                             type="button"
-                            onClick={() => handleDeleteSkill(s.name)}
+                            onClick={() => setDeleteSkillTarget(s.name)}
                             className="shrink-0 px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
                           >
                             删除
@@ -554,5 +557,36 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
+
+    {/* Delete Skill Confirmation Dialog */}
+    <AlertDialog.Root open={deleteSkillTarget !== null} onOpenChange={(open) => !open && setDeleteSkillTarget(null)}>
+      <AlertDialog.Portal>
+        <AlertDialog.Overlay className="fixed inset-0 bg-black/60 z-[150] data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0" />
+        <AlertDialog.Content className="fixed left-[50%] top-[50%] z-[151] max-h-[85vh] w-full max-w-md translate-x-[-50%] translate-y-[-50%] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] p-6 shadow-lg data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95">
+          <AlertDialog.Title className="text-lg font-semibold text-[var(--color-text)]">
+            删除技能
+          </AlertDialog.Title>
+          <AlertDialog.Description className="mt-2 text-sm text-[var(--color-text-muted)]">
+            确定删除技能「{deleteSkillTarget}」？此操作无法撤销。
+          </AlertDialog.Description>
+          <div className="mt-6 flex justify-end gap-3">
+            <AlertDialog.Cancel asChild>
+              <button className="px-4 py-2 rounded border border-[var(--color-border)] text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors">
+                取消
+              </button>
+            </AlertDialog.Cancel>
+            <AlertDialog.Action asChild>
+              <button
+                onClick={() => deleteSkillTarget && handleDeleteSkill(deleteSkillTarget)}
+                className="px-4 py-2 rounded bg-red-500 text-white hover:bg-red-600 transition-colors"
+              >
+                删除
+              </button>
+            </AlertDialog.Action>
+          </div>
+        </AlertDialog.Content>
+      </AlertDialog.Portal>
+    </AlertDialog.Root>
+    </>
   );
 }

@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, getArtifacts } from "./api";
+import { createConversation, deleteConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
 import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 
@@ -11,9 +12,11 @@ export default function App() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
+  const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
+  const [executingTaskConversations, setExecutingTaskConversations] = useState<Set<string>>(new Set());
   const { setModelId, models, modelId } = useConfig();
   const {
     conversations,
@@ -126,6 +129,77 @@ export default function App() {
 
   const error = sendError ?? loadError;
 
+  const refreshConversationMessages = useCallback(async (conversationId: string) => {
+    if (current?.id !== conversationId) return;
+    try {
+      const latestMessages = await fetchConversationMessages(conversationId);
+      setMessages(Array.isArray(latestMessages) ? latestMessages : []);
+
+      // 检查是否有AI回复，如果有则移除执行中状态
+      if (executingTaskConversations.has(conversationId)) {
+        const hasAiReply = Array.isArray(latestMessages) && latestMessages.some(m => m.type === 'ai');
+        if (hasAiReply) {
+          setExecutingTaskConversations(prev => {
+            const next = new Set(prev);
+            next.delete(conversationId);
+            return next;
+          });
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }, [current?.id, setMessages, executingTaskConversations]);
+
+  // 自动刷新当前会话（检测定时任务更新）
+  useEffect(() => {
+    if (!current?.id || loading) return;
+
+    // 如果当前会话在执行任务，每3秒检查一次；否则每10秒
+    const interval = executingTaskConversations.has(current.id) ? 3000 : 10000;
+
+    const timer = setInterval(async () => {
+      try {
+        const latestMessages = await fetchConversationMessages(current.id);
+        const newMessages = Array.isArray(latestMessages) ? latestMessages : [];
+
+        // 如果消息数量不同，说明有更新
+        if (newMessages.length !== messages.length) {
+          setMessages(newMessages);
+
+          // 如果这个对话在执行任务，检查是否有AI回复了
+          if (executingTaskConversations.has(current.id)) {
+            const hasAiReply = newMessages.some(m => m.type === 'ai');
+            if (hasAiReply) {
+              // 任务执行完成，移除执行中状态
+              setExecutingTaskConversations(prev => {
+                const next = new Set(prev);
+                next.delete(current.id);
+                return next;
+              });
+            }
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }, interval);
+
+    return () => clearInterval(timer);
+  }, [current?.id, messages.length, loading, setMessages, executingTaskConversations]);
+
+  // 超时保护：2分钟后自动清除所有执行中状态（防止卡住）
+  useEffect(() => {
+    if (executingTaskConversations.size === 0) return;
+
+    const timeout = setTimeout(() => {
+      setExecutingTaskConversations(new Set());
+      console.warn('Task execution timeout (120s), cleared all executing states');
+    }, 120000); // 改为2分钟
+
+    return () => clearTimeout(timeout);
+  }, [executingTaskConversations]);
+
   return (
     <div className="flex h-screen overflow-hidden">
       <Sidebar
@@ -135,6 +209,7 @@ export default function App() {
         onDelete={handleDeleteClick}
         onNewConversation={handleNewConversation}
         onOpenConfig={() => setShowConfig(true)}
+        onOpenScheduledTasks={() => setShowScheduledTasks(true)}
       />
       <main className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
         <div className={`flex flex-col min-w-0 min-h-0 overflow-hidden ${showArtifacts && current ? "w-1/2" : "flex-1"} transition-all duration-300`}>
@@ -171,6 +246,7 @@ export default function App() {
               artifactCount={artifactCount}
               onToggleArtifacts={() => setShowArtifacts((prev) => !prev)}
               artifactsPanelOpen={showArtifacts}
+              isTaskExecuting={executingTaskConversations.has(current.id)}
             />
           )}
         </div>
@@ -188,6 +264,23 @@ export default function App() {
           onClose={() => setShowConfig(false)}
           onSaved={() => setShowConfig(false)}
         />
+      )}
+      {showScheduledTasks && (
+        <div className="fixed inset-0 z-50 flex">
+          <div className="flex-1" onClick={() => setShowScheduledTasks(false)} />
+          <div className="w-2/3 max-w-4xl">
+            <ScheduledTasksPanel
+              onClose={() => setShowScheduledTasks(false)}
+              onConversationListRefresh={loadList}
+              onNavigateToConversation={(id) => navigate(`/c/${id}`)}
+              currentConversationId={current?.id}
+              onRefreshCurrentConversation={refreshConversationMessages}
+              onTaskExecutionStart={(conversationId) => {
+                setExecutingTaskConversations(prev => new Set(prev).add(conversationId));
+              }}
+            />
+          </div>
+        </div>
       )}
       <DeleteConfirmModal
         open={deleteTargetId !== null}
