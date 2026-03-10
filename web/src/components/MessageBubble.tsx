@@ -3,6 +3,7 @@ import type { StoredMessage } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
+import { getArtifactUrl } from "../api";
 
 interface Props {
   message: StoredMessage;
@@ -46,6 +47,21 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
     } catch {
       /* ignore */
     }
+  };
+
+  // 转换图片 URL：将本地路径转换为 artifact URL
+  const transformImageUrl = (src: string) => {
+    // 如果是绝对 URL 或 data URI，直接返回
+    if (src.startsWith("http://") || src.startsWith("https://") || src.startsWith("data:")) {
+      return src;
+    }
+    // 如果没有 conversationId，无法转换，返回原路径
+    if (!conversationId) {
+      return src;
+    }
+    // 处理相对路径，转换为 artifact URL
+    const cleaned = src.startsWith("./") ? src.slice(2) : src;
+    return getArtifactUrl(conversationId, cleaned);
   };
 
   return (
@@ -115,7 +131,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (
-          text ? <MarkdownContent>{text}</MarkdownContent> : null
+          text ? <MarkdownContent transformImageUrl={transformImageUrl}>{text}</MarkdownContent> : null
         )}
       </div>
     </div>

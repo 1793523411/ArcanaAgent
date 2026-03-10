@@ -24,6 +24,14 @@ import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
+import {
+  getConversationLogger,
+  logConversation,
+  logError,
+  logLLMCall,
+  logToolCall,
+  PerformanceTimer,
+} from "../lib/logger.js";
 
 
 function convId(req: Request): string {
@@ -58,8 +66,11 @@ export function getConversations(_req: Request, res: Response): void {
 
 export function postConversations(_req: Request, res: Response): void {
   try {
+    const body = _req.body as { title?: unknown } | undefined;
+    const title = typeof body?.title === "string" ? body.title : undefined;
     const config = loadUserConfig();
-    const { id, meta } = createConversation(config.context);
+    const { id, meta } = createConversation(config.context, title);
+    logConversation("create", id, meta.title);
     res.status(201).json(meta);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -84,6 +95,7 @@ export function deleteConversationById(req: Request, res: Response): void {
   }
   try {
     deleteConversation(id);
+    logConversation("delete", id);
     res.status(204).send();
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -220,6 +232,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
 
   writeImmediate("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
 
+  const logger = getConversationLogger(id);
+  const requestTimer = new PerformanceTimer();
+  logger.info("User message received", { text: displayText.slice(0, 100) });
+
   const onToken = (token: string) => {
     if (token) write("data: " + JSON.stringify({ type: "token", content: token }) + "\n\n");
   };
@@ -232,6 +248,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
   let lastReasoning: string | undefined;
+  let llmCallCount = 0;
+  let toolCallCount = 0;
+
   try {
     for await (const chunk of streamAgentWithTokens(lcMessages, onToken, config.modelId, onReasoningToken, skillContext)) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
@@ -241,6 +260,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         lastReasoning = part.reasoning;
       }
       if (key === "llmCall" && part?.messages?.length) {
+        llmCallCount++;
         const aiMsg = part.messages.find((m) => (m as { _getType?: () => string })._getType?.() === "ai") as { tool_calls?: Array<{ name: string; args?: string | object }>; content?: string } | undefined;
         const toolCalls = aiMsg?.tool_calls;
         if (Array.isArray(toolCalls) && toolCalls.length > 0) {
@@ -255,10 +275,19 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         for (const msg of part.messages) {
           const toolMsg = msg as { _getType?: () => string; name?: string; content?: string };
           if (toolMsg._getType?.() === "tool" && toolMsg.name) {
+            toolCallCount++;
             const output = typeof toolMsg.content === "string" ? toolMsg.content : "";
             const pending = pendingToolLogs.filter((tl) => tl.name === toolMsg.name && !tl.output);
             if (pending.length > 0) pending[0].output = output;
             writeImmediate("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
+
+            // 记录工具调用
+            logToolCall(id, {
+              toolName: toolMsg.name,
+              input: pending[0]?.input || "",
+              output: output.slice(0, 500), // 限制长度
+              success: !output.startsWith("[error]"),
+            });
           }
         }
       }
@@ -307,8 +336,16 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       appendMessages(id, toStore);
     }
     flushNow();
+
+    // 记录请求完成
+    logger.info("Request completed", {
+      llmCalls: llmCallCount,
+      toolCalls: toolCallCount,
+      durationMs: requestTimer.elapsed(),
+    });
   } catch (e) {
     flushNow();
+    logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
     res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
   } finally {
     if (flushTimer !== null) clearTimeout(flushTimer);
@@ -467,7 +504,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
   if (Array.isArray(body.mcpServers)) {
     connectToMcpServers(config.mcpServers).catch((e) => {
-      console.error("[MCP] Reconnection failed:", e instanceof Error ? e.message : String(e));
+      logError(null, e instanceof Error ? e : String(e), { stage: "mcp_reconnect" });
     });
   }
 

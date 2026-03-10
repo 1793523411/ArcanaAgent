@@ -8,6 +8,7 @@ import { getMcpTools } from "../mcp/client.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { getSkillContextForAgent } from "../skills/manager.js";
+import { serverLogger } from "../lib/logger.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
@@ -255,7 +256,23 @@ export async function* streamAgentWithTokens(
           },
         };
 
-        if (toolCalls.length === 0) return;
+        // 如果没有工具调用，检查是否需要生成总结
+        if (toolCalls.length === 0) {
+          // 如果最后一轮没有内容，强制生成总结
+          if (!lastHadContent) {
+            const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
+              conversationMessages, onToken, onReasoningToken!, []
+            );
+            const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+            yield {
+              llmCall: {
+                messages: [summaryMsg],
+                ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
+              },
+            };
+          }
+          return;
+        }
 
         const toolMessages: BaseMessage[] = [];
         for (const tc of toolCalls) {
@@ -291,7 +308,9 @@ export async function* streamAgentWithTokens(
       }
       return;
     } catch (e) {
-      console.warn("[Agent] Reasoning stream failed, falling back to standard LangChain stream:", e instanceof Error ? e.message : String(e));
+      serverLogger.warn("Reasoning stream failed, falling back to standard LangChain stream", {
+        error: e instanceof Error ? e.message : String(e),
+      });
     }
   }
 

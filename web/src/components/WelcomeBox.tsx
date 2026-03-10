@@ -28,10 +28,10 @@ export default function WelcomeBox({
       <div className="max-w-[640px] w-full flex flex-col items-center gap-6">
         <div className="text-center">
           <h1 className="m-0 mb-3 text-[28px] font-semibold text-[var(--color-accent)]">
-            🚀 你好，欢迎回来！
+            🚀 你好，欢迎使用！
           </h1>
           <p className="m-0 text-[15px] leading-relaxed text-[var(--color-text-muted)]">
-            欢迎使用智能体对话。通过内置工具和 Skills，可以帮你搜索、计算、分析数据等，几乎可以做任何事情。
+            欢迎使用智能体对话。通过内置工具和Skills，可以帮你搜索、解析网页等，可以做任何事情。
           </p>
         </div>
         <ChatInputBar

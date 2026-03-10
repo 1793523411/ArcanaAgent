@@ -1,99 +1,363 @@
-# 网页端智能体 (Web Agent)
+# Rule Agent
 
-一个最简单的网页端智能体应用：前端 React + TypeScript，后端 Express + TypeScript，Agent 使用 LangGraph，支持流式/非流式对话、历史会话（文件存储）、上下文压缩、可配置的 Tools，以及符合 SKILL.md 规范的 Demo Skill。
+AI-powered rule engine with scheduled tasks and agent workflows.
 
-## 功能
+## Features
 
-- **对话**：创建会话、发送消息、查看历史；数据存于本地文件，会话隔离。
-- **上下文**：每个会话单独管理，超过约 30 条消息时自动只保留最近 20 条参与推理（可压缩）。
-- **流式 / 非流式**：页面上对话使用流式接口实时展示；另有 `POST /chat` 与 `POST /conversations/:id/messages/sync` 支持非流式调用。
-- **Tools**：内置工具（如 `calculator`、`get_time`、`echo`），可在「Tools / MCP」中勾选启用，供 Agent 在对话中调用。
-- **Skill**：默认技能在项目根目录 `skills/`（随仓库提交）；用户上传的 ZIP 安装到 `server/data/skills/`，可在设置中管理。
-- **模型**：通过 `config/models.json` 配置，默认使用火山引擎（Volcengine）豆包模型；API Key 可用环境变量 `VOLCENGINE_API_KEY` 覆盖。
+- 🤖 **AI Agent Conversations** - Chat with AI agents powered by multiple LLM providers
+- ⏰ **Scheduled Tasks** - Automate tasks with cron-based scheduling
+- 🔗 **Webhook Integration** - Connect with external services (Feishu, Slack, etc.)
+- 📊 **Task History** - Track and monitor task execution
+- 🎯 **Skill System** - Extend functionality with custom skills
+- 🌐 **Web UI** - Beautiful web interface for managing everything
 
-## 目录结构
+## Installation
 
-```
-my_agent/
-├── config/
-│   └── models.json          # 模型配置（火山引擎等）
-├── server/                  # 后端 (Express + LangGraph)
-│   └── src/
-│       ├── index.ts
-│       ├── agent.ts
-│       ├── storage.ts
-│       ├── tools/           # 可被 Agent 调用的工具 (calculator, get_time, echo)
-│       └── ...
-├── skills/                 # 默认 Skill（SKILL.md 规范，随仓库提交）
-│   └── demo/
-│       ├── SKILL.md
-│       └── scripts/
-├── web/                     # 前端 (Vite + React)
-│   └── src/
-│       ├── App.tsx
-│       ├── api.ts
-│       └── ...
-├── data/                    # 运行时生成：会话与配置
-│   ├── conversations/
-│   └── user-config.json
-└── prompt.md
-```
-
-## 快速开始
-
-### 1. 安装依赖
+### Global Installation (Recommended)
 
 ```bash
-cd /Users/cloud/Desktop/my_agent
+npm install -g rule-agent
+```
+
+### From Source
+
+```bash
+git clone <your-repo>
+cd rule-agent
 npm install
-cd server && npm install
-cd ../web && npm install
+npm run build
+npm link
 ```
 
-### 2. 配置模型
+## CLI Usage
 
-已包含 `config/models.json` 中的火山引擎配置。如需使用自己的 API Key，可设置环境变量：
+### Start the Server
 
 ```bash
-export VOLCENGINE_API_KEY=你的apiKey
+rule-agent start
 ```
 
-### 3. 启动
+This will:
+- Start the server on port 3001 (default)
+- Create data directory
+- Show you the server URL
 
-同时启动后端与前端（推荐）：
+### Open in Browser
+
+```bash
+rule-agent open
+```
+
+### Check Status
+
+```bash
+rule-agent status
+```
+
+### View Logs
+
+```bash
+rule-agent logs
+```
+
+### Stop the Server
+
+```bash
+rule-agent stop
+```
+
+### Restart the Server
+
+```bash
+rule-agent restart
+```
+
+## Configuration
+
+**📖 For detailed configuration guide, see [CONFIGURATION.md](./CONFIGURATION.md)**
+
+### Quick Start Configuration
+
+### Configuration Files Location
+
+All user configuration files are stored in your home directory:
+
+```
+~/.rule-agent/
+├── models.json          # AI model providers configuration
+├── user-config.json     # User preferences (tools, MCP servers, etc.)
+├── server.pid           # Server process ID
+└── server.log           # Server logs
+```
+
+### First Time Setup
+
+When you first run `rule-agent start`, it will create a configuration template at `~/.rule-agent/models.json`. You need to update this file with your API keys.
+
+**Edit the configuration file:**
+
+```bash
+# macOS/Linux
+nano ~/.rule-agent/models.json
+# or
+code ~/.rule-agent/models.json
+
+# Windows
+notepad %USERPROFILE%\.rule-agent\models.json
+```
+
+**Configuration format:**
+
+```json
+{
+  "models": {
+    "providers": {
+      "volcengine": {
+        "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
+        "apiKey": "YOUR_API_KEY_HERE",
+        "api": "openai-completions",
+        "models": [...]
+      },
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "apiKey": "YOUR_OPENAI_API_KEY",
+        "api": "openai-completions",
+        "models": [...]
+      }
+    }
+  }
+}
+```
+
+Replace `YOUR_API_KEY_HERE` with your actual API keys. You can configure multiple providers and the UI will let you switch between them.
+
+### Data Directory
+
+By default, conversation data and logs are stored in `~/.rule-agent/`. You can change this with the `DATA_DIR` environment variable:
+
+```bash
+PORT=8080 rule-agent start          # Custom port
+DATA_DIR=/path/to/data rule-agent start  # Custom data directory
+```
+
+## API Usage
+
+Once the server is running, you can access the REST API:
+
+### Conversations API
+
+```bash
+# Create a conversation
+curl -X POST http://localhost:3001/conversations \
+  -H "Content-Type: application/json" \
+  -d '{"title": "My Conversation"}'
+
+# Send a message
+curl -X POST http://localhost:3001/conversations/{id}/messages \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Hello, AI!"}'
+
+# Get messages
+curl http://localhost:3001/conversations/{id}/messages
+```
+
+### Scheduled Tasks API
+
+```bash
+# Create a task
+curl -X POST http://localhost:3001/scheduled-tasks \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Daily Report",
+    "type": "webhook",
+    "schedule": "0 9 * * *",
+    "enabled": true,
+    "config": {
+      "url": "https://your-webhook-url",
+      "useModelOutput": true,
+      "prompt": "Generate a daily report"
+    }
+  }'
+
+# List tasks
+curl http://localhost:3001/scheduled-tasks
+
+# Execute a task manually
+curl -X POST http://localhost:3001/scheduled-tasks/{id}/execute
+
+# Get execution history
+curl http://localhost:3001/scheduled-executions
+```
+
+## API Endpoints
+
+### Conversations
+
+- `GET /conversations` - List all conversations
+- `POST /conversations` - Create a new conversation
+- `GET /conversations/:id` - Get conversation details
+- `GET /conversations/:id/messages` - Get conversation messages
+- `POST /conversations/:id/messages` - Send a message (streaming SSE)
+- `POST /conversations/:id/messages/sync` - Send a message (non-streaming)
+- `DELETE /conversations/:id` - Delete a conversation
+
+### Scheduled Tasks
+
+- `GET /scheduled-tasks` - List all tasks
+- `POST /scheduled-tasks` - Create a new task
+- `GET /scheduled-tasks/:id` - Get task details
+- `PUT /scheduled-tasks/:id` - Update a task
+- `DELETE /scheduled-tasks/:id` - Delete a task
+- `POST /scheduled-tasks/:id/execute` - Execute a task manually
+- `POST /scheduled-tasks/:id/toggle` - Enable/disable a task
+- `GET /scheduled-tasks/:id/executions` - Get task execution history
+- `GET /scheduled-executions` - Get all execution history
+
+### Configuration
+
+- `GET /config` - Get configuration
+- `PUT /config` - Update configuration
+- `GET /models` - List available AI models
+
+## Scheduled Tasks
+
+### Task Types
+
+1. **Conversation** - Send messages to AI conversations
+   ```json
+   {
+     "type": "conversation",
+     "config": {
+       "message": "Your prompt here"
+     }
+   }
+   ```
+
+2. **Webhook** - HTTP requests to external APIs
+   ```json
+   {
+     "type": "webhook",
+     "config": {
+       "url": "https://api.example.com/webhook",
+       "method": "POST",
+       "useModelOutput": true,
+       "prompt": "Generate content"
+     }
+   }
+   ```
+
+3. **Skill** - Execute custom skills
+   ```json
+   {
+     "type": "skill",
+     "config": {
+       "skillName": "demo",
+       "params": {}
+     }
+   }
+   ```
+
+### Cron Schedule Format
+
+```
+┌─────────── minute (0 - 59)
+│ ┌───────── hour (0 - 23)
+│ │ ┌─────── day of month (1 - 31)
+│ │ │ ┌───── month (1 - 12)
+│ │ │ │ ┌─── day of week (0 - 6)
+* * * * *
+```
+
+Examples:
+- `0 9 * * *` - Every day at 9:00 AM
+- `*/5 * * * *` - Every 5 minutes
+- `0 0 * * 0` - Every Sunday at midnight
+- `0 9 * * 1-5` - Weekdays at 9:00 AM
+
+## Development
+
+### Prerequisites
+
+- Node.js >= 18.0.0
+- npm or yarn
+
+### Setup
+
+```bash
+npm install
+npm run build
+```
+
+### Development Mode
 
 ```bash
 npm run dev
 ```
 
-或分别启动：
+This starts:
+- Backend on `http://localhost:3001`
+- Frontend on `http://localhost:5173` (with API proxy)
 
-```bash
-# 终端 1：后端 http://localhost:3001
-npm run dev:server
+### Project Structure
 
-# 终端 2：前端 http://localhost:5173（代理 /api 到后端）
-npm run dev:web
+```
+rule-agent/
+├── cli.js              # CLI entry point
+├── server/            # Backend
+│   ├── src/          # TypeScript source
+│   ├── dist/         # Compiled JavaScript
+│   └── public/       # Frontend static files (after build)
+├── web/              # Frontend (React + TypeScript)
+│   └── src/
+├── skills/           # Custom skills
+└── data/            # Data directory (auto-created)
 ```
 
-浏览器打开 http://localhost:5173 即可使用。
+## Configuration File
 
-## API 说明
+Location: `data/user-config.json` (or `~/.rule-agent/user-config.json` in production)
 
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | /conversations | 会话列表 |
-| POST | /conversations | 创建会话 |
-| GET | /conversations/:id | 会话详情 |
-| GET | /conversations/:id/messages | 会话消息列表 |
-| POST | /conversations/:id/messages | 发送消息（流式 SSE） |
-| POST | /conversations/:id/messages/sync | 发送消息（非流式） |
-| POST | /chat | 直接对话（非流式，无需会话 ID） |
-| GET | /config | 获取 Skill/MCP 配置 |
-| PUT | /config | 更新配置（enabledToolIds、mcpServers） |
+Example:
 
-## 技术栈
+```json
+{
+  "llm": {
+    "provider": "openai",
+    "apiKey": "your-api-key",
+    "baseUrl": "https://api.openai.com/v1",
+    "defaultModel": "gpt-4"
+  },
+  "enabledToolIds": ["calculator", "get_time"],
+  "mcpServers": []
+}
+```
 
-- **前端**：React 18、TypeScript、Vite
-- **后端**：Express、TypeScript、LangGraph、@langchain/openai（兼容火山引擎 OpenAI 接口）
-- **存储**：文件系统（`data/conversations`、`data/user-config.json`）
+## Troubleshooting
+
+### Server won't start
+
+```bash
+rule-agent status      # Check status
+rule-agent logs        # View error logs
+rule-agent restart     # Restart server
+```
+
+### Port already in use
+
+```bash
+PORT=8080 rule-agent start
+```
+
+### Permission errors
+
+```bash
+chmod +x cli.js
+```
+
+## License
+
+MIT
+
+## Contributing
+
+Contributions welcome! Please submit a Pull Request.

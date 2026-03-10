@@ -3,7 +3,8 @@ import { z } from "zod";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
 
-const MAX_TIMEOUT_MS = 120_000;
+const MAX_TIMEOUT_MS = 600_000; // 10 分钟，足够处理图片生成等耗时操作
+const DEFAULT_TIMEOUT_MS = 600_000; // 默认也设为 10 分钟
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
 const DANGEROUS_PATTERNS = [
@@ -48,7 +49,7 @@ export const run_command = tool(
     const blocked = isDangerous(input.command);
     if (blocked) return blocked;
 
-    const timeoutMs = Math.min(input.timeout_ms ?? 30_000, MAX_TIMEOUT_MS);
+    const timeoutMs = Math.min(input.timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
     const cwd = input.working_directory && existsSync(input.working_directory) ? input.working_directory : process.cwd();
 
     return new Promise<string>((resolve) => {
@@ -83,7 +84,7 @@ export const run_command = tool(
       "Dangerous system-level commands (rm -rf /, mkfs, dd, shutdown, etc.) are blocked for safety.",
     schema: z.object({
       command: z.string().describe("The shell command to execute, e.g. 'python script.py --arg value' or 'bash hello.sh'"),
-      timeout_ms: z.number().optional().describe("Max execution time in milliseconds (default 30000, max 120000)"),
+      timeout_ms: z.number().optional().describe("Max execution time in milliseconds (default 600000, max 600000 = 10 minutes)"),
       working_directory: z.string().optional().describe("Working directory for the command (defaults to server cwd)"),
     }),
   }

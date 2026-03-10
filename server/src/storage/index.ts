@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync, openSync, fsyncSync, closeSync, rmSync } from "fs";
 import { join } from "path";
 import type { ContextStrategyConfig } from "../config/userConfig.js";
+import { closeConversationLogger } from "../lib/logger.js";
 
 const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
 const CONVERSATIONS_DIR = join(DATA_DIR, "conversations");
@@ -190,7 +191,10 @@ export function listConversations(): ConversationMeta[] {
   return list;
 }
 
-export function createConversation(snapshotContext?: ContextStrategyConfig): { id: string; meta: ConversationMeta } {
+export function createConversation(
+  snapshotContext?: ContextStrategyConfig,
+  initialTitle?: string
+): { id: string; meta: ConversationMeta } {
   ensureDir(CONVERSATIONS_DIR);
   const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
   const dir = conversationDir(id);
@@ -198,7 +202,7 @@ export function createConversation(snapshotContext?: ContextStrategyConfig): { i
   const now = new Date().toISOString();
   const meta: ConversationMeta = {
     id,
-    title: "新对话",
+    title: initialTitle?.trim() || "新对话",
     createdAt: now,
     updatedAt: now,
   };
@@ -285,6 +289,7 @@ export function setConversationTitle(id: string, title: string): void {
 export function deleteConversation(id: string): boolean {
   const dir = conversationDir(id);
   if (!existsSync(dir)) return false;
+  closeConversationLogger(id); // 清理日志器
   rmSync(dir, { recursive: true });
   return true;
 }

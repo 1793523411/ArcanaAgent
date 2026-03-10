@@ -10,7 +10,6 @@ export default defineConfig({
       "/api": {
         target: "http://localhost:3001",
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ""),
         configure: (proxy) => {
           proxy.on("proxyRes", (proxyRes, req, res) => {
             if (proxyRes.headers["content-type"]?.includes("text/event-stream")) {

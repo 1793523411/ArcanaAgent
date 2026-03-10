@@ -2,7 +2,7 @@
   "name": "my_agent_server",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "IS_DEV=true tsx watch src/index.ts",
     "sim:context": "tsx src/scripts/simulate-context.ts",
     "build": "tsc",
     "start": "node dist/index.js"
@@ -14,9 +14,12 @@
     "@langchain/openai": "^0.3.14",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "adm-zip": "^0.5.16",
+    "axios": "^1.13.6",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "winston": "^3.19.0",
     "zod": "^3.24.0"
   },
   "devDependencies": {
@@ -25,6 +28,7 @@
     "@types/express": "^5.0.0",
     "@types/multer": "^2.1.0",
     "@types/node": "^22.10.0",
+    "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

@@ -1,9 +1,15 @@
 import { readFileSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { homedir } from "os";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const configPath = join(__dirname, "../../../config/models.json");
+
+// 开发模式使用项目配置，生产模式使用用户主目录配置
+const isDev = process.env.IS_DEV === 'true';
+const configPath = isDev
+  ? join(__dirname, "../../../config/models.json")
+  : join(homedir(), ".rule-agent", "models.json");
 
 export interface ModelSpec {
   id: string;

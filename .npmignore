@@ -1,0 +1,45 @@
+# Development files
+node_modules/
+.git/
+.gitignore
+.DS_Store
+
+# Source files (we only need built files)
+server/src/
+web/src/
+web/node_modules/
+
+# Development configs
+tsconfig.json
+vite.config.ts
+.env.local
+.env.*.local
+
+# Build artifacts not needed
+web/dist/
+server/tsconfig.json
+web/tsconfig.json
+web/tsconfig.node.json
+
+# Documentation
+docs/
+
+# Tests
+*.test.ts
+*.test.js
+__tests__/
+
+# Logs and data
+*.log
+data/
+.rule-agent/
+
+# Config with API keys (only include example)
+config/models.json
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~

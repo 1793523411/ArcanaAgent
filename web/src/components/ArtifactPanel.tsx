@@ -114,6 +114,151 @@ export default function ArtifactPanel({ conversationId, onClose }: Props) {
   );
 }
 
+// ─── 树状结构数据类型 ────────────────────────────────────────
+
+interface TreeNode {
+  name: string;
+  path: string;
+  type: "file" | "folder";
+  children?: TreeNode[];
+  artifact?: ArtifactMeta;
+}
+
+// ─── 构建树状结构 ────────────────────────────────────────
+
+function buildFileTree(artifacts: ArtifactMeta[]): TreeNode {
+  const root: TreeNode = {
+    name: "root",
+    path: "",
+    type: "folder",
+    children: [],
+  };
+
+  for (const artifact of artifacts) {
+    const parts = artifact.path.split("/");
+    let current = root;
+
+    // 遍历路径的每一部分
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isFile = i === parts.length - 1;
+      const currentPath = parts.slice(0, i + 1).join("/");
+
+      if (!current.children) current.children = [];
+
+      // 查找已存在的节点
+      let node = current.children.find((n) => n.name === part);
+
+      if (!node) {
+        // 创建新节点
+        node = {
+          name: part,
+          path: currentPath,
+          type: isFile ? "file" : "folder",
+          ...(isFile ? { artifact } : { children: [] }),
+        };
+        current.children.push(node);
+      }
+
+      current = node;
+    }
+  }
+
+  // 对每个文件夹的子节点排序：文件夹在前，文件在后，同类按名称排序
+  const sortChildren = (node: TreeNode) => {
+    if (node.children) {
+      node.children.sort((a, b) => {
+        if (a.type !== b.type) {
+          return a.type === "folder" ? -1 : 1;
+        }
+        return a.name.localeCompare(b.name);
+      });
+      node.children.forEach(sortChildren);
+    }
+  };
+  sortChildren(root);
+
+  return root;
+}
+
+// ─── 树节点组件 ────────────────────────────────────────
+
+function TreeNodeItem({
+  node,
+  onSelect,
+  conversationId,
+  depth = 0,
+}: {
+  node: TreeNode;
+  onSelect: (a: ArtifactMeta) => void;
+  conversationId: string;
+  depth?: number;
+}) {
+  const [expanded, setExpanded] = useState(depth === 0 || depth === 1); // 默认展开根目录和第一层
+
+  if (node.type === "file" && node.artifact) {
+    const artifact = node.artifact;
+    return (
+      <button
+        onClick={() =>
+          isPreviewable(artifact.mimeType)
+            ? onSelect(artifact)
+            : window.open(getArtifactUrl(conversationId, artifact.path), "_blank")
+        }
+        className="w-full flex items-center gap-2 px-3 py-1.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors text-left group"
+        style={{ paddingLeft: `${depth * 20 + 12}px` }}
+      >
+        <span className="text-base shrink-0">{fileIcon(artifact.mimeType)}</span>
+        <div className="flex-1 min-w-0">
+          <div className="text-sm text-[var(--color-text)] truncate">{node.name}</div>
+        </div>
+        <span className="text-xs text-[var(--color-text-muted)]">{formatSize(artifact.size)}</span>
+        <span className="text-xs text-[var(--color-text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">
+          {isPreviewable(artifact.mimeType) ? "预览" : "下载"}
+        </span>
+      </button>
+    );
+  }
+
+  // 文件夹
+  const hasChildren = node.children && node.children.length > 0;
+  const childrenCount = node.children?.length || 0;
+
+  return (
+    <div>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center gap-2 px-3 py-1.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors text-left"
+        style={{ paddingLeft: `${depth * 20 + 12}px` }}
+      >
+        <span className="text-xs text-[var(--color-text-muted)] shrink-0">
+          {expanded ? "▼" : "▶"}
+        </span>
+        <span className="text-base shrink-0">📁</span>
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-[var(--color-text)] font-medium">{node.name}</span>
+          <span className="text-xs text-[var(--color-text-muted)] ml-2">({childrenCount})</span>
+        </div>
+      </button>
+      {expanded && hasChildren && (
+        <div>
+          {node.children!.map((child) => (
+            <TreeNodeItem
+              key={child.path}
+              node={child}
+              onSelect={onSelect}
+              conversationId={conversationId}
+              depth={depth + 1}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 文件列表组件（树状结构）────────────────────────────────
+
 function FileList({
   artifacts,
   onSelect,
@@ -133,29 +278,24 @@ function FileList({
     );
   }
 
+  const tree = buildFileTree(artifacts);
+
   return (
     <div className="p-2 space-y-0.5">
-      {artifacts.map((a) => (
-        <button
-          key={a.path}
-          onClick={() => isPreviewable(a.mimeType) ? onSelect(a) : window.open(getArtifactUrl(conversationId, a.path), "_blank")}
-          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-[var(--color-surface-hover)] transition-colors text-left group"
-        >
-          <span className="text-lg shrink-0">{fileIcon(a.mimeType)}</span>
-          <div className="flex-1 min-w-0">
-            <div className="text-sm text-[var(--color-text)] truncate">{a.name}</div>
-            <div className="text-xs text-[var(--color-text-muted)]">
-              {formatSize(a.size)} · {new Date(a.modifiedAt).toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}
-            </div>
-          </div>
-          <span className="text-xs text-[var(--color-text-muted)] opacity-0 group-hover:opacity-100 transition-opacity">
-            {isPreviewable(a.mimeType) ? "预览" : "下载"}
-          </span>
-        </button>
+      {tree.children?.map((node) => (
+        <TreeNodeItem
+          key={node.path}
+          node={node}
+          onSelect={onSelect}
+          conversationId={conversationId}
+          depth={0}
+        />
       ))}
     </div>
   );
 }
+
+// ─── 文件预览组件（保持不变）────────────────────────────────
 
 function FilePreview({
   artifact,
