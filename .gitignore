@@ -131,6 +131,7 @@ dist/protocol.schema.json
 # Synthing
 **/.stfolder/
 config/models.json
+config/models_backup.json
 
 .trae/**/*
 

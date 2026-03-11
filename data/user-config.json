@@ -8,7 +8,7 @@
     "write_file"
   ],
   "mcpServers": [],
-  "modelId": "claude-sonnet-4-6-thinking",
+  "modelId": "ep-20260304203607-p57wt",
   "context": {
     "strategy": "compress",
     "trimToLast": 20,

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
 import { createConversation, deleteConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
 import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
@@ -40,27 +40,17 @@ export default function App() {
     streamingStatus,
     streamingToolLogs,
     sendError,
-    clearStreaming,
-    abortStreaming,
   } = useSendMessage({
+    currentConversationId: current?.id,
     onAfterSend: loadList,
     setMessages,
     setCurrent,
   });
 
-  const prevConvIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const prevId = prevConvIdRef.current;
-    const newId = current?.id;
-    prevConvIdRef.current = newId;
-
-    if (prevId && newId && prevId !== newId) {
-      abortStreaming();
-      clearStreaming();
-    }
     setShowArtifacts(false);
     setArtifactCount(0);
-  }, [current?.id, clearStreaming, abortStreaming]);
+  }, [current?.id]);
 
   const refreshArtifactCount = useCallback(() => {
     if (!current) return;
