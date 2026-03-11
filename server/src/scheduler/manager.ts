@@ -209,6 +209,36 @@ class SchedulerManager {
   }
 
   /**
+   * 带超时与重试的执行包装
+   */
+  private async executeTaskWithTimeoutAndRetry(task: ScheduledTask): Promise<{ output: string; conversationId?: string }> {
+    const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : undefined;
+    const maxAttempts = Math.max(1, (task.retries ?? 0) + 1);
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const run = executeTask(task);
+        const result = timeoutMs
+          ? await Promise.race([
+              run,
+              new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(`任务执行超时（${timeoutMs}ms）`)), timeoutMs)
+              ),
+            ])
+          : await run;
+        return result;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (attempt < maxAttempts) {
+          serverLogger.warn(`Task ${task.name} attempt ${attempt} failed, retrying...`, { error: lastError.message });
+        }
+      }
+    }
+    throw lastError ?? new Error("Unknown error");
+  }
+
+  /**
    * 核心执行逻辑
    */
   private async executeTaskCore(
@@ -224,7 +254,7 @@ class SchedulerManager {
     });
 
     try {
-      const result = await executeTask(task);
+      const result = await this.executeTaskWithTimeoutAndRetry(task);
       const duration = Date.now() - start;
 
       const execution: TaskExecution = {

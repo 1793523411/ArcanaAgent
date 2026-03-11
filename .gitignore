@@ -138,6 +138,3 @@ config/models_backup.json
 **/logs/*
 
 skills/**/
-
-data/user-config.json
-data/user-config.json

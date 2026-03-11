@@ -7,7 +7,25 @@
     "read_file",
     "write_file"
   ],
-  "mcpServers": [],
+  "mcpServers": [
+    {
+      "name": "context7",
+      "transport": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp"
+      ]
+    },
+    {
+      "name": "mcd-mcp",
+      "transport": "streamablehttp",
+      "url": "https://mcp.mcd.cn",
+      "headers": {
+        "Authorization": "Bearer 1lSNCxsRd8NUSAgRikQR2k76UkCJGZeZ"
+      }
+    }
+  ],
   "modelId": "doubao-seed-2-0-mini-260215",
   "context": {
     "strategy": "compress",

@@ -7,10 +7,12 @@ import {
   getConversations,
   postConversations,
   getConversationById,
+  putConversationById,
   getConversationMessages,
   getConversationAttachment,
   getConversationArtifacts,
   getConversationArtifactFile,
+  getConversationExport,
   postConversationMessage,
   postConversationMessageSync,
   deleteConversationById,
@@ -18,6 +20,7 @@ import {
   getConfig,
   putConfig,
   getModels,
+  getHealth,
   getSkillsList,
   postSkillsUpload,
   deleteSkillById,
@@ -62,9 +65,12 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/api/health", getHealth);
 app.get("/api/conversations", getConversations);
 app.post("/api/conversations", postConversations);
+app.get("/api/conversations/:id/export", getConversationExport);
 app.get("/api/conversations/:id", getConversationById);
+app.put("/api/conversations/:id", putConversationById);
 app.get("/api/conversations/:id/messages", getConversationMessages);
 app.get("/api/conversations/:id/attachments/:filename", getConversationAttachment);
 app.get("/api/conversations/:id/artifacts", getConversationArtifacts);

@@ -43,11 +43,16 @@ export function TaskFormModal({ task, onSubmit, onClose, allTasks }: Props) {
     executeAt: task?.executeAt || "",
     dependsOn: task?.dependsOn || [],
     enabled: task?.enabled ?? true,
+    timeoutMs: task?.timeoutMs,
+    retries: task?.retries,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(formData);
+    const payload: CreateTaskRequest = { ...formData };
+    if (payload.timeoutMs == null || payload.timeoutMs <= 0) delete payload.timeoutMs;
+    if (payload.retries == null || payload.retries < 0) delete payload.retries;
+    onSubmit(payload);
   };
 
   const updateConfig = (key: string, value: unknown) => {
@@ -153,6 +158,49 @@ export function TaskFormModal({ task, onSubmit, onClose, allTasks }: Props) {
                     className="mt-2 w-full px-3 py-2 border border-[var(--color-border)] rounded bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
                   />
                 )}
+              </div>
+            </div>
+
+            {/* 执行策略（可选）*/}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-[var(--color-text)] mb-1">超时（秒，可选）</label>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={formData.timeoutMs != null ? Math.round(formData.timeoutMs / 1000) : ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFormData({
+                      ...formData,
+                      timeoutMs: v === "" ? undefined : Math.max(0, parseInt(v, 10) || 0) * 1000,
+                    });
+                  }}
+                  placeholder="不设超时"
+                  className="w-full px-3 py-2 border border-[var(--color-border)] rounded bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+                />
+                <p className="text-xs text-[var(--color-text-muted)] mt-1">留空则不限制执行时间</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-[var(--color-text)] mb-1">失败重试次数（可选）</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={1}
+                  value={formData.retries ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    setFormData({
+                      ...formData,
+                      retries: v === "" ? undefined : Math.max(0, Math.min(10, parseInt(v, 10) || 0)),
+                    });
+                  }}
+                  placeholder="0"
+                  className="w-full px-3 py-2 border border-[var(--color-border)] rounded bg-[var(--color-bg)] text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]"
+                />
+                <p className="text-xs text-[var(--color-text-muted)] mt-1">留空或 0 表示不重试</p>
               </div>
             </div>
 

@@ -79,7 +79,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
       <div
         className={`
           w-full py-3 px-4 rounded-xl border border-[var(--color-border)]
-          ${isHuman ? "bg-[var(--color-accent-dim)]" : "bg-[var(--color-surface)]"}
+          ${isHuman ? "bg-[var(--color-user-bubble)] text-[var(--color-user-bubble-text)]" : "bg-[var(--color-surface)]"}
         `}
       >
         <div className="flex items-center justify-between gap-2 mb-1">

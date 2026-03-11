@@ -5,7 +5,9 @@
     "dev": "IS_DEV=true tsx watch src/index.ts",
     "sim:context": "tsx src/scripts/simulate-context.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@langchain/anthropic": "^0.3.34",
@@ -30,6 +32,7 @@
     "@types/node": "^22.10.0",
     "@types/node-cron": "^3.0.11",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.9"
   }
 }

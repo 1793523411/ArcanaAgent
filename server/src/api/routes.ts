@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { z } from "zod";
 import { HumanMessage } from "@langchain/core/messages";
 import {
   listConversations,
@@ -7,6 +8,7 @@ import {
   getMessages,
   appendMessages,
   deleteConversation,
+  setConversationTitle,
   saveAttachmentFile,
   getAttachmentAbsolutePath,
   listArtifacts,
@@ -14,6 +16,7 @@ import {
   ensureWorkspace,
   getWorkspacePath,
   type StoredMessage,
+  type ConversationMeta,
 } from "../storage/index.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
 import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
@@ -66,21 +69,32 @@ function estimateTokensForMessages(messages: BaseMessage[]): number {
   return messages.reduce((sum, m) => sum + estimateTokens(getTextContent(m)), 0);
 }
 
-export function getConversations(_req: Request, res: Response): void {
+const createConversationBodySchema = { title: z.string().max(500).optional() };
+const createConversationBody = z.object(createConversationBodySchema);
+
+export function getConversations(req: Request, res: Response): void {
   try {
+    const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
+    const offset = Math.max(0, Number(req.query.offset) || 0);
     const list = listConversations();
-    res.json(list);
+    const total = list.length;
+    const conversations = list.slice(offset, offset + limit);
+    res.json({ conversations, total });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
 }
 
-export function postConversations(_req: Request, res: Response): void {
+export function postConversations(req: Request, res: Response): void {
   try {
-    const body = _req.body as { title?: unknown } | undefined;
-    const title = typeof body?.title === "string" ? body.title : undefined;
+    const parsed = createConversationBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+      return;
+    }
+    const title = parsed.data.title?.trim();
     const config = loadUserConfig();
-    const { id, meta } = createConversation(config.context, title);
+    const { id, meta } = createConversation(config.context, title || undefined);
     logConversation("create", id, meta.title);
     res.status(201).json(meta);
   } catch (e) {
@@ -96,6 +110,29 @@ export function getConversationById(req: Request, res: Response): void {
     return;
   }
   res.json(meta);
+}
+
+const updateConversationBody = z.object({ title: z.string().min(1).max(500) });
+
+export function putConversationById(req: Request, res: Response): void {
+  const id = convId(req);
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const parsed = updateConversationBody.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+    return;
+  }
+  try {
+    setConversationTitle(id, parsed.data.title.trim());
+    const updated = getConversation(id);
+    res.json(updated!);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 }
 
 export function deleteConversationById(req: Request, res: Response): void {
@@ -670,4 +707,43 @@ export function getConversationArtifactFile(req: Request, res: Response): void {
   res.sendFile(absPath, { maxAge: "1d" }, (err) => {
     if (err) res.status(500).json({ error: String(err) });
   });
+}
+
+// ─── 导出对话 ─────────────────────────────────────────────
+
+function conversationToMarkdown(meta: ConversationMeta, messages: StoredMessage[]): string {
+  const lines: string[] = [`# ${meta.title}`, "", `创建时间: ${meta.createdAt}`, `更新时间: ${meta.updatedAt}`, ""];
+  for (const m of messages) {
+    const role = m.type === "human" ? "用户" : m.type === "ai" ? "助手" : "系统";
+    lines.push(`## ${role}`, "", String(m.content || "").trim() || "(无内容)", "");
+  }
+  return lines.join("\n");
+}
+
+export function getConversationExport(req: Request, res: Response): void {
+  const id = convId(req);
+  const format = (req.query.format as string) || "markdown";
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const messages = getMessages(id);
+  if (format === "json") {
+    res.setHeader("Content-Disposition", `attachment; filename="${meta.id}.json"`);
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.json({ meta, messages });
+    return;
+  }
+  const markdown = conversationToMarkdown(meta, messages);
+  // 使用纯 ASCII 文件名避免 Content-Disposition 报错 ERR_INVALID_CHAR
+  res.setHeader("Content-Disposition", `attachment; filename="${id}.md"`);
+  res.setHeader("Content-Type", "text/markdown; charset=utf-8");
+  res.send(markdown);
+}
+
+// ─── 健康检查 ─────────────────────────────────────────────
+
+export function getHealth(_req: Request, res: Response): void {
+  res.json({ status: "ok" });
 }

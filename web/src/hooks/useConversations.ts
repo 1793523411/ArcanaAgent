@@ -11,7 +11,7 @@ export function useConversations(conversationIdFromUrl: string | undefined) {
 
   const loadList = useCallback(async () => {
     try {
-      const list = await listConversations();
+      const { conversations: list } = await listConversations({ limit: 200 });
       setConversations(list);
     } catch (e) {
       setLoadError(String(e));

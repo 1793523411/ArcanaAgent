@@ -1,7 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
-import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
+import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
@@ -19,6 +19,17 @@ export default function App() {
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
   const [executingTaskConversations, setExecutingTaskConversations] = useState<Set<string>>(new Set());
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
+  );
+  const toggleTheme = useCallback(() => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("rule-agent-theme", next);
+    if (next === "light") document.documentElement.classList.add("theme-light");
+    else document.documentElement.classList.remove("theme-light");
+  }, [theme]);
   const { setModelId, models, modelId } = useConfig();
   const {
     conversations,
@@ -29,6 +40,11 @@ export default function App() {
     loadList,
     loadError,
   } = useConversations(conversationIdFromUrl);
+  const filteredConversations = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) => c.title.toLowerCase().includes(q));
+  }, [conversations, sidebarSearch]);
 
   const {
     input,
@@ -87,6 +103,22 @@ export default function App() {
   const handleDeleteClick = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setDeleteTargetId(id);
+  };
+
+  const handleRename = async (id: string, title: string) => {
+    await updateConversationTitle(id, title);
+    loadList();
+    if (current?.id === id) setCurrent((prev) => (prev ? { ...prev, title } : null));
+  };
+
+  const handleExport = async (id: string, format: "markdown" | "json") => {
+    const blob = await exportConversation(id, format);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `conversation-${id}.${format === "json" ? "json" : "md"}`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const [deleting, setDeleting] = useState(false);
@@ -205,17 +237,41 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [executingTaskConversations]);
 
+  // 键盘快捷键：Cmd/Ctrl+N 新对话，Cmd/Ctrl+K 聚焦输入框
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        e.preventDefault();
+        handleNewConversation();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        (document.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        conversations={conversations}
-        current={current}
-        onSelect={handleSelectConversation}
-        onDelete={handleDeleteClick}
-        onNewConversation={handleNewConversation}
+      <ToolSidebar
         onOpenTemplates={() => setShowTemplates(true)}
         onOpenConfig={() => setShowConfig(true)}
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+      <Sidebar
+        conversations={filteredConversations}
+        current={current}
+        searchQuery={sidebarSearch}
+        onSearchChange={setSidebarSearch}
+        onSelect={handleSelectConversation}
+        onDelete={handleDeleteClick}
+        onRename={handleRename}
+        onExport={handleExport}
+        onNewConversation={handleNewConversation}
       />
       <main className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
         <div className={`flex flex-col min-w-0 min-h-0 overflow-hidden ${showArtifacts && current ? "w-1/2" : "flex-1"} transition-all duration-300`}>

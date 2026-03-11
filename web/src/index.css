@@ -12,20 +12,45 @@
   --color-accent-hover: #2dd4bf;
   --color-accent-dim: #0d9488;
   --color-accent-alpha: rgba(20, 184, 166, 0.15);
+  --color-user-bubble: #0d9488;
+  --color-user-bubble-text: #f1f5f9;
   --color-error-bg: rgba(239, 68, 68, 0.15);
   --color-error-text: #fca5a5;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
+/* 浅色主题 */
+html.theme-light {
+  color-scheme: light;
+  --color-bg: #f8fafc;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f1f5f9;
+  --color-border: #e2e8f0;
+  --color-text: #0f172a;
+  --color-text-muted: #64748b;
+  --color-accent: #0d9488;
+  --color-accent-hover: #0f766e;
+  --color-accent-dim: #115e59;
+  --color-accent-alpha: rgba(13, 148, 136, 0.12);
+  --color-user-bubble: #ccfbf1;
+  --color-user-bubble-text: #0f172a;
+  --color-error-bg: rgba(239, 68, 68, 0.1);
+  --color-error-text: #dc2626;
+}
+
 html {
   color-scheme: dark;
-  background-color: #0f172a;
+  background-color: var(--color-bg);
+}
+
+html.theme-light {
+  background-color: var(--color-bg);
 }
 
 body {
   margin: 0;
-  background: #0f172a;
-  color: #f1f5f9;
+  background-color: var(--color-bg);
+  color: var(--color-text);
   min-height: 100vh;
   font-family: "DM Sans", ui-sans-serif, system-ui, sans-serif;
   -webkit-tap-highlight-color: transparent;

@@ -11,8 +11,19 @@ import type {
   TaskConfigSystem,
   TaskConfigSkill,
 } from "./types.js";
+import { join } from "path";
+import { existsSync, mkdirSync, readdirSync } from "fs";
+import AdmZip from "adm-zip";
 import { runAgent } from "../agent/index.js";
-import { getMessages, createConversation, appendMessages, setConversationTitle, listConversations } from "../storage/index.js";
+import {
+  getMessages,
+  createConversation,
+  appendMessages,
+  setConversationTitle,
+  listConversations,
+  cleanupOldConversations,
+  getDataDir,
+} from "../storage/index.js";
 import { storedToLangChain, langChainToStored } from "../lib/messages.js";
 import { cleanupOldHistory } from "./storage.js";
 import { serverLogger } from "../lib/logger.js";
@@ -329,13 +340,25 @@ async function executeSystemTask(config: TaskConfigSystem): Promise<{ output: st
     }
 
     case "cleanup_conversations": {
-      // TODO: 实现对话清理逻辑
-      return { output: `对话清理功能待实现` };
+      const daysToKeep = Number(params.daysToKeep) ?? 9999;
+      const removed = cleanupOldConversations(daysToKeep);
+      return { output: `对话清理完成，删除了 ${removed} 个超过 ${daysToKeep} 天未更新的对话` };
     }
 
     case "backup": {
-      // TODO: 实现备份逻辑
-      return { output: `备份功能待实现` };
+      const dataDir = getDataDir();
+      const backupsDir = join(dataDir, "backups");
+      if (!existsSync(backupsDir)) mkdirSync(backupsDir, { recursive: true });
+      const ts = new Date().toISOString().replace(/[-:]/g, "").slice(0, 15);
+      const zipName = `backup_${ts}.zip`;
+      const zipPath = join(backupsDir, zipName);
+      const zip = new AdmZip();
+      const conversationsDir = join(dataDir, "conversations");
+      const schedulerDir = join(dataDir, "scheduler");
+      if (existsSync(conversationsDir)) zip.addLocalFolder(conversationsDir, "conversations");
+      if (existsSync(schedulerDir)) zip.addLocalFolder(schedulerDir, "scheduler");
+      zip.writeZip(zipPath);
+      return { output: `备份完成: ${zipPath}` };
     }
 
     default:

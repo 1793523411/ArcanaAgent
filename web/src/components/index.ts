@@ -1,4 +1,5 @@
 export { default as Sidebar } from "./Sidebar";
+export { default as ToolSidebar } from "./ToolSidebar";
 export { default as ChatPanel } from "./ChatPanel";
 export { default as ChatInputBar } from "./ChatInputBar";
 export { default as MessageBubble } from "./MessageBubble";

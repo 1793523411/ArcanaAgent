@@ -296,6 +296,25 @@ export function deleteConversation(id: string): boolean {
   return true;
 }
 
+/** 清理超过指定天数未更新的对话，返回删除数量 */
+export function cleanupOldConversations(daysToKeep: number): number {
+  const list = listConversations();
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - daysToKeep);
+  let removed = 0;
+  for (const meta of list) {
+    const updated = new Date(meta.updatedAt);
+    if (updated < cutoff) {
+      if (deleteConversation(meta.id)) removed++;
+    }
+  }
+  return removed;
+}
+
+export function getDataDir(): string {
+  return DATA_DIR;
+}
+
 // ─── Workspace (artifacts) ─────────────────────────────────
 
 export interface ArtifactMeta {
