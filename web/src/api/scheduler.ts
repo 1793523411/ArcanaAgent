@@ -9,7 +9,8 @@ import type {
   UpdateTaskRequest,
 } from "../types/scheduler";
 
-const API_BASE = import.meta.env.VITE_API_BASE || "http://localhost:3001";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "";
+const BASE = API_BASE ? `${API_BASE.replace(/\/$/, "")}/api` : "/api";
 
 // ─── 任务 CRUD ─────────────────────────────────────────────
 
@@ -18,19 +19,19 @@ export async function getScheduledTasks(): Promise<{
   total: number;
   status: Record<string, number>;
 }> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks`);
+  const res = await fetch(`${BASE}/scheduled-tasks`);
   if (!res.ok) throw new Error("Failed to fetch tasks");
   return res.json();
 }
 
 export async function getScheduledTask(id: string): Promise<ScheduledTask> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}`);
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}`);
   if (!res.ok) throw new Error("Failed to fetch task");
   return res.json();
 }
 
 export async function createScheduledTask(data: CreateTaskRequest): Promise<ScheduledTask> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks`, {
+  const res = await fetch(`${BASE}/scheduled-tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -40,7 +41,7 @@ export async function createScheduledTask(data: CreateTaskRequest): Promise<Sche
 }
 
 export async function updateScheduledTask(id: string, data: UpdateTaskRequest): Promise<ScheduledTask> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}`, {
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
@@ -50,14 +51,14 @@ export async function updateScheduledTask(id: string, data: UpdateTaskRequest): 
 }
 
 export async function deleteScheduledTask(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}`, {
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}`, {
     method: "DELETE",
   });
   if (!res.ok) throw new Error("Failed to delete task");
 }
 
 export async function toggleScheduledTask(id: string, enabled: boolean): Promise<ScheduledTask> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}/toggle`, {
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}/toggle`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ enabled }),
@@ -67,7 +68,7 @@ export async function toggleScheduledTask(id: string, enabled: boolean): Promise
 }
 
 export async function executeScheduledTask(id: string): Promise<TaskExecution> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}/execute`, {
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}/execute`, {
     method: "POST",
   });
   if (!res.ok) throw new Error("Failed to execute task");
@@ -80,7 +81,7 @@ export async function getTaskExecutions(id: string, limit = 20): Promise<{
   executions: TaskExecution[];
   total: number;
 }> {
-  const res = await fetch(`${API_BASE}/scheduled-tasks/${id}/executions?limit=${limit}`);
+  const res = await fetch(`${BASE}/scheduled-tasks/${id}/executions?limit=${limit}`);
   if (!res.ok) throw new Error("Failed to fetch executions");
   return res.json();
 }
@@ -89,7 +90,7 @@ export async function getAllExecutions(limit = 50): Promise<{
   executions: TaskExecution[];
   total: number;
 }> {
-  const res = await fetch(`${API_BASE}/scheduled-executions?limit=${limit}`);
+  const res = await fetch(`${BASE}/scheduled-executions?limit=${limit}`);
   if (!res.ok) throw new Error("Failed to fetch executions");
   return res.json();
 }
