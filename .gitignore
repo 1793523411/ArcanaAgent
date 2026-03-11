@@ -139,6 +139,5 @@ config/models_backup.json
 
 skills/**/
 
-./data/**/*
-data/scheduler/history.json
-data/scheduler/tasks.json
+# 本地数据目录（不提交）
+data/
