@@ -287,7 +287,13 @@ export default function ScheduledTasksPanel({
             onExecute={setExecuteTargetId}
           />
         ) : (
-          <TaskExecutionHistory executions={executions} />
+          <TaskExecutionHistory
+            executions={executions}
+            onNavigateToConversation={(conversationId) => {
+              onNavigateToConversation?.(conversationId);
+              onClose();
+            }}
+          />
         )}
       </div>
 
