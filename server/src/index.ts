@@ -21,6 +21,10 @@ import {
   getSkillsList,
   postSkillsUpload,
   deleteSkillById,
+  getTemplates,
+  postTemplates,
+  putTemplateById,
+  deleteTemplateById,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -75,6 +79,10 @@ app.get("/api/models", getModels);
 app.get("/api/skills", getSkillsList);
 app.post("/api/skills/upload", upload.single("zip"), postSkillsUpload);
 app.delete("/api/skills/:name", deleteSkillById);
+app.get("/api/templates", getTemplates);
+app.post("/api/templates", postTemplates);
+app.put("/api/templates/:id", putTemplateById);
+app.delete("/api/templates/:id", deleteTemplateById);
 
 // 定时任务 API
 app.get("/api/scheduled-tasks", getTasks);

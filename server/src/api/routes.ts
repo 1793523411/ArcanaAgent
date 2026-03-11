@@ -19,7 +19,7 @@ import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.j
 import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig } from "../config/userConfig.js";
+import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
@@ -434,6 +434,98 @@ export function getModels(_req: Request, res: Response): void {
   }
 }
 
+function createTemplateId(): string {
+  return `tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeTemplateBody(body: unknown): { name: string; content: string; description?: string } | null {
+  if (!body || typeof body !== "object") return null;
+  const input = body as { name?: unknown; content?: unknown; description?: unknown };
+  const name = typeof input.name === "string" ? input.name.trim() : "";
+  const content = typeof input.content === "string" ? input.content : "";
+  if (!name || !content.trim()) return null;
+  return {
+    name,
+    content,
+    description: typeof input.description === "string" ? input.description.trim() || undefined : undefined,
+  };
+}
+
+export function getTemplates(_req: Request, res: Response): void {
+  const config = loadUserConfig();
+  res.json(Array.isArray(config.templates) ? config.templates : []);
+}
+
+export function postTemplates(req: Request, res: Response): void {
+  const normalized = normalizeTemplateBody(req.body);
+  if (!normalized) {
+    res.status(400).json({ error: "模板名称和内容不能为空" });
+    return;
+  }
+  const config = loadUserConfig();
+  const now = new Date().toISOString();
+  const template: PromptTemplate = {
+    id: createTemplateId(),
+    name: normalized.name,
+    content: normalized.content,
+    description: normalized.description,
+    createdAt: now,
+    updatedAt: now,
+  };
+  config.templates = [...(config.templates ?? []), template];
+  saveUserConfig(config);
+  res.status(201).json(template);
+}
+
+export function putTemplateById(req: Request, res: Response): void {
+  const id = Array.isArray(req.params.id) ? req.params.id[0] ?? "" : req.params.id;
+  if (!id) {
+    res.status(400).json({ error: "模板 ID 不能为空" });
+    return;
+  }
+  const normalized = normalizeTemplateBody(req.body);
+  if (!normalized) {
+    res.status(400).json({ error: "模板名称和内容不能为空" });
+    return;
+  }
+  const config = loadUserConfig();
+  const templates = config.templates ?? [];
+  const idx = templates.findIndex((item) => item.id === id);
+  if (idx < 0) {
+    res.status(404).json({ error: "模板不存在" });
+    return;
+  }
+  const updated: PromptTemplate = {
+    ...templates[idx],
+    name: normalized.name,
+    content: normalized.content,
+    description: normalized.description,
+    updatedAt: new Date().toISOString(),
+  };
+  const next = [...templates];
+  next[idx] = updated;
+  config.templates = next;
+  saveUserConfig(config);
+  res.json(updated);
+}
+
+export function deleteTemplateById(req: Request, res: Response): void {
+  const id = Array.isArray(req.params.id) ? req.params.id[0] ?? "" : req.params.id;
+  if (!id) {
+    res.status(400).json({ error: "模板 ID 不能为空" });
+    return;
+  }
+  const config = loadUserConfig();
+  const templates = config.templates ?? [];
+  if (!templates.some((item) => item.id === id)) {
+    res.status(404).json({ error: "模板不存在" });
+    return;
+  }
+  config.templates = templates.filter((item) => item.id !== id);
+  saveUserConfig(config);
+  res.status(204).send();
+}
+
 export function getSkillsList(_req: Request, res: Response): void {
   try {
     res.json(listSkills());
@@ -482,6 +574,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     mcpServers?: UserConfig["mcpServers"];
     modelId?: string;
     context?: Partial<ContextStrategyConfig>;
+    templates?: PromptTemplate[];
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -499,6 +592,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.context.tokenThresholdPercent === "number" && body.context.tokenThresholdPercent > 0 && body.context.tokenThresholdPercent <= 100) config.context.tokenThresholdPercent = body.context.tokenThresholdPercent;
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
   }
+  if (Array.isArray(body.templates)) config.templates = body.templates;
   saveUserConfig(config);
 
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）

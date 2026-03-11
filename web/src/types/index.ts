@@ -58,6 +58,15 @@ export interface McpStatusItem {
   toolCount: number;
 }
 
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -66,6 +75,7 @@ export interface UserConfig {
   availableModels?: Array<{ id: string; name: string; provider: string }>;
   context?: ContextStrategyConfig;
   mcpStatus?: McpStatusItem[];
+  templates?: PromptTemplate[];
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;

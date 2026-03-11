@@ -6,6 +6,7 @@ interface Props {
   onSelect: (c: ConversationMeta) => void;
   onDelete: (id: string, e: React.MouseEvent) => void;
   onNewConversation: () => void;
+  onOpenTemplates: () => void;
   onOpenConfig: () => void;
   onOpenScheduledTasks: () => void;
 }
@@ -16,6 +17,7 @@ export default function Sidebar({
   onSelect,
   onDelete,
   onNewConversation,
+  onOpenTemplates,
   onOpenConfig,
   onOpenScheduledTasks,
 }: Props) {
@@ -64,6 +66,15 @@ export default function Sidebar({
         ))}
       </nav>
       <div className="p-2 border-t border-[var(--color-border)] space-y-2">
+        <button
+          type="button"
+          onClick={onOpenTemplates}
+          aria-label="模板管理"
+          className="w-full py-2 px-3 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-[13px] cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors flex items-center justify-center gap-2"
+        >
+          <span>🧩</span>
+          <span>模板管理</span>
+        </button>
         <button
           type="button"
           onClick={onOpenScheduledTasks}

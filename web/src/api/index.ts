@@ -1,4 +1,4 @@
-import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta } from "../types";
+import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate } from "../types";
 
 const BASE = "/api";
 
@@ -151,6 +151,44 @@ export async function getConfig(): Promise<UserConfig> {
   const r = await fetch(`${BASE}/config`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+export async function getPromptTemplates(): Promise<PromptTemplate[]> {
+  const r = await fetch(`${BASE}/templates`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createPromptTemplate(payload: {
+  name: string;
+  content: string;
+  description?: string;
+}): Promise<PromptTemplate> {
+  const r = await fetch(`${BASE}/templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function updatePromptTemplate(
+  id: string,
+  payload: { name: string; content: string; description?: string }
+): Promise<PromptTemplate> {
+  const r = await fetch(`${BASE}/templates/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function deletePromptTemplate(id: string): Promise<void> {
+  const r = await fetch(`${BASE}/templates/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
 }
 
 export async function putConfig(config: Partial<UserConfig>): Promise<UserConfig> {

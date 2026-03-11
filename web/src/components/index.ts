@@ -7,6 +7,7 @@ export { default as EmptyState } from "./EmptyState";
 export { default as WelcomeBox } from "./WelcomeBox";
 export { default as ConfigModal } from "./ConfigModal";
 export { default as SettingsPanel } from "./SettingsPanel";
+export { default as PromptTemplatesPanel } from "./PromptTemplatesPanel";
 export { default as DeleteConfirmModal } from "./DeleteConfirmModal";
 export { default as ArtifactPanel } from "./ArtifactPanel";
 export { ToastProvider, useToast } from "./Toast";

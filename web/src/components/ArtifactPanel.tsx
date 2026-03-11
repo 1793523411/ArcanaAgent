@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import type { ArtifactMeta } from "../types";
 import { getArtifacts, getArtifactUrl, getArtifactText } from "../api";
+import { filterVisibleArtifacts } from "../artifactFilters";
 import MarkdownContent from "./MarkdownContent";
 
 interface Props {
@@ -50,6 +51,11 @@ export default function ArtifactPanel({ conversationId, onClose }: Props) {
   const refreshList = () => {
     getArtifacts(conversationId).then(setArtifacts);
   };
+
+  const visibleArtifacts = useMemo(
+    () => filterVisibleArtifacts(artifacts),
+    [artifacts]
+  );
 
   useEffect(() => {
     if (!selected) { setTextContent(null); return; }
@@ -110,7 +116,7 @@ export default function ArtifactPanel({ conversationId, onClose }: Props) {
       {/* Body */}
       <div className="flex-1 overflow-auto">
         {!selected ? (
-          <FileList artifacts={artifacts} onSelect={setSelected} conversationId={conversationId} />
+          <FileList artifacts={visibleArtifacts} onSelect={setSelected} conversationId={conversationId} />
         ) : (
           <FilePreview artifact={selected} conversationId={conversationId} textContent={textContent} loading={loading} />
         )}

@@ -1,10 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
 import { createConversation, deleteConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
-import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
+import { filterVisibleArtifacts } from "./artifactFilters";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -12,6 +13,7 @@ export default function App() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
@@ -54,7 +56,7 @@ export default function App() {
 
   const refreshArtifactCount = useCallback(() => {
     if (!current) return;
-    getArtifacts(current.id).then((list) => setArtifactCount(list.length)).catch(() => {});
+    getArtifacts(current.id).then((list) => setArtifactCount(filterVisibleArtifacts(list).length)).catch(() => {});
   }, [current]);
 
   useEffect(() => {
@@ -63,6 +65,18 @@ export default function App() {
 
   const handleNewConversation = () => {
     navigate("/");
+  };
+
+  const handleLaunchFromTemplate = async (prompt: string) => {
+    const text = prompt.trim();
+    if (!text) {
+      throw new Error("模板渲染结果为空");
+    }
+    const meta = await createConversation();
+    setMessages([]);
+    loadList();
+    navigate(`/c/${meta.id}`);
+    send(meta.id, text, []);
   };
 
   const handleSelectConversation = (meta: { id: string }) => {
@@ -198,6 +212,7 @@ export default function App() {
         onSelect={handleSelectConversation}
         onDelete={handleDeleteClick}
         onNewConversation={handleNewConversation}
+        onOpenTemplates={() => setShowTemplates(true)}
         onOpenConfig={() => setShowConfig(true)}
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
       />
@@ -253,6 +268,12 @@ export default function App() {
         <SettingsPanel
           onClose={() => setShowConfig(false)}
           onSaved={() => setShowConfig(false)}
+        />
+      )}
+      {showTemplates && (
+        <PromptTemplatesPanel
+          onClose={() => setShowTemplates(false)}
+          onLaunch={handleLaunchFromTemplate}
         />
       )}
       {showScheduledTasks && (
