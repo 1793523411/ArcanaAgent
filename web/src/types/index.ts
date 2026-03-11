@@ -28,6 +28,8 @@ export interface StoredMessage {
   tool_calls?: Array<{ name: string; args: string }>;
   toolLogs?: ToolLog[];
   attachments?: StoredAttachment[];
+  /** 本轮对话 token 消耗（仅 ai） */
+  usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 export interface ContextStrategyConfig {

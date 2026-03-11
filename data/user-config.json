@@ -8,11 +8,12 @@
     "write_file"
   ],
   "mcpServers": [],
-  "modelId": "ep-20260304203607-p57wt",
+  "modelId": "doubao-seed-2-0-mini-260215",
   "context": {
     "strategy": "compress",
     "trimToLast": 20,
     "tokenThresholdPercent": 75,
     "compressKeepRecent": 20
-  }
+  },
+  "templates": []
 }

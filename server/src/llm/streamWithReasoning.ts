@@ -55,10 +55,17 @@ export interface ToolCallResult {
   arguments: string;
 }
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
 export interface StreamReasoningResult {
   content: string;
   reasoningContent: string;
   toolCalls: ToolCallResult[];
+  usage?: TokenUsage;
 }
 
 export async function streamChatCompletionsWithReasoning(
@@ -79,6 +86,7 @@ export async function streamChatCompletionsWithReasoning(
     messages: openAIMessages,
     stream: true,
     temperature,
+    stream_options: { include_usage: true },
   };
   if (tools && tools.length > 0) {
     body.tools = tools;
@@ -104,6 +112,7 @@ export async function streamChatCompletionsWithReasoning(
   let buf = "";
 
   const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
+  let lastUsage: TokenUsage | undefined;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -129,7 +138,16 @@ export async function streamChatCompletionsWithReasoning(
                 }>;
               };
             }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
           };
+          const u = json.usage;
+          if (u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number") {
+            lastUsage = {
+              prompt_tokens: u.prompt_tokens,
+              completion_tokens: u.completion_tokens,
+              total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : u.prompt_tokens + u.completion_tokens,
+            };
+          }
           const delta = json.choices?.[0]?.delta;
           if (!delta) continue;
           if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
@@ -164,5 +182,5 @@ export async function streamChatCompletionsWithReasoning(
     .map(([, v]) => v)
     .filter((tc) => tc.name);
 
-  return { content, reasoningContent, toolCalls };
+  return { content, reasoningContent, toolCalls, usage: lastUsage };
 }

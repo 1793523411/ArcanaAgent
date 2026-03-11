@@ -34,6 +34,8 @@ export interface StoredMessage {
   /** 工具执行日志（name + 输入 + 输出），持久化展示用 */
   toolLogs?: ToolLog[];
   attachments?: StoredAttachment[];
+  /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
+  usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
 }
 
 export interface ConversationContextSnapshot {

@@ -25,6 +25,11 @@ interface Props {
   onToggleArtifacts?: () => void;
   artifactsPanelOpen?: boolean;
   isTaskExecuting?: boolean;
+  usageTokens?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null;
 }
 
 export default function ChatPanel({
@@ -48,6 +53,7 @@ export default function ChatPanel({
   onToggleArtifacts,
   artifactsPanelOpen,
   isTaskExecuting = false,
+  usageTokens = null,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -83,6 +89,7 @@ export default function ChatPanel({
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
           modelId={modelId}
           conversationId={conversationId}
+          usageTokens={usageTokens || undefined}
         />
         )}
         {error && (

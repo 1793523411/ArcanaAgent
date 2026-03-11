@@ -42,6 +42,7 @@ export default function App() {
     streamingStatus,
     streamingToolLogs,
     sendError,
+    usageTokens,
   } = useSendMessage({
     currentConversationId: current?.id,
     onAfterSend: loadList,
@@ -252,6 +253,7 @@ export default function App() {
               onToggleArtifacts={() => setShowArtifacts((prev) => !prev)}
               artifactsPanelOpen={showArtifacts}
               isTaskExecuting={executingTaskConversations.has(current.id)}
+              usageTokens={usageTokens}
             />
           )}
         </div>

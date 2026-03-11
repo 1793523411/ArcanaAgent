@@ -4,6 +4,7 @@ import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
+import { formatTokenCount } from "../utils/format";
 
 interface Props {
   message: StoredMessage;
@@ -82,16 +83,24 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
         `}
       >
         <div className="flex items-center justify-between gap-2 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <span className="text-xs text-[var(--color-text-muted)] shrink-0">
               {isHuman ? "你" : "Agent"}
             </span>
             {modelName && (
               <span
-                className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default"
+                className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0"
                 data-tooltip={modelName}
               >
                 <span className="block px-2 py-0.5 truncate max-w-[140px]">{modelName}</span>
+              </span>
+            )}
+            {!isHuman && message.usageTokens && message.usageTokens.totalTokens > 0 && (
+              <span
+                className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0"
+                title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
+              >
+                入 {formatTokenCount(message.usageTokens.promptTokens)} / 出 {formatTokenCount(message.usageTokens.completionTokens)}
               </span>
             )}
           </div>

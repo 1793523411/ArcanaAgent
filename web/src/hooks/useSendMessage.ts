@@ -10,6 +10,11 @@ type ConversationStreamState = {
   streamingStatus: StreamingStatus;
   streamingToolLogs: ToolLog[];
   sendError: string | null;
+  usage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null;
 };
 
 const EMPTY_STATE: ConversationStreamState = {
@@ -19,6 +24,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingStatus: null,
   streamingToolLogs: [],
   sendError: null,
+  usage: null,
 };
 
 function createState(): ConversationStreamState {
@@ -29,6 +35,7 @@ function createState(): ConversationStreamState {
     streamingStatus: null,
     streamingToolLogs: [],
     sendError: null,
+    usage: null,
   };
 }
 
@@ -113,6 +120,7 @@ export function useSendMessage(options: {
         streamingStatus: "thinking",
         streamingToolLogs: [],
         sendError: null,
+        usage: null,
       }));
 
       const attachments: Attachment[] | undefined = toSend.length
@@ -130,6 +138,28 @@ export function useSendMessage(options: {
               ...prev,
               streamingStatus: s === "tool" ? "tool" : s === "thinking" ? "thinking" : null,
             }));
+            return;
+          }
+          if (obj.type === "usage") {
+            const { promptTokens, completionTokens, totalTokens } = obj as {
+              promptTokens?: number;
+              completionTokens?: number;
+              totalTokens?: number;
+            };
+            setConversationState(convId, (prev) => {
+              const p = typeof promptTokens === "number" ? promptTokens : 0;
+              const c = typeof completionTokens === "number" ? completionTokens : 0;
+              const t =
+                typeof totalTokens === "number"
+                  ? totalTokens
+                  : p > 0 || c > 0
+                    ? p + c
+                    : 0;
+              return {
+                ...prev,
+                usage: t > 0 ? { promptTokens: p, completionTokens: c, totalTokens: t } : prev.usage,
+              };
+            });
             return;
           }
           if (obj.type === "token" && typeof obj.content === "string") {
@@ -236,6 +266,7 @@ export function useSendMessage(options: {
     streamingStatus: activeState.streamingStatus,
     streamingToolLogs: activeState.streamingToolLogs,
     sendError: activeState.sendError,
+    usageTokens: activeState.usage,
     clearStreaming,
     abortStreaming,
   };

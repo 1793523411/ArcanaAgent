@@ -55,6 +55,17 @@ function buildSkillContext(convId: string): string {
     artifactListText;
 }
 
+function estimateTokens(text: string): number {
+  const cleaned = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
+  if (!cleaned) return 0;
+  // 简单估算：约 4 个字符 ≈ 1 token
+  return Math.ceil(cleaned.length / 4);
+}
+
+function estimateTokensForMessages(messages: BaseMessage[]): number {
+  return messages.reduce((sum, m) => sum + estimateTokens(getTextContent(m)), 0);
+}
+
 export function getConversations(_req: Request, res: Response): void {
   try {
     const list = listConversations();
@@ -250,11 +261,18 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let lastReasoning: string | undefined;
   let llmCallCount = 0;
   let toolCallCount = 0;
+  let totalPromptTokens = 0;
+  let totalCompletionTokens = 0;
 
   try {
     for await (const chunk of streamAgentWithTokens(lcMessages, onToken, config.modelId, onReasoningToken, skillContext)) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
-      const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key] : undefined;
+      const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }>)[key] : undefined;
+      if (key === "usage" && part && typeof part === "object" && "prompt_tokens" in part) {
+        const u = part as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+        totalPromptTokens += typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
+        totalCompletionTokens += typeof u.completion_tokens === "number" ? u.completion_tokens : 0;
+      }
       if (part?.reasoning) {
         write("data: " + JSON.stringify({ type: "reasoning", content: part.reasoning }) + "\n\n");
         lastReasoning = part.reasoning;
@@ -332,9 +350,21 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
       });
     }
+    const hasRealUsage = totalPromptTokens > 0 || totalCompletionTokens > 0;
+    const promptTokens = hasRealUsage ? totalPromptTokens : estimateTokensForMessages(lcMessages);
+    const completionTokens = hasRealUsage ? totalCompletionTokens : estimateTokens(streamedContent || "");
+    const totalTokens = promptTokens + completionTokens;
+    const usagePayload = { promptTokens, completionTokens, totalTokens };
+    const lastAi = toStore.filter((m) => m.type === "ai").pop();
+    if (lastAi && totalTokens > 0) {
+      lastAi.usageTokens = usagePayload;
+    }
     if (toStore.length > 0) {
       appendMessages(id, toStore);
     }
+    writeImmediate(
+      "data: " + JSON.stringify({ type: "usage", ...usagePayload }) + "\n\n",
+    );
     flushNow();
 
     // 记录请求完成

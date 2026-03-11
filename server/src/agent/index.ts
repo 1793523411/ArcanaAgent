@@ -233,7 +233,7 @@ export async function* streamAgentWithTokens(
   modelId?: string,
   onReasoningToken?: (token: string) => void,
   skillContext?: string
-): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
+): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const adapter = getModelAdapter(modelId);
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
@@ -241,16 +241,18 @@ export async function* streamAgentWithTokens(
   const streamFinalOnlyWithRetryByAdapter = async (
     baseMessages: BaseMessage[],
     reasoningCb: (token: string) => void
-  ): Promise<{ content: string; reasoningContent: string }> => {
+  ): Promise<{ content: string; reasoningContent: string; usage?: import("../llm/streamWithReasoning.js").TokenUsage }> => {
     const first = await adapter.streamSingleTurn(baseMessages, onToken, reasoningCb, []);
     const firstContent = first.content?.trim() ?? "";
     if (firstContent) {
       return {
         content: first.content,
         reasoningContent: first.reasoningContent,
+        usage: first.usage,
       };
     }
     let latestReasoning = first.reasoningContent ?? "";
+    let lastUsage = first.usage;
     for (let retry = 0; retry < 2; retry++) {
       const attempt = await adapter.streamSingleTurn(
         [...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)],
@@ -259,17 +261,19 @@ export async function* streamAgentWithTokens(
         []
       );
       const attemptContent = attempt.content?.trim() ?? "";
+      if (attempt.usage) lastUsage = attempt.usage;
       if (attemptContent) {
         return {
           content: attempt.content,
           reasoningContent: attempt.reasoningContent,
+          usage: attempt.usage,
         };
       }
       if (!latestReasoning.trim() && typeof attempt.reasoningContent === "string" && attempt.reasoningContent.trim()) {
         latestReasoning = attempt.reasoningContent;
       }
     }
-    return { content: "", reasoningContent: latestReasoning };
+    return { content: "", reasoningContent: latestReasoning, usage: lastUsage };
   };
 
   const streamFinalOnlyWithRetryByModel = async (
@@ -309,9 +313,10 @@ export async function* streamAgentWithTokens(
       let lastHadContent = false;
       let reachedMaxRounds = false;
       for (let round = 0; round < maxRounds; round++) {
-        const { content, reasoningContent, toolCalls } = await adapter.streamSingleTurn(
+        const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools
         );
+        if (turnUsage) yield { usage: turnUsage };
 
         lastHadContent = !!(content && content.trim());
         const aiMsg = new AIMessage({
@@ -334,7 +339,7 @@ export async function* streamAgentWithTokens(
         if (toolCalls.length === 0) {
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
-            const { content: finalContent, reasoningContent: finalReasoning } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+            const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
             const summaryMsg = new AIMessage({ content: finalContent || NO_VISIBLE_OUTPUT_MESSAGE });
             yield {
               llmCall: {
@@ -342,6 +347,7 @@ export async function* streamAgentWithTokens(
                 ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
               },
             };
+            if (finalUsage) yield { usage: finalUsage };
           }
           return;
         }
@@ -382,7 +388,7 @@ export async function* streamAgentWithTokens(
       }
 
       if (!lastHadContent) {
-        const { content: finalContent, reasoningContent: finalReasoning } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+        const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
         const summaryMsg = new AIMessage({ content: finalContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
         yield {
           llmCall: {
@@ -390,6 +396,7 @@ export async function* streamAgentWithTokens(
             ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
           },
         };
+        if (finalUsage) yield { usage: finalUsage };
       }
       return;
     } catch (e) {
@@ -421,6 +428,7 @@ export async function* streamAgentWithTokens(
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
     let accumulatedReasoning = "";
+    let lastUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
     for await (const chunk of stream) {
       const text = getTextFromChunk(chunk);
       if (text) {
@@ -432,12 +440,21 @@ export async function* streamAgentWithTokens(
         accumulatedReasoning += reasoningChunk;
         if (onReasoningToken) onReasoningToken(reasoningChunk);
       }
+      const meta = (chunk as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
+      if (meta && typeof meta.input_tokens === "number" && typeof meta.output_tokens === "number") {
+        lastUsage = {
+          prompt_tokens: meta.input_tokens,
+          completion_tokens: meta.output_tokens,
+          total_tokens: meta.input_tokens + meta.output_tokens,
+        };
+      }
       if (fullChunk && "concat" in fullChunk && typeof (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat === "function") {
         fullChunk = (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat(chunk as BaseMessage) as BaseMessage;
       } else {
         fullChunk = chunk as BaseMessage;
       }
     }
+    if (lastUsage) yield { usage: lastUsage };
     if (!fullChunk) break;
     const fromChunk = getTextFromMessage(fullChunk);
     const content = accumulatedContent || fromChunk;

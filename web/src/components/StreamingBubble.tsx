@@ -3,6 +3,7 @@ import type { StreamingStatus, ToolLog } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
+import { formatTokenCount } from "../utils/format";
 
 interface Props {
   content: string;
@@ -14,6 +15,11 @@ interface Props {
   modelName?: string;
   modelId?: string;
   conversationId?: string;
+   usageTokens?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 function CopyIcon() {
@@ -25,7 +31,17 @@ function CopyIcon() {
   );
 }
 
-export default function StreamingBubble({ content, reasoning, status, toolLogs = [], isStreaming = false, supportsReasoning = false, modelName, conversationId }: Props) {
+export default function StreamingBubble({
+  content,
+  reasoning,
+  status,
+  toolLogs = [],
+  isStreaming = false,
+  supportsReasoning = false,
+  modelName,
+  conversationId,
+  usageTokens,
+}: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
@@ -86,14 +102,22 @@ export default function StreamingBubble({ content, reasoning, status, toolLogs =
   return (
     <div className="self-start max-w-[85%] py-3 px-4 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
       <div className="flex items-center justify-between gap-2 mb-1">
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span className="text-xs text-[var(--color-text-muted)] shrink-0">Agent</span>
           {modelName && (
             <span
-              className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] truncate max-w-[140px] cursor-default"
+              className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] truncate max-w-[140px] cursor-default shrink-0"
               data-tooltip={modelName}
             >
               {modelName}
+            </span>
+          )}
+          {usageTokens && usageTokens.totalTokens > 0 && (
+            <span
+              className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0"
+              title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
+            >
+              入 {formatTokenCount(usageTokens.promptTokens)} / 出 {formatTokenCount(usageTokens.completionTokens)}
             </span>
           )}
         </div>
