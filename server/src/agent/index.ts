@@ -1,6 +1,6 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
-import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
 import { getModelAdapter } from "../llm/adapter.js";
 import type { ToolCallResult } from "../llm/adapter.js";
 import { getToolsByIds, listToolIds } from "../tools/index.js";
@@ -142,6 +142,10 @@ function getWriteFileArgsError(args: Record<string, unknown>): string | null {
   return null;
 }
 
+const MAX_TOOL_CALL_ROUNDS_MESSAGE = "(已达到最大工具调用轮次)";
+const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展示文本)";
+const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
+
 function getAllTools(): StructuredToolInterface[] {
   const allIds = listToolIds();
   const builtIn = getToolsByIds(allIds);
@@ -234,6 +238,65 @@ export async function* streamAgentWithTokens(
   const adapter = getModelAdapter(modelId);
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
 
+  const streamFinalOnlyWithRetryByAdapter = async (
+    baseMessages: BaseMessage[],
+    reasoningCb: (token: string) => void
+  ): Promise<{ content: string; reasoningContent: string }> => {
+    const first = await adapter.streamSingleTurn(baseMessages, onToken, reasoningCb, []);
+    const firstContent = first.content?.trim() ?? "";
+    if (firstContent) {
+      return {
+        content: first.content,
+        reasoningContent: first.reasoningContent,
+      };
+    }
+    let latestReasoning = first.reasoningContent ?? "";
+    for (let retry = 0; retry < 2; retry++) {
+      const attempt = await adapter.streamSingleTurn(
+        [...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)],
+        onToken,
+        reasoningCb,
+        []
+      );
+      const attemptContent = attempt.content?.trim() ?? "";
+      if (attemptContent) {
+        return {
+          content: attempt.content,
+          reasoningContent: attempt.reasoningContent,
+        };
+      }
+      if (!latestReasoning.trim() && typeof attempt.reasoningContent === "string" && attempt.reasoningContent.trim()) {
+        latestReasoning = attempt.reasoningContent;
+      }
+    }
+    return { content: "", reasoningContent: latestReasoning };
+  };
+
+  const streamFinalOnlyWithRetryByModel = async (
+    baseMessages: BaseMessage[]
+  ): Promise<string> => {
+    const modelNoTools = adapter.getLLM();
+    const streamOnce = async (msgs: BaseMessage[]) => {
+      const stream = await modelNoTools.stream(msgs);
+      let content = "";
+      for await (const chunk of stream) {
+        const text = getTextFromChunk(chunk);
+        if (text) {
+          onToken(text);
+          content += text;
+        }
+      }
+      return content;
+    };
+    const firstContent = await streamOnce([systemMessage, ...baseMessages]);
+    if (firstContent.trim()) return firstContent;
+    for (let retry = 0; retry < 2; retry++) {
+      const attemptContent = await streamOnce([systemMessage, ...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)]);
+      if (attemptContent.trim()) return attemptContent;
+    }
+    return "";
+  };
+
   if (useReasoningStream) {
     try {
       const tools = getAllTools();
@@ -244,6 +307,7 @@ export async function* streamAgentWithTokens(
       const maxRounds = 50;
 
       let lastHadContent = false;
+      let reachedMaxRounds = false;
       for (let round = 0; round < maxRounds; round++) {
         const { content, reasoningContent, toolCalls } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools
@@ -270,10 +334,8 @@ export async function* streamAgentWithTokens(
         if (toolCalls.length === 0) {
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
-            const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
-              conversationMessages, onToken, onReasoningToken!, []
-            );
-            const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+            const { content: finalContent, reasoningContent: finalReasoning } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+            const summaryMsg = new AIMessage({ content: finalContent || NO_VISIBLE_OUTPUT_MESSAGE });
             yield {
               llmCall: {
                 messages: [summaryMsg],
@@ -316,13 +378,12 @@ export async function* streamAgentWithTokens(
         }
         conversationMessages = [...conversationMessages, ...toolMessages];
         yield { toolNode: { messages: toolMessages } };
+        if (round === maxRounds - 1) reachedMaxRounds = true;
       }
 
       if (!lastHadContent) {
-        const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
-          conversationMessages, onToken, onReasoningToken!, []
-        );
-        const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+        const { content: finalContent, reasoningContent: finalReasoning } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+        const summaryMsg = new AIMessage({ content: finalContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
         yield {
           llmCall: {
             messages: [summaryMsg],
@@ -341,7 +402,6 @@ export async function* streamAgentWithTokens(
   const tools = getAllTools();
   const toolNode = new ToolNode(tools);
   const model = adapter.getLLM().bindTools(tools);
-  const modelNoTools = adapter.getLLM();
   let state: BaseMessage[] = [...messages];
   const maxRounds = 50;
 
@@ -355,6 +415,7 @@ export async function* streamAgentWithTokens(
   };
 
   let lastHadContent = false;
+  let reachedMaxRounds = false;
   for (let round = 0; round < maxRounds; round++) {
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
@@ -409,19 +470,12 @@ export async function* streamAgentWithTokens(
     });
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+    if (round === maxRounds - 1) reachedMaxRounds = true;
   }
 
   if (!lastHadContent && state.length > messages.length) {
-    const summaryStream = await modelNoTools.stream([systemMessage, ...state]);
-    let summaryContent = "";
-    for await (const chunk of summaryStream) {
-      const text = getTextFromChunk(chunk);
-      if (text) {
-        onToken(text);
-        summaryContent += text;
-      }
-    }
-    const summaryMsg = new AIMessage({ content: summaryContent || "(已达到最大工具调用轮次)" });
+    const summaryContent = await streamFinalOnlyWithRetryByModel(state);
+    const summaryMsg = new AIMessage({ content: summaryContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
     yield { llmCall: { messages: [summaryMsg] } };
   }
 }
