@@ -138,3 +138,7 @@ config/models_backup.json
 **/logs/*
 
 skills/**/
+
+./data/**/*
+data/scheduler/history.json
+data/scheduler/tasks.json
