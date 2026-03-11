@@ -103,9 +103,10 @@ export default function ScheduledTasksPanel({
       // 检测新的执行记录
       const newIds = new Set(newExecutions.map(e => e.id));
       const addedExecutions = newExecutions.filter(e => !lastExecutionIds.has(e.id));
+      const isInitialLoad = lastExecutionIds.size === 0;
 
-      // 如果有新的执行记录，处理会话刷新和跳转
-      if (addedExecutions.length > 0) {
+      // 如果有新的执行记录，处理会话刷新和跳转（跳过首次加载，避免把已有记录当“新增”导致一打开就关弹窗）
+      if (addedExecutions.length > 0 && !isInitialLoad) {
         // 按时间排序，最新的在最后
         addedExecutions.sort((a, b) =>
           new Date(a.executedAt).getTime() - new Date(b.executedAt).getTime()
