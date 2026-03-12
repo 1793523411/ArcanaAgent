@@ -32,6 +32,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const toolLogs = message.toolLogs ?? [];
   const plan = message.type === "ai" ? message.plan : undefined;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
   const text = hasContent
     ? message.content
@@ -152,7 +153,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             {!planCollapsed && (
               <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
                 <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between">
-                  <span>阶段：{plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "已生成"}</span>
+                  <span>阶段：{planPhaseLabel}</span>
                   <span>{Math.min(plan?.currentStep ?? 0, plan?.steps.length ?? 0)}/{plan?.steps.length ?? 0}</span>
                 </div>
                 <div className="space-y-1.5">

@@ -84,6 +84,7 @@ export default function StreamingBubble({
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const hasToolLogs = toolLogs.length > 0;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   useEffect(() => {
     if (isStreaming && hasPlan) setPlanCollapsed(false);
   }, [isStreaming, hasPlan, plan?.steps.length]);
@@ -183,12 +184,17 @@ export default function StreamingBubble({
           >
             <span className="select-none">{planCollapsed ? "▶" : "▼"}</span>
             <span>执行计划</span>
+            <span className="text-[11px] text-[var(--color-text-muted)]">{planPhaseLabel}</span>
             <span>
               {Math.min(plan!.currentStep, plan!.steps.length)}/{plan!.steps.length}
             </span>
           </button>
           {!planCollapsed && (
             <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+              <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between">
+                <span>阶段：{planPhaseLabel}</span>
+                <span>{Math.min(plan?.currentStep ?? 0, plan?.steps.length ?? 0)}/{plan?.steps.length ?? 0}</span>
+              </div>
               <div className="space-y-1.5">
                 {plan!.steps.map((step, idx) => {
                   const normalized = typeof step === "string"

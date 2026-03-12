@@ -129,25 +129,31 @@ export function listFullSkills(): SkillFull[] {
  * 包含每个 skill 的完整 SKILL.md body，并将 <SKILL_PATH> 替换为实际目录路径。
  * 模型可通过 run_command tool 执行 skill 中引用的脚本。
  */
-export function getSkillContextForAgent(): string {
-  const skills = listFullSkills();
+export function getSkillCatalogForAgent(): string {
+  const skills = listSkills();
   if (skills.length === 0) return "";
-
-  const sections = skills.map((s) => {
-    const resolvedBody = s.body.replace(/<SKILL_PATH>/g, s.dirPath);
-    return `### Skill: ${s.name}\n**When to use**: ${s.description}\n**Skill directory**: ${s.dirPath}\n\n${resolvedBody}`;
-  });
-
+  const lines = skills.map((s) => `- \`${s.name}\`: ${s.description || "(no description)"}`);
   return [
     "\n\n## Available Skills",
     "",
-    "You have access to the following skills. When the user's request matches a skill, " +
-      "follow that skill's instructions precisely. Use the `run_command` tool to execute " +
-      "any scripts referenced in the skill. Use the `read_file` tool to read skill reference " +
-      "docs or script outputs when needed.",
+    "You have access to the following skills. If the task matches a skill, call `load_skill` with the exact skill name before executing the task.",
+    "Only load skills that are relevant to the current task.",
     "",
-    ...sections,
+    ...lines,
   ].join("\n");
+}
+
+export function getSkillContentForAgent(name: string): string {
+  const skill = listFullSkills().find((s) => s.name === name);
+  if (!skill) {
+    return `Error: Unknown skill '${name}'.`;
+  }
+  const resolvedBody = skill.body.replace(/<SKILL_PATH>/g, skill.dirPath);
+  return `<skill name="${skill.name}">\n${resolvedBody}\n</skill>`;
+}
+
+export function getSkillContextForAgent(): string {
+  return getSkillCatalogForAgent();
 }
 
 /**

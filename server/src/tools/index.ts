@@ -2,11 +2,13 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { run_command } from "./run_command.js";
 import { read_file } from "./read_file.js";
 import { write_file } from "./write_file.js";
+import { load_skill } from "./load_skill.js";
 
 export const tools = {
   run_command,
   read_file,
   write_file,
+  load_skill,
 } as const;
 
 export type ToolId = keyof typeof tools;
