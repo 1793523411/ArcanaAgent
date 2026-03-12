@@ -217,7 +217,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
               onClick={() => setSubagentsCollapsed((c) => !c)}
               className="w-full text-left text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between hover:text-[var(--color-text)] transition-colors"
             >
-              <span>{subagentsCollapsed ? "▶" : "▼"} 子代理执行</span>
+              <span>{subagentsCollapsed ? "▶" : "▼"} 子Agent执行</span>
               <span>运行中 {runningSubagents} / 总计 {subagents.length}</span>
             </button>
             {!subagentsCollapsed && <div className="space-y-2">
