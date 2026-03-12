@@ -7,7 +7,7 @@ const MAX_TIMEOUT_MS = 600_000; // 10 分钟，足够处理图片生成等耗时
 const DEFAULT_TIMEOUT_MS = 600_000; // 默认也设为 10 分钟
 const MAX_OUTPUT_BYTES = 64 * 1024;
 const COMMAND_CACHE_TTL_MS = 5 * 60 * 1000;
-const RUN_COMMAND_SUCCESS_SIGNAL = "__RUN_COMMAND_SUCCESS__";
+const RUN_COMMAND_EXECUTED_SIGNAL = "__RUN_COMMAND_EXECUTED__";
 const RUN_COMMAND_DUPLICATE_SIGNAL = "__RUN_COMMAND_DUPLICATE_SKIPPED__";
 
 const DANGEROUS_PATTERNS = [
@@ -147,7 +147,7 @@ export const run_command = tool(
               stdout: out || "(no output)",
               stderr: err || undefined,
               exitCode: 0,
-              signal: RUN_COMMAND_SUCCESS_SIGNAL,
+              signal: RUN_COMMAND_EXECUTED_SIGNAL,
             }));
             return;
           }

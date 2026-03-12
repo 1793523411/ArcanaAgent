@@ -17,7 +17,12 @@ interface Props {
   streamingToolLogs: Array<{ name: string; input: string; output: string }>;
   streamingPlan?: {
     phase: "created" | "running" | "completed";
-    steps: string[];
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
     currentStep: number;
     toolName?: string;
   } | null;

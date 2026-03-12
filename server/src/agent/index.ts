@@ -10,13 +10,13 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { getSkillContextForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
-import { buildPlanningPrelude } from "./planning.js";
+import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { resolve } from "path";
 
 type MessagesState = typeof MessagesAnnotation.State;
 export interface PlanStreamEvent {
   phase: "created" | "running" | "completed";
-  steps: string[];
+  steps: Array<PlanStep & { evidences: string[]; completed: boolean }>;
   currentStep: number;
   toolName?: string;
 }
@@ -46,7 +46,7 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
-- For run_command, if output contains signal \`__RUN_COMMAND_SUCCESS__\`, treat the command as completed successfully
+- For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
 - For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
 
 **CRITICAL — Always provide a final text response:**
@@ -242,6 +242,50 @@ function buildRuntimeTools(options?: AgentExecutionOptions): StructuredToolInter
   });
 }
 
+type RuntimePlanStep = PlanStep & {
+  evidences: string[];
+  completed: boolean;
+};
+
+function createRuntimePlanSteps(steps: PlanStep[]): RuntimePlanStep[] {
+  return steps.map((s) => ({
+    ...s,
+    evidences: [],
+    completed: false,
+  }));
+}
+
+function summarizeToolEvidence(toolName: string | undefined, output: string): string {
+  const oneLine = output.replace(/\s+/g, " ").trim();
+  const short = oneLine.length > 180 ? `${oneLine.slice(0, 180)}…` : oneLine;
+  return toolName ? `${toolName}: ${short || "(no output)"}` : (short || "(no output)");
+}
+
+function applyEvidenceToPlan(steps: RuntimePlanStep[], evidence: string): RuntimePlanStep[] {
+  const firstPending = steps.findIndex((s) => !s.completed);
+  if (firstPending < 0) return steps;
+  const target = steps[firstPending];
+  const nextEvidences = [...target.evidences, evidence].slice(-6);
+  const requiredChecks = Math.max(1, target.acceptance_checks.length);
+  const completed = nextEvidences.length >= requiredChecks;
+  const cloned = [...steps];
+  cloned[firstPending] = {
+    ...target,
+    evidences: nextEvidences,
+    completed,
+  };
+  return cloned;
+}
+
+function computeCurrentStep(steps: RuntimePlanStep[]): number {
+  let done = 0;
+  for (const step of steps) {
+    if (!step.completed) break;
+    done += 1;
+  }
+  return done;
+}
+
 export function buildAgent(modelId?: string) {
   const tools = getAllTools();
   const model = getModelAdapter(modelId).getLLM().bindTools(tools);
@@ -334,8 +378,16 @@ export async function* streamAgentWithTokens(
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const adapter = getModelAdapter(modelId);
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
-  const planSteps = planningPrelude.planSteps ?? [];
-  let planCurrentStep = 0;
+  let runtimePlanSteps = createRuntimePlanSteps(planningPrelude.planSteps ?? []);
+  let planCurrentStep = computeCurrentStep(runtimePlanSteps);
+  const emitCurrentPlan = (phase: "created" | "running" | "completed", toolName?: string) => {
+    emitPlan({
+      phase,
+      steps: runtimePlanSteps,
+      currentStep: planCurrentStep,
+      toolName,
+    });
+  };
   const emitPlan = (event: PlanStreamEvent) => {
     if (options?.planProgressEnabled && options.onPlanEvent) {
       options.onPlanEvent(event);
@@ -345,8 +397,8 @@ export async function* streamAgentWithTokens(
     ...messages,
     ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
   ];
-  if (planSteps.length > 0) {
-    emitPlan({ phase: "created", steps: planSteps, currentStep: 0 });
+  if (runtimePlanSteps.length > 0) {
+    emitCurrentPlan("created");
   }
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
 
@@ -449,7 +501,7 @@ export async function* streamAgentWithTokens(
 
         // 如果没有工具调用，检查是否需要生成总结
         if (toolCalls.length === 0) {
-          emitPlan({ phase: "completed", steps: planSteps, currentStep: planSteps.length });
+          emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
             const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
@@ -466,16 +518,9 @@ export async function* streamAgentWithTokens(
         }
 
         const toolMessages: BaseMessage[] = [];
-        if (toolCalls.length > 0 && planSteps.length > 0) {
-          planCurrentStep = Math.min(planSteps.length, planCurrentStep + 1);
-          emitPlan({
-            phase: "running",
-            steps: planSteps,
-            currentStep: planCurrentStep,
-            toolName: toolCalls[0]?.name,
-          });
-        }
+        let lastToolNameForPlan: string | undefined;
         for (const tc of toolCalls) {
+          lastToolNameForPlan = tc.name;
           const tool = toolMap.get(tc.name);
           let result: string;
           if (tool) {
@@ -503,8 +548,13 @@ export async function* streamAgentWithTokens(
             result = `[error] Unknown tool: ${tc.name}`;
           }
           toolMessages.push(new ToolMessage({ content: result, tool_call_id: tc.id, name: tc.name }));
+          if (runtimePlanSteps.length > 0) {
+            runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(tc.name, result));
+            planCurrentStep = computeCurrentStep(runtimePlanSteps);
+          }
         }
         conversationMessages = [...conversationMessages, ...toolMessages];
+        if (runtimePlanSteps.length > 0) emitCurrentPlan("running", lastToolNameForPlan);
         yield { toolNode: { messages: toolMessages } };
         if (round === maxRounds - 1) reachedMaxRounds = true;
       }
@@ -592,19 +642,10 @@ export async function* streamAgentWithTokens(
     const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) {
-      emitPlan({ phase: "completed", steps: planSteps, currentStep: planSteps.length });
+      emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
       break;
     }
     const fullChunkTools = (fullChunk as AIMessage).tool_calls ?? [];
-    if (fullChunkTools.length > 0 && planSteps.length > 0) {
-      planCurrentStep = Math.min(planSteps.length, planCurrentStep + 1);
-      emitPlan({
-        phase: "running",
-        steps: planSteps,
-        currentStep: planCurrentStep,
-        toolName: fullChunkTools[0]?.name,
-      });
-    }
     const toolResult = await toolNode.invoke({ messages: state });
     let toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
     toolMessages = toolMessages.map((m: BaseMessage) => {
@@ -620,6 +661,21 @@ export async function* streamAgentWithTokens(
       }
       return m;
     });
+    if (runtimePlanSteps.length > 0) {
+      const toolOutputs: Array<{ name?: string; content: string }> = [];
+      for (const m of toolMessages) {
+        if (m._getType() !== "tool") continue;
+        toolOutputs.push({
+          name: (m as { name?: string }).name,
+          content: typeof m.content === "string" ? m.content : "",
+        });
+      }
+      for (const out of toolOutputs) {
+        runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(out.name, out.content));
+      }
+      planCurrentStep = computeCurrentStep(runtimePlanSteps);
+      emitCurrentPlan("running", fullChunkTools[0]?.name);
+    }
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
     if (round === maxRounds - 1) reachedMaxRounds = true;

@@ -11,7 +11,12 @@ type ConversationStreamState = {
   streamingToolLogs: ToolLog[];
   streamingPlan: {
     phase: "created" | "running" | "completed";
-    steps: string[];
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
     currentStep: number;
     toolName?: string;
   } | null;
@@ -214,15 +219,31 @@ export function useSendMessage(options: {
           ) {
             const payload = obj as {
               phase: "created" | "running" | "completed";
-              steps: string[];
+              steps: Array<{
+                title: string;
+                acceptance_checks: string[];
+                evidences: string[];
+                completed: boolean;
+              } | string>;
               currentStep?: number;
               toolName?: string;
             };
+            const normalizedSteps = (payload.steps ?? []).map((s) => {
+              if (typeof s === "string") {
+                return { title: s, acceptance_checks: [`验证：${s}`], evidences: [], completed: false };
+              }
+              return {
+                title: s.title,
+                acceptance_checks: Array.isArray(s.acceptance_checks) ? s.acceptance_checks : [],
+                evidences: Array.isArray(s.evidences) ? s.evidences : [],
+                completed: !!s.completed,
+              };
+            });
             setConversationState(convId, (prev) => ({
               ...prev,
               streamingPlan: {
                 phase: payload.phase,
-                steps: payload.steps,
+                steps: normalizedSteps,
                 currentStep: typeof payload.currentStep === "number" ? payload.currentStep : 0,
                 toolName: payload.toolName,
               },

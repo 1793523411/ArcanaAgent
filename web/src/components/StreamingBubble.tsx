@@ -12,7 +12,12 @@ interface Props {
   toolLogs?: ToolLog[];
   plan?: {
     phase: "created" | "running" | "completed";
-    steps: string[];
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
     currentStep: number;
     toolName?: string;
   };
@@ -186,11 +191,14 @@ export default function StreamingBubble({
             <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
               <div className="space-y-1.5">
                 {plan!.steps.map((step, idx) => {
-                  const done = idx < plan!.currentStep;
+                  const normalized = typeof step === "string"
+                    ? { title: step, acceptance_checks: [`验证：${step}`], evidences: [], completed: idx < plan!.currentStep }
+                    : step;
+                  const done = normalized.completed;
                   const active = idx === plan!.currentStep && plan!.phase === "running";
                   return (
                     <div
-                      key={`${idx}-${step}`}
+                      key={`${idx}-${normalized.title}`}
                       className={`text-sm px-2 py-1.5 rounded border ${
                         done
                           ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)] text-[var(--color-success-text)]"
@@ -199,7 +207,13 @@ export default function StreamingBubble({
                             : "border-[var(--color-border)] text-[var(--color-text-muted)]"
                       }`}
                     >
-                      {done ? "✓" : active ? "→" : "○"} {step}
+                      <div>{done ? "✓" : active ? "→" : "○"} {normalized.title}</div>
+                      <div className="mt-1 text-[11px] opacity-80">
+                        验收：{normalized.acceptance_checks.join("；")}
+                      </div>
+                      {done && normalized.evidences.length > 0 && (
+                        <div className="mt-1 text-[11px] opacity-80">依据：{normalized.evidences[normalized.evidences.length - 1]}</div>
+                      )}
                     </div>
                   );
                 })}

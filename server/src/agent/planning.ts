@@ -4,20 +4,26 @@ import type { ModelAdapter } from "../llm/adapter.js";
 export interface PlanningPrelude {
   planMessage?: AIMessage;
   executionConstraint?: SystemMessage;
-  planSteps?: string[];
+  planSteps?: PlanStep[];
+}
+
+export interface PlanStep {
+  title: string;
+  acceptance_checks: string[];
 }
 
 const PLAN_REQUEST_PROMPT = `Before using any tools, provide a compact execution plan in the user's language.
 
 Output format:
 PLAN:
-1. ...
-2. ...
-3. ...
+1. <step title> | 验收: <check A>; <check B>
+2. <step title> | 验收: <check A>
+3. <step title> | 验收: <check A>; <check B>
 
 Rules:
 - 3-10 steps only
 - each step must be actionable
+- each step must include 1-3 acceptance checks
 - no tool calls in this turn
 - keep under 120 words`;
 
@@ -51,21 +57,40 @@ function shouldPlanByText(text: string): boolean {
   return actionLike || normalized.length >= 24;
 }
 
-export function extractPlanSteps(planText: string): string[] {
+export function extractPlanSteps(planText: string): PlanStep[] {
   const lines = planText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  const steps = lines
+  const parsed = lines
     .filter((line) => /^(\d+[\).\s]|[-*]\s+)/.test(line))
     .map((line) => line.replace(/^(\d+[\).\s]+|[-*]\s+)/, "").trim())
     .filter(Boolean)
-    .slice(0, 10);
-  if (steps.length > 0) return steps;
-  const compact = lines.filter((line) => !/^plan[:：]?$/i.test(line)).slice(0, 4);
+    .slice(0, 10)
+    .map((line) => {
+      const split = line.split(/\s*\|\s*验收[:：]\s*/i);
+      const title = split[0]?.trim() ?? "";
+      const checks = (split[1] ?? "")
+        .split(/[;；]/)
+        .map((c) => c.trim())
+        .filter(Boolean)
+        .slice(0, 3);
+      return {
+        title,
+        acceptance_checks: checks.length > 0 ? checks : [`验证：${title}`],
+      };
+    })
+    .filter((s) => s.title.length > 0);
+  if (parsed.length > 0) return parsed;
+  const compact = lines
+    .filter((line) => !/^plan[:：]?$/i.test(line))
+    .slice(0, 4)
+    .map((title) => ({ title, acceptance_checks: [`验证：${title}`] }));
   return compact;
 }
 
 function buildExecutionConstraint(planText: string): SystemMessage {
   const steps = extractPlanSteps(planText);
-  const compactPlan = steps.length > 0 ? steps.map((s, i) => `${i + 1}. ${s}`).join("\n") : planText.trim();
+  const compactPlan = steps.length > 0
+    ? steps.map((s, i) => `${i + 1}. ${s.title} | 验收: ${s.acceptance_checks.join("; ")}`).join("\n")
+    : planText.trim();
   const content = `Execution constraint:
 You must execute in plan-first mode.
 Plan to follow:
@@ -74,7 +99,8 @@ ${compactPlan}
 Rules:
 - Execute according to the plan sequence whenever feasible
 - If a step fails, repair then continue
-- Final answer must include a checklist with [x]/[ ] for each planned step`;
+- A step can be marked [x] only if all its acceptance checks are satisfied with evidence
+- Final answer must include checklist + evidence for each completed step`;
   return new SystemMessage(content);
 }
 

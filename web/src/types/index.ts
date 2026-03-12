@@ -21,7 +21,12 @@ export interface ToolLog {
 
 export interface PlanLog {
   phase: "created" | "running" | "completed";
-  steps: string[];
+  steps: Array<{
+    title: string;
+    acceptance_checks: string[];
+    evidences: string[];
+    completed: boolean;
+  }>;
   currentStep: number;
   toolName?: string;
 }
