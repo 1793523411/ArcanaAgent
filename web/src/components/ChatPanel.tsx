@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { StoredMessage, StreamingStatus } from "../types";
 import MessageBubble from "./MessageBubble";
 import StreamingBubble from "./StreamingBubble";
@@ -94,28 +94,47 @@ export default function ChatPanel({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastScrollHeightRef = useRef(0);
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const STICK_THRESHOLD_PX = 120;
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
     const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    shouldStickToBottomRef.current = distanceFromBottom < 80;
+    const nearBottom = distanceFromBottom < STICK_THRESHOLD_PX;
+    shouldStickToBottomRef.current = nearBottom;
+    setShowScrollToBottom(distanceFromBottom >= STICK_THRESHOLD_PX);
+  };
+
+  const scrollToBottom = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    shouldStickToBottomRef.current = true;
+    setShowScrollToBottom(false);
   };
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     const increasedHeight = el.scrollHeight > lastScrollHeightRef.current;
     lastScrollHeightRef.current = el.scrollHeight;
-    if (!shouldStickToBottomRef.current && increasedHeight) return;
+    // 仅在用户当前处于底部附近时才自动滚到底部，避免打断用户向上查看
+    if (distanceFromBottom > STICK_THRESHOLD_PX || (!shouldStickToBottomRef.current && increasedHeight)) {
+      setShowScrollToBottom(true);
+      return;
+    }
     const raf = requestAnimationFrame(() => {
-      el.scrollTop = el.scrollHeight;
+      if (!el) return;
+      const again = el.scrollHeight - el.scrollTop - el.clientHeight;
+      if (again <= STICK_THRESHOLD_PX) el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
   }, [messages.length, loading, streamingContent, streamingReasoning, streamingToolLogs.length, streamingSubagents.length, error]);
 
   return (
-    <div className="flex-1 flex flex-col min-h-0 min-w-0">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(messages ?? []).map((m, i) => (
           <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
@@ -148,6 +167,18 @@ export default function ChatPanel({
           </div>
         )}
       </div>
+      {showScrollToBottom && (
+        <button
+          type="button"
+          onClick={scrollToBottom}
+          className="absolute bottom-20 right-6 z-10 p-2 rounded-full bg-[var(--color-surface)] border border-[var(--color-border)] shadow-lg text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors"
+          title="回到底部"
+        >
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 5v14M19 12l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
       <div className="shrink-0 px-4 py-3 border-t border-[var(--color-border)]">
         <div className="flex items-end gap-2">
           <div className="flex-1 min-w-0">
