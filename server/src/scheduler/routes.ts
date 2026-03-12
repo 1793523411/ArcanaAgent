@@ -119,6 +119,8 @@ export function createTask(req: Request, res: Response): void {
       createdAt: now,
       updatedAt: now,
       executionCount: 0,
+      timeoutMs: body.timeoutMs,
+      retries: body.retries,
     };
 
     createTaskInStorage(task);

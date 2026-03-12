@@ -15,6 +15,17 @@ interface Props {
   streamingReasoning: string;
   streamingStatus: StreamingStatus;
   streamingToolLogs: Array<{ name: string; input: string; output: string }>;
+  streamingPlan?: {
+    phase: "created" | "running" | "completed";
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
+    currentStep: number;
+    toolName?: string;
+  } | null;
   error: string | null;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
@@ -25,6 +36,11 @@ interface Props {
   onToggleArtifacts?: () => void;
   artifactsPanelOpen?: boolean;
   isTaskExecuting?: boolean;
+  usageTokens?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  } | null;
 }
 
 export default function ChatPanel({
@@ -38,6 +54,7 @@ export default function ChatPanel({
   streamingReasoning,
   streamingStatus,
   streamingToolLogs,
+  streamingPlan,
   error,
   files,
   onFilesChange,
@@ -48,12 +65,25 @@ export default function ChatPanel({
   onToggleArtifacts,
   artifactsPanelOpen,
   isTaskExecuting = false,
+  usageTokens = null,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const shouldStickToBottomRef = useRef(true);
+  const lastScrollHeightRef = useRef(0);
+
+  const handleScroll = () => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    shouldStickToBottomRef.current = distanceFromBottom < 80;
+  };
 
   useEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
+    const increasedHeight = el.scrollHeight > lastScrollHeightRef.current;
+    lastScrollHeightRef.current = el.scrollHeight;
+    if (!shouldStickToBottomRef.current && increasedHeight) return;
     const raf = requestAnimationFrame(() => {
       el.scrollTop = el.scrollHeight;
     });
@@ -62,7 +92,7 @@ export default function ChatPanel({
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
-      <div ref={scrollContainerRef} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
+      <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(messages ?? []).map((m, i) => (
           <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
         ))}
@@ -78,11 +108,13 @@ export default function ChatPanel({
           reasoning={streamingReasoning}
           status={streamingStatus}
           toolLogs={streamingToolLogs}
+          plan={streamingPlan ?? undefined}
           isStreaming={loading}
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
           modelId={modelId}
           conversationId={conversationId}
+          usageTokens={usageTokens || undefined}
         />
         )}
         {error && (

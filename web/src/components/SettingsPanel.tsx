@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
-import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem } from "../types";
+import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig } from "../types";
 import { useToast } from "./Toast";
 
 const DEFAULT_CONTEXT: ContextStrategyConfig = {
@@ -10,6 +10,11 @@ const DEFAULT_CONTEXT: ContextStrategyConfig = {
   trimToLast: 20,
   tokenThresholdPercent: 75,
   compressKeepRecent: 20,
+};
+
+const DEFAULT_PLANNING: PlanningConfig = {
+  enabled: true,
+  streamProgress: true,
 };
 
 interface Props {
@@ -53,6 +58,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   }, [activeSection]);
 
   const ctx = config?.context ?? DEFAULT_CONTEXT;
+  const planning = config?.planning ?? DEFAULT_PLANNING;
 
   const setContext = (next: Partial<ContextStrategyConfig>) => {
     if (!config) return;
@@ -62,12 +68,21 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     });
   };
 
+  const setPlanning = (next: Partial<PlanningConfig>) => {
+    if (!config) return;
+    setConfig({
+      ...config,
+      planning: { ...DEFAULT_PLANNING, ...config.planning, ...next },
+    });
+  };
+
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
     try {
       const updated = await putConfig({
         context: config.context ?? DEFAULT_CONTEXT,
+        planning: config.planning ?? DEFAULT_PLANNING,
         mcpServers: config.mcpServers,
       });
       setMcpStatus(updated.mcpStatus ?? []);
@@ -226,6 +241,37 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                   新对话创建时会按当前选择固定策略，之后修改全局设置不会影响已有对话。
                 </p>
                 <div className="space-y-3">
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm text-[var(--color-text)]">执行计划</legend>
+                    <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                      <input
+                        type="checkbox"
+                        checked={planning.enabled}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setPlanning({
+                            enabled: checked,
+                            ...(checked ? {} : { streamProgress: false }),
+                          });
+                        }}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span>启用先计划后执行</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                      <input
+                        type="checkbox"
+                        checked={planning.streamProgress}
+                        disabled={!planning.enabled}
+                        onChange={(e) => setPlanning({ streamProgress: e.target.checked })}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span className={!planning.enabled ? "opacity-60" : ""}>流式展示计划执行进度</span>
+                    </label>
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      开启后，回复前会先生成执行计划；流式模式下会实时显示步骤推进状态。
+                    </p>
+                  </fieldset>
                   <fieldset className="space-y-2">
                     <legend className="text-sm text-[var(--color-text)]">策略</legend>
                     <div className="flex gap-4">

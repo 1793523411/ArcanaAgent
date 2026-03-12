@@ -1,4 +1,5 @@
 export { default as Sidebar } from "./Sidebar";
+export { default as ToolSidebar } from "./ToolSidebar";
 export { default as ChatPanel } from "./ChatPanel";
 export { default as ChatInputBar } from "./ChatInputBar";
 export { default as MessageBubble } from "./MessageBubble";
@@ -7,6 +8,7 @@ export { default as EmptyState } from "./EmptyState";
 export { default as WelcomeBox } from "./WelcomeBox";
 export { default as ConfigModal } from "./ConfigModal";
 export { default as SettingsPanel } from "./SettingsPanel";
+export { default as PromptTemplatesPanel } from "./PromptTemplatesPanel";
 export { default as DeleteConfirmModal } from "./DeleteConfirmModal";
 export { default as ArtifactPanel } from "./ArtifactPanel";
 export { ToastProvider, useToast } from "./Toast";

@@ -4,6 +4,7 @@ import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
+import { formatTokenCount } from "../utils/format";
 
 interface Props {
   message: StoredMessage;
@@ -26,8 +27,11 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
+  const [planCollapsed, setPlanCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
   const toolLogs = message.toolLogs ?? [];
+  const plan = message.type === "ai" ? message.plan : undefined;
+  const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
   const text = hasContent
     ? message.content
@@ -78,20 +82,28 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
       <div
         className={`
           w-full py-3 px-4 rounded-xl border border-[var(--color-border)]
-          ${isHuman ? "bg-[var(--color-accent-dim)]" : "bg-[var(--color-surface)]"}
+          ${isHuman ? "bg-[var(--color-user-bubble)] text-[var(--color-user-bubble-text)]" : "bg-[var(--color-surface)]"}
         `}
       >
         <div className="flex items-center justify-between gap-2 mb-1">
-          <div className="flex items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <span className="text-xs text-[var(--color-text-muted)] shrink-0">
               {isHuman ? "你" : "Agent"}
             </span>
             {modelName && (
               <span
-                className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default"
+                className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0"
                 data-tooltip={modelName}
               >
                 <span className="block px-2 py-0.5 truncate max-w-[140px]">{modelName}</span>
+              </span>
+            )}
+            {!isHuman && message.usageTokens && message.usageTokens.totalTokens > 0 && (
+              <span
+                className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0"
+                title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
+              >
+                入 {formatTokenCount(message.usageTokens.promptTokens)} / 出 {formatTokenCount(message.usageTokens.completionTokens)}
               </span>
             )}
           </div>
@@ -123,6 +135,60 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             {!reasoningCollapsed && (
               <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto">
                 <MarkdownContent>{reasoning}</MarkdownContent>
+              </div>
+            )}
+          </div>
+        )}
+        {hasPlan && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setPlanCollapsed((c) => !c)}
+              className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            >
+              <span className="select-none">{planCollapsed ? "▶" : "▼"}</span>
+              <span>执行计划</span>
+            </button>
+            {!planCollapsed && (
+              <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+                <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between">
+                  <span>阶段：{plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "已生成"}</span>
+                  <span>{Math.min(plan?.currentStep ?? 0, plan?.steps.length ?? 0)}/{plan?.steps.length ?? 0}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {plan?.steps.map((step, idx) => {
+                    const normalized = typeof step === "string"
+                      ? { title: step, acceptance_checks: [`验证：${step}`], evidences: [], completed: idx < (plan.currentStep ?? 0) }
+                      : step;
+                    const done = normalized.completed;
+                    const active = idx === (plan.currentStep ?? 0) && plan.phase === "running";
+                    return (
+                      <div
+                        key={`${idx}-${normalized.title}`}
+                        className={`text-sm px-2 py-1.5 rounded border ${
+                          done
+                            ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)] text-[var(--color-success-text)]"
+                            : active
+                              ? "border-[var(--color-accent)]/60 bg-[var(--color-accent)]/10 text-[var(--color-text)]"
+                              : "border-[var(--color-border)] text-[var(--color-text-muted)]"
+                        }`}
+                      >
+                        <div>{done ? "✓" : active ? "→" : "○"} {normalized.title}</div>
+                        <div className="mt-1 text-[11px] opacity-80">
+                          验收：{normalized.acceptance_checks.join("；")}
+                        </div>
+                        {done && normalized.evidences.length > 0 && (
+                          <div className="mt-1 text-[11px] opacity-80">依据：{normalized.evidences[normalized.evidences.length - 1]}</div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {plan?.toolName && plan.phase === "running" && (
+                  <div className="mt-1.5 text-xs text-[var(--color-text-muted)]">
+                    最近工具：{plan.toolName}
+                  </div>
+                )}
               </div>
             )}
           </div>

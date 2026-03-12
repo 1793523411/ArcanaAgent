@@ -100,6 +100,12 @@ export interface ScheduledTask {
 
   /** 执行次数 */
   executionCount: number;
+
+  /** 单次执行超时（毫秒），超时后视为失败 */
+  timeoutMs?: number;
+
+  /** 失败后重试次数（默认 0）*/
+  retries?: number;
 }
 
 // ─── 任务执行历史 ─────────────────────────────────────────
@@ -142,6 +148,10 @@ export interface CreateTaskRequest {
   executeAt?: string;
   dependsOn?: string[];
   enabled?: boolean;
+  /** 单次执行超时（毫秒）*/
+  timeoutMs?: number;
+  /** 失败后重试次数 */
+  retries?: number;
 }
 
 export interface UpdateTaskRequest {
@@ -152,6 +162,8 @@ export interface UpdateTaskRequest {
   executeAt?: string;
   dependsOn?: string[];
   enabled?: boolean;
+  timeoutMs?: number;
+  retries?: number;
 }
 
 export interface TaskListResponse {

@@ -6,6 +6,14 @@ import App from "./App";
 import "./index.css";
 import "highlight.js/styles/github-dark.css";
 
+const THEME_KEY = "rule-agent-theme";
+const saved = localStorage.getItem(THEME_KEY);
+if (saved === "light") {
+  document.documentElement.classList.add("theme-light");
+} else {
+  document.documentElement.classList.remove("theme-light");
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <BrowserRouter>

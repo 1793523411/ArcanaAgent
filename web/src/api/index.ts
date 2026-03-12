@@ -1,11 +1,27 @@
-import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta } from "../types";
+import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate } from "../types";
 
 const BASE = "/api";
+function encodeArtifactPath(filePath: string): string {
+  return filePath
+    .split("/")
+    .filter((part) => part.length > 0)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
 
 export type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta };
 
-export async function listConversations(): Promise<ConversationMeta[]> {
-  const r = await fetch(`${BASE}/conversations`);
+export interface ListConversationsResponse {
+  conversations: ConversationMeta[];
+  total: number;
+}
+
+export async function listConversations(params?: { limit?: number; offset?: number }): Promise<ListConversationsResponse> {
+  const sp = new URLSearchParams();
+  if (params?.limit != null) sp.set("limit", String(params.limit));
+  if (params?.offset != null) sp.set("offset", String(params.offset));
+  const q = sp.toString();
+  const r = await fetch(`${BASE}/conversations${q ? `?${q}` : ""}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -27,9 +43,25 @@ export async function getConversation(id: string): Promise<ConversationMeta | nu
   return r.json();
 }
 
+export async function updateConversationTitle(id: string, title: string): Promise<ConversationMeta> {
+  const r = await fetch(`${BASE}/conversations/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function deleteConversation(id: string): Promise<void> {
   const r = await fetch(`${BASE}/conversations/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
+}
+
+export async function exportConversation(id: string, format: "markdown" | "json" = "markdown"): Promise<Blob> {
+  const r = await fetch(`${BASE}/conversations/${id}/export?format=${format}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.blob();
 }
 
 export async function getMessages(id: string): Promise<StoredMessage[]> {
@@ -153,6 +185,44 @@ export async function getConfig(): Promise<UserConfig> {
   return r.json();
 }
 
+export async function getPromptTemplates(): Promise<PromptTemplate[]> {
+  const r = await fetch(`${BASE}/templates`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createPromptTemplate(payload: {
+  name: string;
+  content: string;
+  description?: string;
+}): Promise<PromptTemplate> {
+  const r = await fetch(`${BASE}/templates`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function updatePromptTemplate(
+  id: string,
+  payload: { name: string; content: string; description?: string }
+): Promise<PromptTemplate> {
+  const r = await fetch(`${BASE}/templates/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function deletePromptTemplate(id: string): Promise<void> {
+  const r = await fetch(`${BASE}/templates/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export async function putConfig(config: Partial<UserConfig>): Promise<UserConfig> {
   const r = await fetch(`${BASE}/config`, {
     method: "PUT",
@@ -206,7 +276,7 @@ export async function getArtifacts(conversationId: string): Promise<ArtifactMeta
 }
 
 export function getArtifactUrl(conversationId: string, filePath: string): string {
-  return `${BASE}/conversations/${conversationId}/artifacts/${filePath}`;
+  return `${BASE}/conversations/${conversationId}/artifacts/${encodeArtifactPath(filePath)}`;
 }
 
 export async function getArtifactText(conversationId: string, filePath: string): Promise<string> {

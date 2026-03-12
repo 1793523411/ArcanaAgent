@@ -1,6 +1,7 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
-import { AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
+import { AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
 import { getModelAdapter } from "../llm/adapter.js";
 import type { ToolCallResult } from "../llm/adapter.js";
 import { getToolsByIds, listToolIds } from "../tools/index.js";
@@ -9,8 +10,26 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { getSkillContextForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
+import { buildPlanningPrelude, type PlanStep } from "./planning.js";
+import { resolve } from "path";
 
 type MessagesState = typeof MessagesAnnotation.State;
+export interface PlanStreamEvent {
+  phase: "created" | "running" | "completed";
+  steps: Array<PlanStep & { evidences: string[]; completed: boolean }>;
+  currentStep: number;
+  toolName?: string;
+}
+
+interface AgentExecutionOptions {
+  planningEnabled?: boolean;
+  workspacePath?: string;
+}
+
+interface StreamAgentOptions extends AgentExecutionOptions {
+  planProgressEnabled?: boolean;
+  onPlanEvent?: (event: PlanStreamEvent) => void;
+}
 
 const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
@@ -27,6 +46,8 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
+- For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
+- For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
 
 **CRITICAL — Always provide a final text response:**
 - After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
@@ -132,11 +153,137 @@ function safeParseArgs(argsStr: string): Record<string, unknown> {
   }
 }
 
+const WRITE_FILE_SCHEMA_HINT = `write_file 需要 path（字符串）以及 content（字符串）或 content_base64（Base64 字符串）二选一。大段 HTML/CSS 强烈建议用 content_base64 传参，避免 JSON 转义问题。`;
+
+function getWriteFileArgsError(args: Record<string, unknown>): string | null {
+  if (typeof args.path !== "string" || args.path.trim() === "") return "缺少或无效的 path（必须为非空字符串）";
+  const hasContent = typeof args.content === "string" && args.content.length > 0;
+  const hasBase64 = typeof args.content_base64 === "string" && args.content_base64.length > 0;
+  if (!hasContent && !hasBase64) return "必须提供 content 或 content_base64 之一。大段 HTML 请用 content_base64。";
+  return null;
+}
+
+const MAX_TOOL_CALL_ROUNDS_MESSAGE = "(已达到最大工具调用轮次)";
+const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展示文本)";
+const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
+
 function getAllTools(): StructuredToolInterface[] {
   const allIds = listToolIds();
   const builtIn = getToolsByIds(allIds);
   const mcp = getMcpTools();
   return [...builtIn, ...mcp];
+}
+
+function isPathInWorkspace(pathText: string, workspacePath: string): boolean {
+  const workspace = resolve(workspacePath);
+  const target = resolve(pathText);
+  return target === workspace || target.startsWith(`${workspace}/`);
+}
+
+function isLikelyProjectMirrorPath(pathText: string): boolean {
+  const normalized = pathText.replace(/\\/g, "/").replace(/^['"]|['"]$/g, "");
+  return (
+    normalized.startsWith("data/conversations/") ||
+    normalized.startsWith("./data/conversations/") ||
+    normalized.includes("/data/conversations/")
+  );
+}
+
+function findForbiddenOutputPath(command: string, workspacePath: string): string | null {
+  const outputFlagRegex = /(?:^|\s)(?:-o|--output|--out|--out-dir|--output-dir)\s+([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(outputFlagRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  const redirectRegex = /(?:^|[;&]\s*|&&\s*|\|\|\s*)>\s*([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(redirectRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  const cdRegex = /(?:^|[;&]\s*|&&\s*|\|\|\s*)cd\s+([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(cdRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  return null;
+}
+
+function buildRuntimeTools(options?: AgentExecutionOptions): StructuredToolInterface[] {
+  const tools = getAllTools();
+  const workspacePath = options?.workspacePath;
+  if (!workspacePath) return tools;
+  return tools.map((t) => {
+    if (t.name !== "run_command") return t;
+    const wrapped = tool(
+      async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
+        const cmd = typeof input?.command === "string" ? input.command : "";
+        const forbidden = findForbiddenOutputPath(cmd, workspacePath);
+        if (forbidden) {
+          return `[run_command]\nstatus: blocked\ncommand: ${cmd}\ncwd: ${workspacePath}\nnote: 输出路径 ${forbidden} 不在当前会话 workspace 内。请改为 ${workspacePath} 下路径。`;
+        }
+        const safeWorkingDirectory = isPathInWorkspace(input.working_directory ?? workspacePath, workspacePath)
+          ? (input.working_directory ?? workspacePath)
+          : workspacePath;
+        return String(await t.invoke({
+          ...input,
+          working_directory: safeWorkingDirectory,
+        }));
+      },
+      {
+        name: "run_command",
+        description: t.description,
+        schema: (t as unknown as { schema: unknown }).schema as never,
+      }
+    );
+    return wrapped as unknown as StructuredToolInterface;
+  });
+}
+
+type RuntimePlanStep = PlanStep & {
+  evidences: string[];
+  completed: boolean;
+};
+
+function createRuntimePlanSteps(steps: PlanStep[]): RuntimePlanStep[] {
+  return steps.map((s) => ({
+    ...s,
+    evidences: [],
+    completed: false,
+  }));
+}
+
+function summarizeToolEvidence(toolName: string | undefined, output: string): string {
+  const oneLine = output.replace(/\s+/g, " ").trim();
+  const short = oneLine.length > 180 ? `${oneLine.slice(0, 180)}…` : oneLine;
+  return toolName ? `${toolName}: ${short || "(no output)"}` : (short || "(no output)");
+}
+
+function applyEvidenceToPlan(steps: RuntimePlanStep[], evidence: string): RuntimePlanStep[] {
+  const firstPending = steps.findIndex((s) => !s.completed);
+  if (firstPending < 0) return steps;
+  const target = steps[firstPending];
+  const nextEvidences = [...target.evidences, evidence].slice(-6);
+  const requiredChecks = Math.max(1, target.acceptance_checks.length);
+  const completed = nextEvidences.length >= requiredChecks;
+  const cloned = [...steps];
+  cloned[firstPending] = {
+    ...target,
+    evidences: nextEvidences,
+    completed,
+  };
+  return cloned;
+}
+
+function computeCurrentStep(steps: RuntimePlanStep[]): number {
+  let done = 0;
+  for (const step of steps) {
+    if (!step.completed) break;
+    done += 1;
+  }
+  return done;
 }
 
 export function buildAgent(modelId?: string) {
@@ -178,12 +325,19 @@ export function buildAgent(modelId?: string) {
 export async function runAgent(
   messages: BaseMessage[],
   modelId?: string,
-  skillContext?: string
+  skillContext?: string,
+  options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
-  const tools = getAllTools();
+  const tools = buildRuntimeTools(options);
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
-  const model = getModelAdapter(modelId).getLLM().bindTools(tools);
+  const adapter = getModelAdapter(modelId);
+  const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
+  const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
+  const initialState: BaseMessage[] = [
+    ...messages,
+    ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
+  ];
 
   const callModel = async (state: MessagesState) => {
     const response = await model.invoke([systemMessage, ...state.messages]);
@@ -209,7 +363,7 @@ export async function runAgent(
     .addEdge("toolNode", "llmCall")
     .compile();
 
-  const result = await graph.invoke({ messages });
+  const result = await graph.invoke({ messages: initialState });
   return result.messages;
 }
 
@@ -218,26 +372,115 @@ export async function* streamAgentWithTokens(
   onToken: (token: string) => void,
   modelId?: string,
   onReasoningToken?: (token: string) => void,
-  skillContext?: string
-): AsyncGenerator<Record<string, { messages?: BaseMessage[] }>, void, unknown> {
+  skillContext?: string,
+  options?: StreamAgentOptions
+): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const adapter = getModelAdapter(modelId);
+  const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
+  let runtimePlanSteps = createRuntimePlanSteps(planningPrelude.planSteps ?? []);
+  let planCurrentStep = computeCurrentStep(runtimePlanSteps);
+  const emitCurrentPlan = (phase: "created" | "running" | "completed", toolName?: string) => {
+    emitPlan({
+      phase,
+      steps: runtimePlanSteps,
+      currentStep: planCurrentStep,
+      toolName,
+    });
+  };
+  const emitPlan = (event: PlanStreamEvent) => {
+    if (options?.planProgressEnabled && options.onPlanEvent) {
+      options.onPlanEvent(event);
+    }
+  };
+  const stateMessages: BaseMessage[] = [
+    ...messages,
+    ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
+  ];
+  if (runtimePlanSteps.length > 0) {
+    emitCurrentPlan("created");
+  }
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
+
+  const streamFinalOnlyWithRetryByAdapter = async (
+    baseMessages: BaseMessage[],
+    reasoningCb: (token: string) => void
+  ): Promise<{ content: string; reasoningContent: string; usage?: import("../llm/streamWithReasoning.js").TokenUsage }> => {
+    const first = await adapter.streamSingleTurn(baseMessages, onToken, reasoningCb, []);
+    const firstContent = first.content?.trim() ?? "";
+    if (firstContent) {
+      return {
+        content: first.content,
+        reasoningContent: first.reasoningContent,
+        usage: first.usage,
+      };
+    }
+    let latestReasoning = first.reasoningContent ?? "";
+    let lastUsage = first.usage;
+    for (let retry = 0; retry < 2; retry++) {
+      const attempt = await adapter.streamSingleTurn(
+        [...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)],
+        onToken,
+        reasoningCb,
+        []
+      );
+      const attemptContent = attempt.content?.trim() ?? "";
+      if (attempt.usage) lastUsage = attempt.usage;
+      if (attemptContent) {
+        return {
+          content: attempt.content,
+          reasoningContent: attempt.reasoningContent,
+          usage: attempt.usage,
+        };
+      }
+      if (!latestReasoning.trim() && typeof attempt.reasoningContent === "string" && attempt.reasoningContent.trim()) {
+        latestReasoning = attempt.reasoningContent;
+      }
+    }
+    return { content: "", reasoningContent: latestReasoning, usage: lastUsage };
+  };
+
+  const streamFinalOnlyWithRetryByModel = async (
+    baseMessages: BaseMessage[]
+  ): Promise<string> => {
+    const modelNoTools = adapter.getLLM();
+    const streamOnce = async (msgs: BaseMessage[]) => {
+      const stream = await modelNoTools.stream(msgs);
+      let content = "";
+      for await (const chunk of stream) {
+        const text = getTextFromChunk(chunk);
+        if (text) {
+          onToken(text);
+          content += text;
+        }
+      }
+      return content;
+    };
+    const firstContent = await streamOnce([systemMessage, ...baseMessages]);
+    if (firstContent.trim()) return firstContent;
+    for (let retry = 0; retry < 2; retry++) {
+      const attemptContent = await streamOnce([systemMessage, ...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)]);
+      if (attemptContent.trim()) return attemptContent;
+    }
+    return "";
+  };
 
   if (useReasoningStream) {
     try {
-      const tools = getAllTools();
+      const tools = buildRuntimeTools(options);
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
-      let conversationMessages: BaseMessage[] = [systemMessage, ...messages];
+      let conversationMessages: BaseMessage[] = [systemMessage, ...stateMessages];
       const maxRounds = 50;
 
       let lastHadContent = false;
+      let reachedMaxRounds = false;
       for (let round = 0; round < maxRounds; round++) {
-        const { content, reasoningContent, toolCalls } = await adapter.streamSingleTurn(
+        const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools
         );
+        if (turnUsage) yield { usage: turnUsage };
 
         lastHadContent = !!(content && content.trim());
         const aiMsg = new AIMessage({
@@ -258,53 +501,74 @@ export async function* streamAgentWithTokens(
 
         // 如果没有工具调用，检查是否需要生成总结
         if (toolCalls.length === 0) {
+          emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
-            const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
-              conversationMessages, onToken, onReasoningToken!, []
-            );
-            const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+            const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+            const summaryMsg = new AIMessage({ content: finalContent || NO_VISIBLE_OUTPUT_MESSAGE });
             yield {
               llmCall: {
                 messages: [summaryMsg],
                 ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
               },
             };
+            if (finalUsage) yield { usage: finalUsage };
           }
           return;
         }
 
         const toolMessages: BaseMessage[] = [];
+        let lastToolNameForPlan: string | undefined;
         for (const tc of toolCalls) {
+          lastToolNameForPlan = tc.name;
           const tool = toolMap.get(tc.name);
           let result: string;
           if (tool) {
-            try {
-              const args = safeParseArgs(tc.arguments);
-              result = String(await tool.invoke(args));
-            } catch (e) {
-              result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+            const args = safeParseArgs(tc.arguments);
+            if (tc.name === "write_file") {
+              const argsErr = getWriteFileArgsError(args as { path?: unknown; content?: unknown });
+              if (argsErr) {
+                result = `[error] ${argsErr} ${WRITE_FILE_SCHEMA_HINT}`;
+              } else {
+                try {
+                  result = String(await tool.invoke(args));
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  result = msg.includes("expected schema") ? `[error] ${msg} ${WRITE_FILE_SCHEMA_HINT}` : `[error] ${msg}`;
+                }
+              }
+            } else {
+              try {
+                result = String(await tool.invoke(args));
+              } catch (e) {
+                result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+              }
             }
           } else {
             result = `[error] Unknown tool: ${tc.name}`;
           }
           toolMessages.push(new ToolMessage({ content: result, tool_call_id: tc.id, name: tc.name }));
+          if (runtimePlanSteps.length > 0) {
+            runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(tc.name, result));
+            planCurrentStep = computeCurrentStep(runtimePlanSteps);
+          }
         }
         conversationMessages = [...conversationMessages, ...toolMessages];
+        if (runtimePlanSteps.length > 0) emitCurrentPlan("running", lastToolNameForPlan);
         yield { toolNode: { messages: toolMessages } };
+        if (round === maxRounds - 1) reachedMaxRounds = true;
       }
 
       if (!lastHadContent) {
-        const { content: finalContent, reasoningContent: finalReasoning } = await adapter.streamSingleTurn(
-          conversationMessages, onToken, onReasoningToken!, []
-        );
-        const summaryMsg = new AIMessage({ content: finalContent || "(已达到最大工具调用轮次)" });
+        const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
+        const summaryMsg = new AIMessage({ content: finalContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
         yield {
           llmCall: {
             messages: [summaryMsg],
             ...(finalReasoning?.trim() ? { reasoning: finalReasoning.trim() } : {}),
           },
         };
+        if (finalUsage) yield { usage: finalUsage };
       }
       return;
     } catch (e) {
@@ -314,11 +578,10 @@ export async function* streamAgentWithTokens(
     }
   }
 
-  const tools = getAllTools();
+  const tools = buildRuntimeTools(options);
   const toolNode = new ToolNode(tools);
   const model = adapter.getLLM().bindTools(tools);
-  const modelNoTools = adapter.getLLM();
-  let state: BaseMessage[] = [...messages];
+  let state: BaseMessage[] = [...stateMessages];
   const maxRounds = 50;
 
   const shouldContinue = (last: BaseMessage): boolean => {
@@ -331,11 +594,13 @@ export async function* streamAgentWithTokens(
   };
 
   let lastHadContent = false;
+  let reachedMaxRounds = false;
   for (let round = 0; round < maxRounds; round++) {
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
     let accumulatedReasoning = "";
+    let lastUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
     for await (const chunk of stream) {
       const text = getTextFromChunk(chunk);
       if (text) {
@@ -347,12 +612,21 @@ export async function* streamAgentWithTokens(
         accumulatedReasoning += reasoningChunk;
         if (onReasoningToken) onReasoningToken(reasoningChunk);
       }
+      const meta = (chunk as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
+      if (meta && typeof meta.input_tokens === "number" && typeof meta.output_tokens === "number") {
+        lastUsage = {
+          prompt_tokens: meta.input_tokens,
+          completion_tokens: meta.output_tokens,
+          total_tokens: meta.input_tokens + meta.output_tokens,
+        };
+      }
       if (fullChunk && "concat" in fullChunk && typeof (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat === "function") {
         fullChunk = (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat(chunk as BaseMessage) as BaseMessage;
       } else {
         fullChunk = chunk as BaseMessage;
       }
     }
+    if (lastUsage) yield { usage: lastUsage };
     if (!fullChunk) break;
     const fromChunk = getTextFromMessage(fullChunk);
     const content = accumulatedContent || fromChunk;
@@ -367,24 +641,49 @@ export async function* streamAgentWithTokens(
     state = [...state, finalMessage];
     const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
-    if (!shouldContinue(fullChunk)) break;
+    if (!shouldContinue(fullChunk)) {
+      emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
+      break;
+    }
+    const fullChunkTools = (fullChunk as AIMessage).tool_calls ?? [];
     const toolResult = await toolNode.invoke({ messages: state });
-    const toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
+    let toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
+    toolMessages = toolMessages.map((m: BaseMessage) => {
+      if (m._getType() !== "tool") return m;
+      const content = typeof m.content === "string" ? m.content : "";
+      const tm = m as { name?: string; tool_call_id?: string };
+      if (tm.name === "write_file" && content.includes("expected schema")) {
+        return new ToolMessage({
+          content: `[error] 工具参数格式不符合要求。${WRITE_FILE_SCHEMA_HINT}`,
+          tool_call_id: tm.tool_call_id ?? "",
+          name: tm.name ?? "write_file",
+        });
+      }
+      return m;
+    });
+    if (runtimePlanSteps.length > 0) {
+      const toolOutputs: Array<{ name?: string; content: string }> = [];
+      for (const m of toolMessages) {
+        if (m._getType() !== "tool") continue;
+        toolOutputs.push({
+          name: (m as { name?: string }).name,
+          content: typeof m.content === "string" ? m.content : "",
+        });
+      }
+      for (const out of toolOutputs) {
+        runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(out.name, out.content));
+      }
+      planCurrentStep = computeCurrentStep(runtimePlanSteps);
+      emitCurrentPlan("running", fullChunkTools[0]?.name);
+    }
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+    if (round === maxRounds - 1) reachedMaxRounds = true;
   }
 
   if (!lastHadContent && state.length > messages.length) {
-    const summaryStream = await modelNoTools.stream([systemMessage, ...state]);
-    let summaryContent = "";
-    for await (const chunk of summaryStream) {
-      const text = getTextFromChunk(chunk);
-      if (text) {
-        onToken(text);
-        summaryContent += text;
-      }
-    }
-    const summaryMsg = new AIMessage({ content: summaryContent || "(已达到最大工具调用轮次)" });
+    const summaryContent = await streamFinalOnlyWithRetryByModel(state);
+    const summaryMsg = new AIMessage({ content: summaryContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
     yield { llmCall: { messages: [summaryMsg] } };
   }
 }

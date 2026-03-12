@@ -19,6 +19,10 @@ export interface ScheduledTask {
   lastRunAt?: string;
   nextRunAt?: string;
   executionCount: number;
+  /** 单次执行超时（毫秒）*/
+  timeoutMs?: number;
+  /** 失败后重试次数 */
+  retries?: number;
 }
 
 export interface TaskExecution {
@@ -43,6 +47,10 @@ export interface CreateTaskRequest {
   executeAt?: string;
   dependsOn?: string[];
   enabled?: boolean;
+  /** 单次执行超时（毫秒），不传则不设超时 */
+  timeoutMs?: number;
+  /** 失败后重试次数，不传则 0 */
+  retries?: number;
 }
 
 export interface UpdateTaskRequest {
@@ -53,4 +61,6 @@ export interface UpdateTaskRequest {
   executeAt?: string;
   dependsOn?: string[];
   enabled?: boolean;
+  timeoutMs?: number;
+  retries?: number;
 }

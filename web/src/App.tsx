@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
-import { Sidebar, ChatPanel, WelcomeBox, SettingsPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
+import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
+import { filterVisibleArtifacts } from "./artifactFilters";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -12,11 +13,26 @@ export default function App() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
   const [executingTaskConversations, setExecutingTaskConversations] = useState<Set<string>>(new Set());
+  const [sidebarSearch, setSidebarSearch] = useState("");
+  const [artifactPaneWidth, setArtifactPaneWidth] = useState(50);
+  const [isResizing, setIsResizing] = useState(false);
+  const mainRef = useRef<HTMLElement | null>(null);
+  const [theme, setTheme] = useState<"light" | "dark">(
+    () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
+  );
+  const toggleTheme = useCallback(() => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("rule-agent-theme", next);
+    if (next === "light") document.documentElement.classList.add("theme-light");
+    else document.documentElement.classList.remove("theme-light");
+  }, [theme]);
   const { setModelId, models, modelId } = useConfig();
   const {
     conversations,
@@ -27,6 +43,11 @@ export default function App() {
     loadList,
     loadError,
   } = useConversations(conversationIdFromUrl);
+  const filteredConversations = useMemo(() => {
+    const q = sidebarSearch.trim().toLowerCase();
+    if (!q) return conversations;
+    return conversations.filter((c) => c.title.toLowerCase().includes(q));
+  }, [conversations, sidebarSearch]);
 
   const {
     input,
@@ -39,32 +60,28 @@ export default function App() {
     streamingReasoning,
     streamingStatus,
     streamingToolLogs,
+    streamingPlan,
     sendError,
-    clearStreaming,
-    abortStreaming,
+    usageTokens,
   } = useSendMessage({
+    currentConversationId: current?.id,
     onAfterSend: loadList,
     setMessages,
     setCurrent,
   });
 
-  const prevConvIdRef = useRef<string | undefined>(undefined);
   useEffect(() => {
-    const prevId = prevConvIdRef.current;
-    const newId = current?.id;
-    prevConvIdRef.current = newId;
-
-    if (prevId && newId && prevId !== newId) {
-      abortStreaming();
-      clearStreaming();
-    }
     setShowArtifacts(false);
     setArtifactCount(0);
-  }, [current?.id, clearStreaming, abortStreaming]);
+  }, [current?.id]);
+
+  useEffect(() => {
+    if (!showArtifacts) setIsResizing(false);
+  }, [showArtifacts]);
 
   const refreshArtifactCount = useCallback(() => {
     if (!current) return;
-    getArtifacts(current.id).then((list) => setArtifactCount(list.length)).catch(() => {});
+    getArtifacts(current.id).then((list) => setArtifactCount(filterVisibleArtifacts(list).length)).catch(() => {});
   }, [current]);
 
   useEffect(() => {
@@ -75,6 +92,18 @@ export default function App() {
     navigate("/");
   };
 
+  const handleLaunchFromTemplate = async (prompt: string) => {
+    const text = prompt.trim();
+    if (!text) {
+      throw new Error("模板渲染结果为空");
+    }
+    const meta = await createConversation();
+    setMessages([]);
+    loadList();
+    navigate(`/c/${meta.id}`);
+    send(meta.id, text, []);
+  };
+
   const handleSelectConversation = (meta: { id: string }) => {
     navigate(`/c/${meta.id}`);
   };
@@ -82,6 +111,22 @@ export default function App() {
   const handleDeleteClick = (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setDeleteTargetId(id);
+  };
+
+  const handleRename = async (id: string, title: string) => {
+    await updateConversationTitle(id, title);
+    loadList();
+    if (current?.id === id) setCurrent((prev) => (prev ? { ...prev, title } : null));
+  };
+
+  const handleExport = async (id: string, format: "markdown" | "json") => {
+    const blob = await exportConversation(id, format);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `conversation-${id}.${format === "json" ? "json" : "md"}`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const [deleting, setDeleting] = useState(false);
@@ -200,19 +245,80 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [executingTaskConversations]);
 
+  // 键盘快捷键：Cmd/Ctrl+N 新对话，Cmd/Ctrl+K 聚焦输入框
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "n") {
+        e.preventDefault();
+        handleNewConversation();
+      }
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        (document.querySelector("textarea") as HTMLTextAreaElement | null)?.focus();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const onMove = (e: MouseEvent) => {
+      const el = mainRef.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      const leftPx = e.clientX - rect.left;
+      const leftPercent = (leftPx / rect.width) * 100;
+      const rightPercent = 100 - leftPercent;
+      const clampedRight = Math.min(75, Math.max(25, rightPercent));
+      setArtifactPaneWidth(clampedRight);
+    };
+    const onUp = () => setIsResizing(false);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, [isResizing]);
+
+  useEffect(() => {
+    if (!isResizing) return;
+    const prevUserSelect = document.body.style.userSelect;
+    const prevCursor = document.body.style.cursor;
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+    return () => {
+      document.body.style.userSelect = prevUserSelect;
+      document.body.style.cursor = prevCursor;
+    };
+  }, [isResizing]);
+
   return (
     <div className="flex h-screen overflow-hidden">
-      <Sidebar
-        conversations={conversations}
-        current={current}
-        onSelect={handleSelectConversation}
-        onDelete={handleDeleteClick}
-        onNewConversation={handleNewConversation}
+      <ToolSidebar
+        onOpenTemplates={() => setShowTemplates(true)}
         onOpenConfig={() => setShowConfig(true)}
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
       />
-      <main className="flex-1 flex min-w-0 min-h-0 overflow-hidden">
-        <div className={`flex flex-col min-w-0 min-h-0 overflow-hidden ${showArtifacts && current ? "w-1/2" : "flex-1"} transition-all duration-300`}>
+      <Sidebar
+        conversations={filteredConversations}
+        current={current}
+        searchQuery={sidebarSearch}
+        onSearchChange={setSidebarSearch}
+        onSelect={handleSelectConversation}
+        onDelete={handleDeleteClick}
+        onRename={handleRename}
+        onExport={handleExport}
+        onNewConversation={handleNewConversation}
+      />
+      <main ref={mainRef} className="flex-1 flex min-w-0 min-h-0 overflow-hidden relative">
+        <div
+          className="flex flex-col min-w-0 min-h-0 overflow-hidden"
+          style={showArtifacts && current ? { width: `${100 - artifactPaneWidth}%` } : { flex: 1 }}
+        >
           {!current || messages.length === 0 ? (
             <WelcomeBox
               input={input}
@@ -237,6 +343,7 @@ export default function App() {
               streamingReasoning={streamingReasoning}
               streamingStatus={streamingStatus}
               streamingToolLogs={streamingToolLogs}
+              streamingPlan={streamingPlan}
               error={error}
               files={files}
               onFilesChange={setFiles}
@@ -247,22 +354,40 @@ export default function App() {
               onToggleArtifacts={() => setShowArtifacts((prev) => !prev)}
               artifactsPanelOpen={showArtifacts}
               isTaskExecuting={executingTaskConversations.has(current.id)}
+              usageTokens={usageTokens}
             />
           )}
         </div>
         {showArtifacts && current && (
-          <div className="w-1/2 min-w-0 min-h-0 overflow-hidden">
+          <>
+            <div
+              className="w-1.5 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] transition-colors shrink-0"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setIsResizing(true);
+              }}
+              title="拖拽调整宽度"
+            />
+            <div className="min-w-0 min-h-0 overflow-hidden" style={{ width: `${artifactPaneWidth}%` }}>
             <ArtifactPanel
               conversationId={current.id}
               onClose={() => setShowArtifacts(false)}
             />
-          </div>
+            </div>
+          </>
         )}
+        {isResizing && <div className="absolute inset-0 z-20 cursor-col-resize" />}
       </main>
       {showConfig && (
         <SettingsPanel
           onClose={() => setShowConfig(false)}
           onSaved={() => setShowConfig(false)}
+        />
+      )}
+      {showTemplates && (
+        <PromptTemplatesPanel
+          onClose={() => setShowTemplates(false)}
+          onLaunch={handleLaunchFromTemplate}
         />
       )}
       {showScheduledTasks && (

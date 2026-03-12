@@ -40,11 +40,27 @@ export interface ContextStrategyConfig {
   compressKeepRecent: number;
 }
 
+export interface PromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+  description?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PlanningConfig {
+  enabled: boolean;
+  streamProgress: boolean;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
   modelId?: string;
   context?: ContextStrategyConfig;
+  planning?: PlanningConfig;
+  templates?: PromptTemplate[];
 }
 
 const defaultContext: ContextStrategyConfig = {
@@ -58,6 +74,11 @@ const defaultConfig: UserConfig = {
   enabledToolIds: ["calculator", "get_time", "echo", "run_command", "read_file"],
   mcpServers: [],
   context: defaultContext,
+  planning: {
+    enabled: true,
+    streamProgress: true,
+  },
+  templates: [],
 };
 
 function ensureDataDir(): void {
@@ -75,6 +96,8 @@ export function loadUserConfig(): UserConfig {
     const raw = readFileSync(CONFIG_PATH, "utf-8");
     const parsed = JSON.parse(raw) as Partial<UserConfig>;
     const ctx = parsed.context && typeof parsed.context === "object" ? parsed.context : defaultContext;
+    const planningRaw = parsed.planning && typeof parsed.planning === "object" ? parsed.planning : undefined;
+    const templates = Array.isArray(parsed.templates) ? parsed.templates : [];
     return {
       enabledToolIds: Array.isArray(parsed.enabledToolIds) ? parsed.enabledToolIds : (Array.isArray((parsed as { enabledSkillIds?: string[] }).enabledSkillIds) ? (parsed as { enabledSkillIds: string[] }).enabledSkillIds : defaultConfig.enabledToolIds),
       mcpServers: Array.isArray(parsed.mcpServers) ? parsed.mcpServers : defaultConfig.mcpServers,
@@ -85,6 +108,24 @@ export function loadUserConfig(): UserConfig {
         tokenThresholdPercent: typeof ctx.tokenThresholdPercent === "number" && ctx.tokenThresholdPercent > 0 && ctx.tokenThresholdPercent <= 100 ? ctx.tokenThresholdPercent : defaultContext.tokenThresholdPercent,
         compressKeepRecent: typeof ctx.compressKeepRecent === "number" && ctx.compressKeepRecent > 0 ? ctx.compressKeepRecent : defaultContext.compressKeepRecent,
       },
+      planning: {
+        enabled: typeof planningRaw?.enabled === "boolean" ? planningRaw.enabled : true,
+        streamProgress: typeof planningRaw?.streamProgress === "boolean" ? planningRaw.streamProgress : true,
+      },
+      templates: templates.reduce<PromptTemplate[]>((acc, item) => {
+        if (!item || typeof item !== "object") return acc;
+        const tmpl = item as Partial<PromptTemplate>;
+        if (typeof tmpl.id !== "string" || typeof tmpl.name !== "string" || typeof tmpl.content !== "string") return acc;
+        acc.push({
+          id: tmpl.id,
+          name: tmpl.name,
+          content: tmpl.content,
+          description: typeof tmpl.description === "string" ? tmpl.description : undefined,
+          createdAt: typeof tmpl.createdAt === "string" ? tmpl.createdAt : new Date().toISOString(),
+          updatedAt: typeof tmpl.updatedAt === "string" ? tmpl.updatedAt : new Date().toISOString(),
+        });
+        return acc;
+      }, []),
     };
   } catch {
     return { ...defaultConfig };

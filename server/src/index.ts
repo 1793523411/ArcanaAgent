@@ -7,10 +7,12 @@ import {
   getConversations,
   postConversations,
   getConversationById,
+  putConversationById,
   getConversationMessages,
   getConversationAttachment,
   getConversationArtifacts,
   getConversationArtifactFile,
+  getConversationExport,
   postConversationMessage,
   postConversationMessageSync,
   deleteConversationById,
@@ -18,9 +20,14 @@ import {
   getConfig,
   putConfig,
   getModels,
+  getHealth,
   getSkillsList,
   postSkillsUpload,
   deleteSkillById,
+  getTemplates,
+  postTemplates,
+  putTemplateById,
+  deleteTemplateById,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -58,9 +65,12 @@ app.use((req, res, next) => {
   next();
 });
 
+app.get("/api/health", getHealth);
 app.get("/api/conversations", getConversations);
 app.post("/api/conversations", postConversations);
+app.get("/api/conversations/:id/export", getConversationExport);
 app.get("/api/conversations/:id", getConversationById);
+app.put("/api/conversations/:id", putConversationById);
 app.get("/api/conversations/:id/messages", getConversationMessages);
 app.get("/api/conversations/:id/attachments/:filename", getConversationAttachment);
 app.get("/api/conversations/:id/artifacts", getConversationArtifacts);
@@ -75,6 +85,10 @@ app.get("/api/models", getModels);
 app.get("/api/skills", getSkillsList);
 app.post("/api/skills/upload", upload.single("zip"), postSkillsUpload);
 app.delete("/api/skills/:name", deleteSkillById);
+app.get("/api/templates", getTemplates);
+app.post("/api/templates", postTemplates);
+app.put("/api/templates/:id", putTemplateById);
+app.delete("/api/templates/:id", deleteTemplateById);
 
 // 定时任务 API
 app.get("/api/scheduled-tasks", getTasks);
