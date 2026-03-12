@@ -14,7 +14,6 @@ import {
   listArtifacts,
   getArtifactAbsolutePath,
   ensureWorkspace,
-  getWorkspacePath,
   type StoredMessage,
   type ConversationMeta,
 } from "../storage/index.js";
@@ -22,7 +21,8 @@ import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.j
 import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate } from "../config/userConfig.js";
+import type { PlanStreamEvent } from "../agent/index.js";
+import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
@@ -292,6 +292,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   const skillContext = buildSkillContext(id);
+  const workspacePath = ensureWorkspace(id);
   const collectedStored: StoredMessage[] = [];
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
@@ -300,9 +301,25 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let toolCallCount = 0;
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
+  let latestPlan: PlanStreamEvent | undefined;
 
   try {
-    for await (const chunk of streamAgentWithTokens(lcMessages, onToken, config.modelId, onReasoningToken, skillContext)) {
+    for await (const chunk of streamAgentWithTokens(
+      lcMessages,
+      onToken,
+      config.modelId,
+      onReasoningToken,
+      skillContext,
+      {
+        planningEnabled: config.planning?.enabled ?? true,
+        workspacePath,
+        planProgressEnabled: config.planning?.streamProgress ?? true,
+        onPlanEvent: (event) => {
+          latestPlan = { ...event };
+          writeImmediate("data: " + JSON.stringify({ type: "plan", ...event }) + "\n\n");
+        },
+      }
+    )) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }>)[key] : undefined;
       if (key === "usage" && part && typeof part === "object" && "prompt_tokens" in part) {
@@ -373,18 +390,26 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
+    if (latestPlan?.steps?.length) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") {
+        target.plan = latestPlan;
+      }
+    }
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
+      if (m.plan && m.plan.steps.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
-    if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0)) {
+    if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0)) {
       toStore.push({
         type: "ai",
         content: streamedContent.trim() || "(工具已执行)",
         ...(config.modelId ? { modelId: config.modelId } : {}),
         ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
+        ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
       });
     }
     const hasRealUsage = totalPromptTokens > 0 || totalCompletionTokens > 0;
@@ -449,9 +474,13 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   appendMessages(id, [{ type: "human", content: text }], newTitleSync);
 
   const skillContext = buildSkillContext(id);
+  const workspacePath = ensureWorkspace(id);
 
   try {
-    const resultMessages = await runAgent(lcMessages, config.modelId, skillContext);
+    const resultMessages = await runAgent(lcMessages, config.modelId, skillContext, {
+      planningEnabled: config.planning?.enabled ?? true,
+      workspacePath,
+    });
     const newStored: StoredMessage[] = resultMessages.map((m) => {
       const s = langChainToStored(m);
       if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
@@ -476,7 +505,9 @@ export async function postChat(req: Request, res: Response): Promise<void> {
   const config = loadUserConfig();
   const messages = [new HumanMessage(text)];
   try {
-    const resultMessages = await runAgent(messages, config.modelId);
+    const resultMessages = await runAgent(messages, config.modelId, undefined, {
+      planningEnabled: config.planning?.enabled ?? true,
+    });
     const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
     const reply = lastAi ? getTextContent(lastAi) : "";
     res.json({ reply });
@@ -641,6 +672,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     mcpServers?: UserConfig["mcpServers"];
     modelId?: string;
     context?: Partial<ContextStrategyConfig>;
+    planning?: Partial<PlanningConfig>;
     templates?: PromptTemplate[];
   };
   const config = loadUserConfig();
@@ -658,6 +690,11 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.context.trimToLast === "number" && body.context.trimToLast > 0) config.context.trimToLast = body.context.trimToLast;
     if (typeof body.context.tokenThresholdPercent === "number" && body.context.tokenThresholdPercent > 0 && body.context.tokenThresholdPercent <= 100) config.context.tokenThresholdPercent = body.context.tokenThresholdPercent;
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
+  }
+  if (body.planning && typeof body.planning === "object") {
+    config.planning = config.planning ?? { enabled: true, streamProgress: true };
+    if (typeof body.planning.enabled === "boolean") config.planning.enabled = body.planning.enabled;
+    if (typeof body.planning.streamProgress === "boolean") config.planning.streamProgress = body.planning.streamProgress;
   }
   if (Array.isArray(body.templates)) config.templates = body.templates;
   saveUserConfig(config);

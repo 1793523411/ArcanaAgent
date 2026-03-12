@@ -1,6 +1,13 @@
 import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate } from "../types";
 
 const BASE = "/api";
+function encodeArtifactPath(filePath: string): string {
+  return filePath
+    .split("/")
+    .filter((part) => part.length > 0)
+    .map((part) => encodeURIComponent(part))
+    .join("/");
+}
 
 export type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta };
 
@@ -269,7 +276,7 @@ export async function getArtifacts(conversationId: string): Promise<ArtifactMeta
 }
 
 export function getArtifactUrl(conversationId: string, filePath: string): string {
-  return `${BASE}/conversations/${conversationId}/artifacts/${filePath}`;
+  return `${BASE}/conversations/${conversationId}/artifacts/${encodeArtifactPath(filePath)}`;
 }
 
 export async function getArtifactText(conversationId: string, filePath: string): Promise<string> {

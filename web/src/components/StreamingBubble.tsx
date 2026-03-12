@@ -10,6 +10,12 @@ interface Props {
   reasoning?: string;
   status: StreamingStatus;
   toolLogs?: ToolLog[];
+  plan?: {
+    phase: "created" | "running" | "completed";
+    steps: string[];
+    currentStep: number;
+    toolName?: string;
+  };
   isStreaming?: boolean;
   supportsReasoning?: boolean;
   modelName?: string;
@@ -36,6 +42,7 @@ export default function StreamingBubble({
   reasoning,
   status,
   toolLogs = [],
+  plan,
   isStreaming = false,
   supportsReasoning = false,
   modelName,
@@ -43,6 +50,7 @@ export default function StreamingBubble({
   usageTokens,
 }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
+  const [planCollapsed, setPlanCollapsed] = useState(false);
   const [copied, setCopied] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -70,6 +78,10 @@ export default function StreamingBubble({
 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const hasToolLogs = toolLogs.length > 0;
+  const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  useEffect(() => {
+    if (isStreaming && hasPlan) setPlanCollapsed(false);
+  }, [isStreaming, hasPlan, plan?.steps.length]);
   const showThinkingSection = hasReasoning || (isStreaming && supportsReasoning);
   const copyableText = content.trim() || "";
 
@@ -153,6 +165,50 @@ export default function StreamingBubble({
               className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto"
             >
               {hasReasoning ? <MarkdownContent transformImageUrl={transformImageUrl}>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
+            </div>
+          )}
+        </div>
+      )}
+      {hasPlan && (
+        <div className="mb-3">
+          <button
+            type="button"
+            onClick={() => setPlanCollapsed((c) => !c)}
+            className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          >
+            <span className="select-none">{planCollapsed ? "▶" : "▼"}</span>
+            <span>执行计划</span>
+            <span>
+              {Math.min(plan!.currentStep, plan!.steps.length)}/{plan!.steps.length}
+            </span>
+          </button>
+          {!planCollapsed && (
+            <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+              <div className="space-y-1.5">
+                {plan!.steps.map((step, idx) => {
+                  const done = idx < plan!.currentStep;
+                  const active = idx === plan!.currentStep && plan!.phase === "running";
+                  return (
+                    <div
+                      key={`${idx}-${step}`}
+                      className={`text-sm px-2 py-1.5 rounded border ${
+                        done
+                          ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)] text-[var(--color-success-text)]"
+                          : active
+                            ? "border-[var(--color-accent)]/60 bg-[var(--color-accent)]/10 text-[var(--color-text)]"
+                            : "border-[var(--color-border)] text-[var(--color-text-muted)]"
+                      }`}
+                    >
+                      {done ? "✓" : active ? "→" : "○"} {step}
+                    </div>
+                  );
+                })}
+              </div>
+              {plan?.toolName && plan.phase === "running" && (
+                <div className="mt-1.5 text-xs text-[var(--color-text-muted)]">
+                  当前工具：{plan.toolName}
+                </div>
+              )}
             </div>
           )}
         </div>

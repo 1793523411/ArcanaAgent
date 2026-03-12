@@ -1,6 +1,7 @@
 import { StateGraph, MessagesAnnotation, START, END } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
+import { tool } from "@langchain/core/tools";
 import { getModelAdapter } from "../llm/adapter.js";
 import type { ToolCallResult } from "../llm/adapter.js";
 import { getToolsByIds, listToolIds } from "../tools/index.js";
@@ -9,8 +10,26 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { getSkillContextForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
+import { buildPlanningPrelude } from "./planning.js";
+import { resolve } from "path";
 
 type MessagesState = typeof MessagesAnnotation.State;
+export interface PlanStreamEvent {
+  phase: "created" | "running" | "completed";
+  steps: string[];
+  currentStep: number;
+  toolName?: string;
+}
+
+interface AgentExecutionOptions {
+  planningEnabled?: boolean;
+  workspacePath?: string;
+}
+
+interface StreamAgentOptions extends AgentExecutionOptions {
+  planProgressEnabled?: boolean;
+  onPlanEvent?: (event: PlanStreamEvent) => void;
+}
 
 const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
@@ -27,6 +46,8 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
+- For run_command, if output contains signal \`__RUN_COMMAND_SUCCESS__\`, treat the command as completed successfully
+- For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
 
 **CRITICAL — Always provide a final text response:**
 - After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
@@ -153,6 +174,74 @@ function getAllTools(): StructuredToolInterface[] {
   return [...builtIn, ...mcp];
 }
 
+function isPathInWorkspace(pathText: string, workspacePath: string): boolean {
+  const workspace = resolve(workspacePath);
+  const target = resolve(pathText);
+  return target === workspace || target.startsWith(`${workspace}/`);
+}
+
+function isLikelyProjectMirrorPath(pathText: string): boolean {
+  const normalized = pathText.replace(/\\/g, "/").replace(/^['"]|['"]$/g, "");
+  return (
+    normalized.startsWith("data/conversations/") ||
+    normalized.startsWith("./data/conversations/") ||
+    normalized.includes("/data/conversations/")
+  );
+}
+
+function findForbiddenOutputPath(command: string, workspacePath: string): string | null {
+  const outputFlagRegex = /(?:^|\s)(?:-o|--output|--out|--out-dir|--output-dir)\s+([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(outputFlagRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  const redirectRegex = /(?:^|[;&]\s*|&&\s*|\|\|\s*)>\s*([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(redirectRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  const cdRegex = /(?:^|[;&]\s*|&&\s*|\|\|\s*)cd\s+([^\s"']+|"[^"]+"|'[^']+')/g;
+  for (const m of command.matchAll(cdRegex)) {
+    const raw = (m[1] ?? "").trim().replace(/^['"]|['"]$/g, "");
+    if (isLikelyProjectMirrorPath(raw)) return raw;
+    if (raw.startsWith("/") && !isPathInWorkspace(raw, workspacePath)) return raw;
+  }
+  return null;
+}
+
+function buildRuntimeTools(options?: AgentExecutionOptions): StructuredToolInterface[] {
+  const tools = getAllTools();
+  const workspacePath = options?.workspacePath;
+  if (!workspacePath) return tools;
+  return tools.map((t) => {
+    if (t.name !== "run_command") return t;
+    const wrapped = tool(
+      async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
+        const cmd = typeof input?.command === "string" ? input.command : "";
+        const forbidden = findForbiddenOutputPath(cmd, workspacePath);
+        if (forbidden) {
+          return `[run_command]\nstatus: blocked\ncommand: ${cmd}\ncwd: ${workspacePath}\nnote: 输出路径 ${forbidden} 不在当前会话 workspace 内。请改为 ${workspacePath} 下路径。`;
+        }
+        const safeWorkingDirectory = isPathInWorkspace(input.working_directory ?? workspacePath, workspacePath)
+          ? (input.working_directory ?? workspacePath)
+          : workspacePath;
+        return String(await t.invoke({
+          ...input,
+          working_directory: safeWorkingDirectory,
+        }));
+      },
+      {
+        name: "run_command",
+        description: t.description,
+        schema: (t as unknown as { schema: unknown }).schema as never,
+      }
+    );
+    return wrapped as unknown as StructuredToolInterface;
+  });
+}
+
 export function buildAgent(modelId?: string) {
   const tools = getAllTools();
   const model = getModelAdapter(modelId).getLLM().bindTools(tools);
@@ -192,12 +281,19 @@ export function buildAgent(modelId?: string) {
 export async function runAgent(
   messages: BaseMessage[],
   modelId?: string,
-  skillContext?: string
+  skillContext?: string,
+  options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
-  const tools = getAllTools();
+  const tools = buildRuntimeTools(options);
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
-  const model = getModelAdapter(modelId).getLLM().bindTools(tools);
+  const adapter = getModelAdapter(modelId);
+  const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
+  const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
+  const initialState: BaseMessage[] = [
+    ...messages,
+    ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
+  ];
 
   const callModel = async (state: MessagesState) => {
     const response = await model.invoke([systemMessage, ...state.messages]);
@@ -223,7 +319,7 @@ export async function runAgent(
     .addEdge("toolNode", "llmCall")
     .compile();
 
-  const result = await graph.invoke({ messages });
+  const result = await graph.invoke({ messages: initialState });
   return result.messages;
 }
 
@@ -232,10 +328,26 @@ export async function* streamAgentWithTokens(
   onToken: (token: string) => void,
   modelId?: string,
   onReasoningToken?: (token: string) => void,
-  skillContext?: string
+  skillContext?: string,
+  options?: StreamAgentOptions
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const adapter = getModelAdapter(modelId);
+  const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
+  const planSteps = planningPrelude.planSteps ?? [];
+  let planCurrentStep = 0;
+  const emitPlan = (event: PlanStreamEvent) => {
+    if (options?.planProgressEnabled && options.onPlanEvent) {
+      options.onPlanEvent(event);
+    }
+  };
+  const stateMessages: BaseMessage[] = [
+    ...messages,
+    ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
+  ];
+  if (planSteps.length > 0) {
+    emitPlan({ phase: "created", steps: planSteps, currentStep: 0 });
+  }
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
 
   const streamFinalOnlyWithRetryByAdapter = async (
@@ -303,11 +415,11 @@ export async function* streamAgentWithTokens(
 
   if (useReasoningStream) {
     try {
-      const tools = getAllTools();
+      const tools = buildRuntimeTools(options);
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
-      let conversationMessages: BaseMessage[] = [systemMessage, ...messages];
+      let conversationMessages: BaseMessage[] = [systemMessage, ...stateMessages];
       const maxRounds = 50;
 
       let lastHadContent = false;
@@ -337,6 +449,7 @@ export async function* streamAgentWithTokens(
 
         // 如果没有工具调用，检查是否需要生成总结
         if (toolCalls.length === 0) {
+          emitPlan({ phase: "completed", steps: planSteps, currentStep: planSteps.length });
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
             const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
@@ -353,6 +466,15 @@ export async function* streamAgentWithTokens(
         }
 
         const toolMessages: BaseMessage[] = [];
+        if (toolCalls.length > 0 && planSteps.length > 0) {
+          planCurrentStep = Math.min(planSteps.length, planCurrentStep + 1);
+          emitPlan({
+            phase: "running",
+            steps: planSteps,
+            currentStep: planCurrentStep,
+            toolName: toolCalls[0]?.name,
+          });
+        }
         for (const tc of toolCalls) {
           const tool = toolMap.get(tc.name);
           let result: string;
@@ -406,10 +528,10 @@ export async function* streamAgentWithTokens(
     }
   }
 
-  const tools = getAllTools();
+  const tools = buildRuntimeTools(options);
   const toolNode = new ToolNode(tools);
   const model = adapter.getLLM().bindTools(tools);
-  let state: BaseMessage[] = [...messages];
+  let state: BaseMessage[] = [...stateMessages];
   const maxRounds = 50;
 
   const shouldContinue = (last: BaseMessage): boolean => {
@@ -469,7 +591,20 @@ export async function* streamAgentWithTokens(
     state = [...state, finalMessage];
     const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
-    if (!shouldContinue(fullChunk)) break;
+    if (!shouldContinue(fullChunk)) {
+      emitPlan({ phase: "completed", steps: planSteps, currentStep: planSteps.length });
+      break;
+    }
+    const fullChunkTools = (fullChunk as AIMessage).tool_calls ?? [];
+    if (fullChunkTools.length > 0 && planSteps.length > 0) {
+      planCurrentStep = Math.min(planSteps.length, planCurrentStep + 1);
+      emitPlan({
+        phase: "running",
+        steps: planSteps,
+        currentStep: planCurrentStep,
+        toolName: fullChunkTools[0]?.name,
+      });
+    }
     const toolResult = await toolNode.invoke({ messages: state });
     let toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
     toolMessages = toolMessages.map((m: BaseMessage) => {

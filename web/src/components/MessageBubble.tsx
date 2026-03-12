@@ -27,8 +27,11 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
+  const [planCollapsed, setPlanCollapsed] = useState(true);
   const [copied, setCopied] = useState(false);
   const toolLogs = message.toolLogs ?? [];
+  const plan = message.type === "ai" ? message.plan : undefined;
+  const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
   const text = hasContent
     ? message.content
@@ -132,6 +135,51 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             {!reasoningCollapsed && (
               <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto">
                 <MarkdownContent>{reasoning}</MarkdownContent>
+              </div>
+            )}
+          </div>
+        )}
+        {hasPlan && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setPlanCollapsed((c) => !c)}
+              className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            >
+              <span className="select-none">{planCollapsed ? "▶" : "▼"}</span>
+              <span>执行计划</span>
+            </button>
+            {!planCollapsed && (
+              <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+                <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between">
+                  <span>阶段：{plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "已生成"}</span>
+                  <span>{Math.min(plan?.currentStep ?? 0, plan?.steps.length ?? 0)}/{plan?.steps.length ?? 0}</span>
+                </div>
+                <div className="space-y-1.5">
+                  {plan?.steps.map((step, idx) => {
+                    const done = idx < (plan.currentStep ?? 0);
+                    const active = idx === (plan.currentStep ?? 0) && plan.phase === "running";
+                    return (
+                      <div
+                        key={`${idx}-${step}`}
+                        className={`text-sm px-2 py-1.5 rounded border ${
+                          done
+                            ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)] text-[var(--color-success-text)]"
+                            : active
+                              ? "border-[var(--color-accent)]/60 bg-[var(--color-accent)]/10 text-[var(--color-text)]"
+                              : "border-[var(--color-border)] text-[var(--color-text-muted)]"
+                        }`}
+                      >
+                        {done ? "✓" : active ? "→" : "○"} {step}
+                      </div>
+                    );
+                  })}
+                </div>
+                {plan?.toolName && plan.phase === "running" && (
+                  <div className="mt-1.5 text-xs text-[var(--color-text-muted)]">
+                    最近工具：{plan.toolName}
+                  </div>
+                )}
               </div>
             )}
           </div>

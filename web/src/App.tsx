@@ -57,6 +57,7 @@ export default function App() {
     streamingReasoning,
     streamingStatus,
     streamingToolLogs,
+    streamingPlan,
     sendError,
     usageTokens,
   } = useSendMessage({
@@ -299,6 +300,7 @@ export default function App() {
               streamingReasoning={streamingReasoning}
               streamingStatus={streamingStatus}
               streamingToolLogs={streamingToolLogs}
+              streamingPlan={streamingPlan}
               error={error}
               files={files}
               onFilesChange={setFiles}

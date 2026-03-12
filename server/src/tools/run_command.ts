@@ -6,6 +6,9 @@ import { existsSync } from "fs";
 const MAX_TIMEOUT_MS = 600_000; // 10 分钟，足够处理图片生成等耗时操作
 const DEFAULT_TIMEOUT_MS = 600_000; // 默认也设为 10 分钟
 const MAX_OUTPUT_BYTES = 64 * 1024;
+const COMMAND_CACHE_TTL_MS = 5 * 60 * 1000;
+const RUN_COMMAND_SUCCESS_SIGNAL = "__RUN_COMMAND_SUCCESS__";
+const RUN_COMMAND_DUPLICATE_SIGNAL = "__RUN_COMMAND_DUPLICATE_SKIPPED__";
 
 const DANGEROUS_PATTERNS = [
   /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(-[a-zA-Z]*r[a-zA-Z]*\s+)?\/\s*$/,
@@ -44,13 +47,81 @@ function truncate(s: string, max: number): string {
   return head + "\n...[truncated]...\n" + tail;
 }
 
+type CommandCacheItem = {
+  status: "success";
+  command: string;
+  cwd: string;
+  at: number;
+  summary: string;
+};
+
+const successCache = new Map<string, CommandCacheItem>();
+
+function cleanupCache(now: number): void {
+  for (const [k, item] of successCache.entries()) {
+    if (now - item.at > COMMAND_CACHE_TTL_MS) successCache.delete(k);
+  }
+}
+
+function toCacheKey(command: string, cwd: string): string {
+  return `${cwd}\n${command.trim()}`;
+}
+
+function toOneLine(input: string): string {
+  return input.replace(/\s+/g, " ").trim();
+}
+
+function formatRunCommandResult(payload: {
+  status: "success" | "failed" | "timeout" | "blocked" | "duplicate_skipped";
+  command: string;
+  cwd: string;
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number;
+  signal?: string;
+  note?: string;
+}): string {
+  const rows: string[] = [
+    "[run_command]",
+    `status: ${payload.status}`,
+    `command: ${payload.command}`,
+    `cwd: ${payload.cwd}`,
+  ];
+  if (payload.signal) rows.push(`signal: ${payload.signal}`);
+  if (typeof payload.exitCode === "number") rows.push(`exit_code: ${payload.exitCode}`);
+  if (payload.note) rows.push(`note: ${payload.note}`);
+  if (payload.stdout) rows.push(`stdout:\n${payload.stdout}`);
+  if (payload.stderr) rows.push(`stderr:\n${payload.stderr}`);
+  return rows.join("\n");
+}
+
 export const run_command = tool(
   async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
     const blocked = isDangerous(input.command);
-    if (blocked) return blocked;
+    const cwd = input.working_directory && existsSync(input.working_directory) ? input.working_directory : process.cwd();
+    if (blocked) {
+      return formatRunCommandResult({
+        status: "blocked",
+        command: input.command,
+        cwd,
+        note: blocked,
+      });
+    }
 
     const timeoutMs = Math.min(input.timeout_ms ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS);
-    const cwd = input.working_directory && existsSync(input.working_directory) ? input.working_directory : process.cwd();
+    const now = Date.now();
+    cleanupCache(now);
+    const cacheKey = toCacheKey(input.command, cwd);
+    const hit = successCache.get(cacheKey);
+    if (hit) {
+      return formatRunCommandResult({
+        status: "duplicate_skipped",
+        command: input.command,
+        cwd,
+        signal: RUN_COMMAND_DUPLICATE_SIGNAL,
+        note: `命中 ${Math.round((now - hit.at) / 1000)} 秒内成功执行缓存，跳过重复命令。最近成功摘要：${hit.summary}`,
+      });
+    }
 
     return new Promise<string>((resolve) => {
       const child = execFile(
@@ -58,19 +129,48 @@ export const run_command = tool(
         ["-c", input.command],
         { cwd, timeout: timeoutMs, maxBuffer: MAX_OUTPUT_BYTES * 2, env: { ...process.env, LANG: "en_US.UTF-8" } },
         (error, stdout, stderr) => {
-          const parts: string[] = [];
-          if (stdout) parts.push(truncate(stdout, MAX_OUTPUT_BYTES));
-          if (stderr) parts.push("[stderr]\n" + truncate(stderr, MAX_OUTPUT_BYTES));
-          if (error) {
-            if (error.killed) {
-              parts.push(`[timeout] Process killed after ${timeoutMs}ms`);
-            } else if (error.code !== undefined) {
-              parts.push(`[exit_code] ${error.code}`);
-            } else {
-              parts.push(`[error] ${error.message}`);
-            }
+          const out = stdout ? truncate(stdout, MAX_OUTPUT_BYTES) : "";
+          const err = stderr ? truncate(stderr, MAX_OUTPUT_BYTES) : "";
+          if (!error) {
+            const summarySeed = toOneLine(`${out}\n${err}`) || "(no output)";
+            successCache.set(cacheKey, {
+              status: "success",
+              command: input.command,
+              cwd,
+              at: Date.now(),
+              summary: summarySeed.slice(0, 160),
+            });
+            resolve(formatRunCommandResult({
+              status: "success",
+              command: input.command,
+              cwd,
+              stdout: out || "(no output)",
+              stderr: err || undefined,
+              exitCode: 0,
+              signal: RUN_COMMAND_SUCCESS_SIGNAL,
+            }));
+            return;
           }
-          resolve(parts.join("\n") || "(no output)");
+          if (error.killed) {
+            resolve(formatRunCommandResult({
+              status: "timeout",
+              command: input.command,
+              cwd,
+              stdout: out || undefined,
+              stderr: err || undefined,
+              note: `Process killed after ${timeoutMs}ms`,
+            }));
+            return;
+          }
+          resolve(formatRunCommandResult({
+            status: "failed",
+            command: input.command,
+            cwd,
+            stdout: out || undefined,
+            stderr: err || undefined,
+            exitCode: typeof error.code === "number" ? error.code : undefined,
+            note: typeof error.message === "string" ? error.message : undefined,
+          }));
         }
       );
       child.stdin?.end();

@@ -9,6 +9,12 @@ type ConversationStreamState = {
   streamingReasoning: string;
   streamingStatus: StreamingStatus;
   streamingToolLogs: ToolLog[];
+  streamingPlan: {
+    phase: "created" | "running" | "completed";
+    steps: string[];
+    currentStep: number;
+    toolName?: string;
+  } | null;
   sendError: string | null;
   usage: {
     promptTokens: number;
@@ -23,6 +29,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingReasoning: "",
   streamingStatus: null,
   streamingToolLogs: [],
+  streamingPlan: null,
   sendError: null,
   usage: null,
 };
@@ -34,6 +41,7 @@ function createState(): ConversationStreamState {
     streamingReasoning: "",
     streamingStatus: null,
     streamingToolLogs: [],
+    streamingPlan: null,
     sendError: null,
     usage: null,
   };
@@ -119,6 +127,7 @@ export function useSendMessage(options: {
         streamingReasoning: "",
         streamingStatus: "thinking",
         streamingToolLogs: [],
+        streamingPlan: null,
         sendError: null,
         usage: null,
       }));
@@ -198,6 +207,28 @@ export function useSendMessage(options: {
             });
             return;
           }
+          if (
+            obj.type === "plan" &&
+            Array.isArray((obj as { steps?: unknown[] }).steps) &&
+            typeof (obj as { phase?: string }).phase === "string"
+          ) {
+            const payload = obj as {
+              phase: "created" | "running" | "completed";
+              steps: string[];
+              currentStep?: number;
+              toolName?: string;
+            };
+            setConversationState(convId, (prev) => ({
+              ...prev,
+              streamingPlan: {
+                phase: payload.phase,
+                steps: payload.steps,
+                currentStep: typeof payload.currentStep === "number" ? payload.currentStep : 0,
+                toolName: payload.toolName,
+              },
+            }));
+            return;
+          }
         },
         () => {
           delete abortControllersRef.current[convId];
@@ -265,6 +296,7 @@ export function useSendMessage(options: {
     streamingReasoning: activeState.streamingReasoning,
     streamingStatus: activeState.streamingStatus,
     streamingToolLogs: activeState.streamingToolLogs,
+    streamingPlan: activeState.streamingPlan,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,
     clearStreaming,

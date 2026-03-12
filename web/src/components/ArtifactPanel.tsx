@@ -15,6 +15,18 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function compactPath(path: string, max = 72): string {
+  if (path.length <= max) return path;
+  const keepHead = Math.max(16, Math.floor(max * 0.45));
+  const keepTail = Math.max(20, max - keepHead - 1);
+  return `${path.slice(0, keepHead)}…${path.slice(-keepTail)}`;
+}
+
+function baseName(path: string): string {
+  const idx = path.lastIndexOf("/");
+  return idx >= 0 ? path.slice(idx + 1) : path;
+}
+
 function fileIcon(mime: string): string {
   if (mime.startsWith("image/")) return "🖼";
   if (mime === "application/pdf") return "📄";
@@ -80,15 +92,22 @@ export default function ArtifactPanel({ conversationId, onClose }: Props) {
     <div className="flex flex-col h-full border-l border-[var(--color-border)] bg-[var(--color-bg)]">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-surface)]">
-        <div className="flex items-center gap-2">
-          <span className="text-sm font-medium text-[var(--color-text)]">
-            {selected ? selected.name : "产物文件"}
-          </span>
+        <div className="flex items-center gap-2 min-w-0 flex-1 pr-3">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[var(--color-text)] truncate" title={selected ? selected.path : "产物文件"}>
+              {selected ? baseName(selected.path) : "产物文件"}
+            </div>
+            {selected && (
+              <div className="text-xs text-[var(--color-text-muted)] truncate" title={selected.path}>
+                {compactPath(selected.path)}
+              </div>
+            )}
+          </div>
           {selected && (
             <span className="text-xs text-[var(--color-text-muted)]">{formatSize(selected.size)}</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           {selected && (
             <button
               onClick={() => setSelected(null)}
@@ -346,7 +365,7 @@ function FilePreview({
     return <iframe src={url} className="w-full h-full border-0 rounded-b-lg" title={artifact.name} sandbox="allow-scripts allow-same-origin" />;
   }
 
-  if (mime === "text/markdown" && textContent !== null) {
+  if (mime.startsWith("text/markdown") && textContent !== null) {
     const artifactDir = artifact.path.includes("/")
       ? artifact.path.slice(0, artifact.path.lastIndexOf("/") + 1)
       : "";

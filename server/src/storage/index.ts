@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync, openSync, fsyncSync, closeSync, rmSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import type { ContextStrategyConfig } from "../config/userConfig.js";
 import { closeConversationLogger } from "../lib/logger.js";
 
@@ -22,6 +22,13 @@ export interface ToolLog {
   output: string;
 }
 
+export interface PlanLog {
+  phase: "created" | "running" | "completed";
+  steps: string[];
+  currentStep: number;
+  toolName?: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
@@ -33,6 +40,8 @@ export interface StoredMessage {
   tool_call_id?: string;
   /** 工具执行日志（name + 输入 + 输出），持久化展示用 */
   toolLogs?: ToolLog[];
+  /** 执行计划（仅 ai），用于会话结束后回看 */
+  plan?: PlanLog;
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -100,9 +109,10 @@ export function saveAttachmentFile(convId: string, mimeType: string, base64Data:
 }
 
 export function getAttachmentAbsolutePath(convId: string, fileRef: string): string | null {
-  const normalized = join(conversationDir(convId), fileRef);
-  const base = join(conversationDir(convId));
-  if (!normalized.startsWith(base) || normalized === base) return null;
+  const base = resolve(conversationDir(convId));
+  const normalized = resolve(base, fileRef);
+  if (!(normalized === base || normalized.startsWith(`${base}/`))) return null;
+  if (normalized === base) return null;
   if (!existsSync(normalized)) return null;
   return normalized;
 }
@@ -329,14 +339,68 @@ function workspaceDir(convId: string): string {
   return join(conversationDir(convId), WORKSPACE_DIR_NAME);
 }
 
+const RESERVED_CONVERSATION_ENTRIES = new Set([
+  ATTACHMENTS_DIR_NAME,
+  WORKSPACE_DIR_NAME,
+  "messages.json",
+  "meta.json",
+  "conversation.log",
+  CONTEXT_SNAPSHOT_FILE,
+  SUMMARY_FILE,
+]);
+
+function dedupeWorkspaceName(workspace: string, name: string): string {
+  if (!existsSync(join(workspace, name))) return name;
+  const dot = name.lastIndexOf(".");
+  const hasExt = dot > 0;
+  const base = hasExt ? name.slice(0, dot) : name;
+  const ext = hasExt ? name.slice(dot) : "";
+  let idx = 1;
+  while (existsSync(join(workspace, `${base}_${idx}${ext}`))) idx++;
+  return `${base}_${idx}${ext}`;
+}
+
+function normalizeMirroredWorkspaceTree(convId: string, workspace: string): void {
+  const mirrored = join(workspace, "data", "conversations", convId, "workspace");
+  if (!existsSync(mirrored)) return;
+  const children = readdirSync(mirrored, { withFileTypes: true });
+  for (const child of children) {
+    const from = join(mirrored, child.name);
+    const to = join(workspace, dedupeWorkspaceName(workspace, child.name));
+    try {
+      renameSync(from, to);
+    } catch {
+      continue;
+    }
+  }
+  rmSync(join(workspace, "data"), { recursive: true, force: true });
+}
+
+function normalizeWorkspaceOutputs(convId: string): void {
+  const convRoot = conversationDir(convId);
+  if (!existsSync(convRoot)) return;
+  const workspace = workspaceDir(convId);
+  if (!existsSync(workspace)) mkdirSync(workspace, { recursive: true });
+  const entries = readdirSync(convRoot, { withFileTypes: true });
+  for (const entry of entries) {
+    if (RESERVED_CONVERSATION_ENTRIES.has(entry.name)) continue;
+    const from = join(convRoot, entry.name);
+    const targetName = dedupeWorkspaceName(workspace, entry.name);
+    const to = join(workspace, targetName);
+    try {
+      renameSync(from, to);
+    } catch {
+      continue;
+    }
+  }
+  normalizeMirroredWorkspaceTree(convId, workspace);
+}
+
 export function ensureWorkspace(convId: string): string {
   const dir = workspaceDir(convId);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  normalizeWorkspaceOutputs(convId);
   return dir;
-}
-
-export function getWorkspacePath(convId: string): string {
-  return workspaceDir(convId);
 }
 
 const MIME_MAP: Record<string, string> = {
@@ -360,6 +424,7 @@ function guessMime(filename: string): string {
 import { statSync } from "fs";
 
 export function listArtifacts(convId: string): ArtifactMeta[] {
+  normalizeWorkspaceOutputs(convId);
   const dir = workspaceDir(convId);
   if (!existsSync(dir)) return [];
   return scanDir(dir, dir);
@@ -388,9 +453,10 @@ function scanDir(base: string, current: string): ArtifactMeta[] {
 }
 
 export function getArtifactAbsolutePath(convId: string, filePath: string): string | null {
-  const dir = workspaceDir(convId);
-  const normalized = join(dir, filePath);
-  if (!normalized.startsWith(dir) || normalized === dir) return null;
+  const dir = resolve(workspaceDir(convId));
+  const normalized = resolve(dir, filePath);
+  if (!(normalized === dir || normalized.startsWith(`${dir}/`))) return null;
+  if (normalized === dir) return null;
   if (!existsSync(normalized)) return null;
   return normalized;
 }

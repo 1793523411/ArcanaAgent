@@ -49,11 +49,17 @@ export interface PromptTemplate {
   updatedAt: string;
 }
 
+export interface PlanningConfig {
+  enabled: boolean;
+  streamProgress: boolean;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
   modelId?: string;
   context?: ContextStrategyConfig;
+  planning?: PlanningConfig;
   templates?: PromptTemplate[];
 }
 
@@ -68,6 +74,10 @@ const defaultConfig: UserConfig = {
   enabledToolIds: ["calculator", "get_time", "echo", "run_command", "read_file"],
   mcpServers: [],
   context: defaultContext,
+  planning: {
+    enabled: true,
+    streamProgress: true,
+  },
   templates: [],
 };
 
@@ -86,6 +96,7 @@ export function loadUserConfig(): UserConfig {
     const raw = readFileSync(CONFIG_PATH, "utf-8");
     const parsed = JSON.parse(raw) as Partial<UserConfig>;
     const ctx = parsed.context && typeof parsed.context === "object" ? parsed.context : defaultContext;
+    const planningRaw = parsed.planning && typeof parsed.planning === "object" ? parsed.planning : undefined;
     const templates = Array.isArray(parsed.templates) ? parsed.templates : [];
     return {
       enabledToolIds: Array.isArray(parsed.enabledToolIds) ? parsed.enabledToolIds : (Array.isArray((parsed as { enabledSkillIds?: string[] }).enabledSkillIds) ? (parsed as { enabledSkillIds: string[] }).enabledSkillIds : defaultConfig.enabledToolIds),
@@ -96,6 +107,10 @@ export function loadUserConfig(): UserConfig {
         trimToLast: typeof ctx.trimToLast === "number" && ctx.trimToLast > 0 ? ctx.trimToLast : defaultContext.trimToLast,
         tokenThresholdPercent: typeof ctx.tokenThresholdPercent === "number" && ctx.tokenThresholdPercent > 0 && ctx.tokenThresholdPercent <= 100 ? ctx.tokenThresholdPercent : defaultContext.tokenThresholdPercent,
         compressKeepRecent: typeof ctx.compressKeepRecent === "number" && ctx.compressKeepRecent > 0 ? ctx.compressKeepRecent : defaultContext.compressKeepRecent,
+      },
+      planning: {
+        enabled: typeof planningRaw?.enabled === "boolean" ? planningRaw.enabled : true,
+        streamProgress: typeof planningRaw?.streamProgress === "boolean" ? planningRaw.streamProgress : true,
       },
       templates: templates.reduce<PromptTemplate[]>((acc, item) => {
         if (!item || typeof item !== "object") return acc;

@@ -19,6 +19,13 @@ export interface ToolLog {
   output: string;
 }
 
+export interface PlanLog {
+  phase: "created" | "running" | "completed";
+  steps: string[];
+  currentStep: number;
+  toolName?: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
@@ -27,6 +34,7 @@ export interface StoredMessage {
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
   toolLogs?: ToolLog[];
+  plan?: PlanLog;
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -69,6 +77,11 @@ export interface PromptTemplate {
   updatedAt: string;
 }
 
+export interface PlanningConfig {
+  enabled: boolean;
+  streamProgress: boolean;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -76,6 +89,7 @@ export interface UserConfig {
   modelId?: string;
   availableModels?: Array<{ id: string; name: string; provider: string }>;
   context?: ContextStrategyConfig;
+  planning?: PlanningConfig;
   mcpStatus?: McpStatusItem[];
   templates?: PromptTemplate[];
 }
