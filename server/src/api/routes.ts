@@ -72,6 +72,7 @@ function estimateTokensForMessages(messages: BaseMessage[]): number {
 
 type PersistedSubagentLog = {
   subagentId: string;
+  subagentName?: string;
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -114,6 +115,7 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
         depth: ev.depth,
         prompt: ev.prompt,
         phase: ev.phase,
+        subagentName: ev.subagentName ?? existing.subagentName,
         summary: ev.summary ?? existing.summary,
         error: ev.error ?? existing.error,
         status: ev.phase === "completed" || ev.phase === "failed" ? null : existing.status,
@@ -165,6 +167,11 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
           toolName: ev.toolName,
         },
       });
+      continue;
+    }
+    if (ev.kind === "subagent_name") {
+      const cur = map.get(ev.subagentId);
+      if (cur) map.set(ev.subagentId, { ...cur, subagentName: ev.subagentName });
     }
   }
   return Array.from(map.values());

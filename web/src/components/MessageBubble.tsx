@@ -232,14 +232,16 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
                 const subToolsCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:tools`];
                 const subContentCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:content`];
                 const subPlanPhaseLabel = s.plan?.phase === "completed" ? "已完成" : s.plan?.phase === "running" ? "执行中" : "初始化中";
+                const promptTrimmed = (s.prompt ?? "").replace(/\s+/g, " ").trim();
+                const subagentDisplayName = s.subagentName ?? (promptTrimmed ? promptTrimmed.slice(0, 40) + (promptTrimmed.length > 40 ? "…" : "") : s.subagentId);
                 return (
                   <div key={s.subagentId} className="text-sm px-2 py-2 rounded border border-[var(--color-border)] text-[var(--color-text)]">
-                    <button type="button" onClick={() => toggleSubagent(s.subagentId)} className="w-full text-left flex items-center gap-2">
-                      <span>{subCollapsed ? "▶" : "▼"}</span>
-                      <span>{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
-                      <span className="text-[11px] text-[var(--color-text-muted)]">{s.subagentId}</span>
-                      <span className="text-[11px] text-[var(--color-text-muted)]">深度 {s.depth}</span>
-                      <span className="text-[11px] text-[var(--color-text-muted)]">
+                    <button type="button" onClick={() => toggleSubagent(s.subagentId)} className="w-full text-left flex items-start gap-2 flex-wrap">
+                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{subCollapsed ? "▶" : "▼"}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
+                      <span className="text-[11px] text-[var(--color-text-muted)] min-w-0 flex-1 break-words" title={s.subagentId}>{subagentDisplayName}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">深度 {s.depth}</span>
+                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">
                         {s.phase === "completed" ? "已完成" : s.phase === "failed" ? "失败" : "执行中"}
                       </span>
                     </button>

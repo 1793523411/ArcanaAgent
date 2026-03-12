@@ -5,6 +5,7 @@ import type { FileWithData } from "../components/ChatInputBar";
 
 type StreamingSubagent = {
   subagentId: string;
+  subagentName?: string;
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -242,8 +243,9 @@ export function useSendMessage(options: {
           }
           if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
             const payload = obj as {
-              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result";
+              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name";
               subagentId: string;
+              subagentName?: string;
               depth?: number;
               prompt?: string;
               phase?: "started" | "completed" | "failed" | "created" | "running";
@@ -273,6 +275,7 @@ export function useSendMessage(options: {
                 ? existing[idx]
                 : {
                     subagentId: payload.subagentId,
+                    subagentName: typeof payload.subagentName === "string" ? payload.subagentName : undefined,
                     depth: typeof payload.depth === "number" ? payload.depth : 1,
                     prompt: typeof payload.prompt === "string" ? payload.prompt : "",
                     phase: lifecyclePhase,
@@ -292,6 +295,7 @@ export function useSendMessage(options: {
               if (payload.kind === "lifecycle") {
                 nextItem = {
                   ...nextItem,
+                  subagentName: typeof payload.subagentName === "string" ? payload.subagentName : nextItem.subagentName,
                   phase: lifecyclePhase,
                   summary: typeof payload.summary === "string" ? payload.summary : nextItem.summary,
                   error: typeof payload.error === "string" ? payload.error : nextItem.error,
@@ -342,6 +346,8 @@ export function useSendMessage(options: {
                     toolName: payload.toolName,
                   },
                 };
+              } else if (payload.kind === "subagent_name" && typeof payload.subagentName === "string") {
+                nextItem = { ...nextItem, subagentName: payload.subagentName };
               }
               if (idx >= 0) {
                 const next = [...existing];

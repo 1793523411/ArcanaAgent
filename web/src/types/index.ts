@@ -33,6 +33,8 @@ export interface PlanLog {
 
 export interface SubagentLog {
   subagentId: string;
+  /** 语义化展示名（由任务 prompt 派生） */
+  subagentName?: string;
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";

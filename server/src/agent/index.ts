@@ -40,6 +40,7 @@ export type SubagentStreamEvent =
       kind: "lifecycle";
       phase: "started" | "completed" | "failed";
       subagentId: string;
+      subagentName?: string;
       depth: number;
       prompt: string;
       summary?: string;
@@ -70,6 +71,11 @@ export type SubagentStreamEvent =
       subagentId: string;
       name: string;
       output: string;
+    }
+  | {
+      kind: "subagent_name";
+      subagentId: string;
+      subagentName: string;
     };
 
 const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
@@ -202,6 +208,30 @@ function createSubagentId(): string {
   return `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** 从任务 prompt 生成简短可读的子 Agent 展示名（约 24 字内），用于 AI 名称返回前的占位 */
+function deriveSubagentName(prompt: string): string {
+  const oneLine = prompt.replace(/\s+/g, " ").trim();
+  const maxLen = 24;
+  if (oneLine.length <= maxLen) return oneLine || "子任务";
+  return oneLine.slice(0, maxLen) + "…";
+}
+
+const SUBAGENT_NAME_SYSTEM = "你只输出一个极短的标题，不要任何解释、标点或换行。中文 4～10 字或英文 2～6 个词。";
+const SUBAGENT_NAME_MAX_LEN = 12;
+
+/** 用 LLM 根据任务 prompt 生成简短语义化名称（异步，不阻塞子任务启动） */
+async function generateShortSubagentName(prompt: string, modelId?: string): Promise<string> {
+  const llm = getModelAdapter(modelId).getLLM();
+  const oneLine = prompt.replace(/\s+/g, " ").trim().slice(0, 200);
+  const msg = await llm.invoke([
+    new SystemMessage(SUBAGENT_NAME_SYSTEM),
+    new HumanMessage(`任务：${oneLine}\n短标题：`),
+  ]);
+  const text = typeof msg.content === "string" ? msg.content : "";
+  const name = text.replace(/\s+/g, " ").trim().replace(/^["'「『]|["'」』]$/g, "").slice(0, SUBAGENT_NAME_MAX_LEN) || "子任务";
+  return name;
+}
+
 function stringifyToolArgs(args: unknown): string {
   if (typeof args === "string") return args;
   try {
@@ -328,10 +358,19 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
       if (!prompt) return "Error: prompt is required.";
       const subagentId = createSubagentId();
+      let subagentName = deriveSubagentName(prompt);
+      try {
+        // 为了在会话历史中也能看到 AI 生成的简短名称，这里同步等待一次极短 LLM 调用。
+        // 子 Agent 本身的执行仍然是异步流式的，这个命名步骤只增加很小的前置延迟。
+        subagentName = await generateShortSubagentName(prompt, context.modelId);
+      } catch {
+        // 保留基于 prompt 的回退名称
+      }
       context.options?.onSubagentEvent?.({
         kind: "lifecycle",
         phase: "started",
         subagentId,
+        subagentName,
         depth: depth + 1,
         prompt,
       });
@@ -416,6 +455,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           kind: "lifecycle",
           phase: "completed",
           subagentId,
+          subagentName,
           depth: depth + 1,
           prompt,
           summary,
@@ -427,6 +467,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           kind: "lifecycle",
           phase: "failed",
           subagentId,
+          subagentName,
           depth: depth + 1,
           prompt,
           error: errText,

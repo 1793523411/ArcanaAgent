@@ -17,6 +17,7 @@ interface Props {
   streamingToolLogs: Array<{ name: string; input: string; output: string }>;
   streamingSubagents: Array<{
     subagentId: string;
+    subagentName?: string;
     depth: number;
     prompt: string;
     phase: "started" | "completed" | "failed";
