@@ -25,7 +25,7 @@ import type { PlanStreamEvent } from "../agent/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
-import { listSkills, installSkillFromZip, deleteSkill, getSkillContextForAgent } from "../skills/manager.js";
+import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 import {
   getConversationLogger,
@@ -51,7 +51,7 @@ function buildSkillContext(convId: string): string {
       ).join("\n") +
       "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
     : "";
-  return getSkillContextForAgent() +
+  return getSkillCatalogForAgent() +
     `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
     "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
     "Use absolute paths when saving. The user can preview files saved here directly in the UI." +

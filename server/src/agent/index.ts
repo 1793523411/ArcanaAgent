@@ -8,7 +8,7 @@ import { getToolsByIds, listToolIds } from "../tools/index.js";
 import { getMcpTools } from "../mcp/client.js";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
-import { getSkillContextForAgent } from "../skills/manager.js";
+import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { resolve } from "path";
@@ -62,13 +62,14 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Never silently ignore errors — always report what happened
 
 ## Skills
-Skills are specialized, tested capabilities defined in SKILL.md files. When a user's request matches a skill:
-1. Follow the skill's instructions precisely — they are tested and reliable
-2. Execute scripts with their full absolute paths via run_command
-3. Install dependencies automatically if needed (pip install, npm install, etc.)
-4. Use read_file to check reference docs or saved outputs when mentioned
-5. Handle setup steps proactively without asking the user
-6. Present skill outputs clearly and completely
+Skills are specialized capabilities defined in SKILL.md files. When a user's request matches a listed skill:
+1. Call load_skill with the exact skill name first
+2. Follow the loaded instructions precisely
+3. Execute scripts with their full absolute paths via run_command
+4. Install dependencies automatically if needed (pip install, npm install, etc.)
+5. Use read_file to check reference docs or saved outputs when mentioned
+6. Handle setup steps proactively without asking the user
+7. Present skill outputs clearly and completely
 
 ## Safety
 - **NEVER** execute destructive system commands (rm -rf /, mkfs, dd to disk, shutdown, reboot, etc.)
@@ -93,7 +94,7 @@ function buildMcpToolsSection(): string {
 }
 
 function buildSystemPrompt(skillContext?: string): string {
-  return BASE_SYSTEM_PROMPT + buildMcpToolsSection() + (skillContext || getSkillContextForAgent());
+  return BASE_SYSTEM_PROMPT + buildMcpToolsSection() + (skillContext || getSkillCatalogForAgent());
 }
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
@@ -268,6 +269,7 @@ function applyEvidenceToPlan(steps: RuntimePlanStep[], evidence: string): Runtim
   const nextEvidences = [...target.evidences, evidence].slice(-6);
   const requiredChecks = Math.max(1, target.acceptance_checks.length);
   const completed = nextEvidences.length >= requiredChecks;
+  // 保留严格门槛：证据条数需覆盖验收项数量，避免“单条证据”导致步骤过早完成。
   const cloned = [...steps];
   cloned[firstPending] = {
     ...target,
@@ -284,6 +286,13 @@ function computeCurrentStep(steps: RuntimePlanStep[]): number {
     done += 1;
   }
   return done;
+}
+
+function forceCompletePlan(steps: RuntimePlanStep[]): RuntimePlanStep[] {
+  return steps.map((step) => ({
+    ...step,
+    completed: true,
+  }));
 }
 
 export function buildAgent(modelId?: string) {
@@ -501,7 +510,11 @@ export async function* streamAgentWithTokens(
 
         // 如果没有工具调用，检查是否需要生成总结
         if (toolCalls.length === 0) {
-          emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
+          if (runtimePlanSteps.length > 0) {
+            runtimePlanSteps = forceCompletePlan(runtimePlanSteps);
+            planCurrentStep = computeCurrentStep(runtimePlanSteps);
+          }
+          emitCurrentPlan("completed");
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
             const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
@@ -642,7 +655,11 @@ export async function* streamAgentWithTokens(
     const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) {
-      emitCurrentPlan(planCurrentStep >= runtimePlanSteps.length ? "completed" : "running");
+      if (runtimePlanSteps.length > 0) {
+        runtimePlanSteps = forceCompletePlan(runtimePlanSteps);
+        planCurrentStep = computeCurrentStep(runtimePlanSteps);
+      }
+      emitCurrentPlan("completed");
       break;
     }
     const fullChunkTools = (fullChunk as AIMessage).tool_calls ?? [];
