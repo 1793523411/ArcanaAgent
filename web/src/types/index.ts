@@ -31,6 +31,22 @@ export interface PlanLog {
   toolName?: string;
 }
 
+export interface SubagentLog {
+  subagentId: string;
+  /** 语义化展示名（由任务 prompt 派生） */
+  subagentName?: string;
+  depth: number;
+  prompt: string;
+  phase: "started" | "completed" | "failed";
+  status: StreamingStatus;
+  content: string;
+  reasoning: string;
+  toolLogs: ToolLog[];
+  plan?: PlanLog;
+  summary?: string;
+  error?: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
@@ -40,6 +56,7 @@ export interface StoredMessage {
   tool_calls?: Array<{ name: string; args: string }>;
   toolLogs?: ToolLog[];
   plan?: PlanLog;
+  subagents?: SubagentLog[];
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };

@@ -12,6 +12,7 @@ import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { resolve } from "path";
+import { z } from "zod";
 
 type MessagesState = typeof MessagesAnnotation.State;
 export interface PlanStreamEvent {
@@ -24,12 +25,58 @@ export interface PlanStreamEvent {
 interface AgentExecutionOptions {
   planningEnabled?: boolean;
   workspacePath?: string;
+  subagentEnabled?: boolean;
+  subagentDepth?: number;
+  onSubagentEvent?: (event: SubagentStreamEvent) => void;
 }
 
 interface StreamAgentOptions extends AgentExecutionOptions {
   planProgressEnabled?: boolean;
   onPlanEvent?: (event: PlanStreamEvent) => void;
 }
+
+export type SubagentStreamEvent =
+  | {
+      kind: "lifecycle";
+      phase: "started" | "completed" | "failed";
+      subagentId: string;
+      subagentName?: string;
+      depth: number;
+      prompt: string;
+      summary?: string;
+      error?: string;
+    }
+  | {
+      kind: "token";
+      subagentId: string;
+      content: string;
+    }
+  | {
+      kind: "reasoning";
+      subagentId: string;
+      content: string;
+    }
+  | ({
+      kind: "plan";
+      subagentId: string;
+    } & PlanStreamEvent)
+  | {
+      kind: "tool_call";
+      subagentId: string;
+      name: string;
+      input: string;
+    }
+  | {
+      kind: "tool_result";
+      subagentId: string;
+      name: string;
+      output: string;
+    }
+  | {
+      kind: "subagent_name";
+      subagentId: string;
+      subagentName: string;
+    };
 
 const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
@@ -48,6 +95,8 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
 - For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
 - For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
+- Use \`task\` only for complex tasks that benefit from decomposition; for simple tasks, solve directly in the main agent
+- When multiple independent subtasks exist, you may call \`task\` multiple times in the same turn
 
 **CRITICAL — Always provide a final text response:**
 - After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
@@ -145,6 +194,53 @@ function getReasoningFromChunk(chunk: { content?: unknown }): string {
     .join("");
 }
 
+function getLastAssistantText(messages: BaseMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (msg._getType() !== "ai") continue;
+    const text = getTextFromMessage(msg).trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+function createSubagentId(): string {
+  return `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** 从任务 prompt 生成简短可读的子 Agent 展示名（约 24 字内），用于 AI 名称返回前的占位 */
+function deriveSubagentName(prompt: string): string {
+  const oneLine = prompt.replace(/\s+/g, " ").trim();
+  const maxLen = 24;
+  if (oneLine.length <= maxLen) return oneLine || "子任务";
+  return oneLine.slice(0, maxLen) + "…";
+}
+
+const SUBAGENT_NAME_SYSTEM = "你只输出一个极短的标题，不要任何解释、标点或换行。中文 4～10 字或英文 2～6 个词。";
+const SUBAGENT_NAME_MAX_LEN = 12;
+
+/** 用 LLM 根据任务 prompt 生成简短语义化名称（异步，不阻塞子任务启动） */
+async function generateShortSubagentName(prompt: string, modelId?: string): Promise<string> {
+  const llm = getModelAdapter(modelId).getLLM();
+  const oneLine = prompt.replace(/\s+/g, " ").trim().slice(0, 200);
+  const msg = await llm.invoke([
+    new SystemMessage(SUBAGENT_NAME_SYSTEM),
+    new HumanMessage(`任务：${oneLine}\n短标题：`),
+  ]);
+  const text = typeof msg.content === "string" ? msg.content : "";
+  const name = text.replace(/\s+/g, " ").trim().replace(/^["'「『]|["'」』]$/g, "").slice(0, SUBAGENT_NAME_MAX_LEN) || "子任务";
+  return name;
+}
+
+function stringifyToolArgs(args: unknown): string {
+  if (typeof args === "string") return args;
+  try {
+    return JSON.stringify(args ?? {});
+  } catch {
+    return "{}";
+  }
+}
+
 function safeParseArgs(argsStr: string): Record<string, unknown> {
   try {
     const parsed = JSON.parse(argsStr);
@@ -173,6 +269,12 @@ function getAllTools(): StructuredToolInterface[] {
   const builtIn = getToolsByIds(allIds);
   const mcp = getMcpTools();
   return [...builtIn, ...mcp];
+}
+
+interface RuntimeToolBuildContext {
+  modelId?: string;
+  skillContext?: string;
+  options?: AgentExecutionOptions;
 }
 
 function isPathInWorkspace(pathText: string, workspacePath: string): boolean {
@@ -212,14 +314,16 @@ function findForbiddenOutputPath(command: string, workspacePath: string): string
   return null;
 }
 
-function buildRuntimeTools(options?: AgentExecutionOptions): StructuredToolInterface[] {
+function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToolBuildContext): StructuredToolInterface[] {
   const tools = getAllTools();
   const workspacePath = options?.workspacePath;
-  if (!workspacePath) return tools;
-  return tools.map((t) => {
+  const wrappedTools = tools.map((t) => {
     if (t.name !== "run_command") return t;
     const wrapped = tool(
       async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
+        if (!workspacePath) {
+          return String(await t.invoke(input));
+        }
         const cmd = typeof input?.command === "string" ? input.command : "";
         const forbidden = findForbiddenOutputPath(cmd, workspacePath);
         if (forbidden) {
@@ -241,6 +345,145 @@ function buildRuntimeTools(options?: AgentExecutionOptions): StructuredToolInter
     );
     return wrapped as unknown as StructuredToolInterface;
   });
+  const depth = context?.options?.subagentDepth ?? 0;
+  const subagentEnabled = context?.options?.subagentEnabled ?? true;
+  if (!subagentEnabled || depth >= 1) {
+    return wrappedTools;
+  }
+  if (!context) {
+    return wrappedTools;
+  }
+  const taskTool = tool(
+    async (input: { prompt: string }) => {
+      const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
+      if (!prompt) return "Error: prompt is required.";
+      const subagentId = createSubagentId();
+      let subagentName = deriveSubagentName(prompt);
+      try {
+        // 为了在会话历史中也能看到 AI 生成的简短名称，这里同步等待一次极短 LLM 调用。
+        // 子 Agent 本身的执行仍然是异步流式的，这个命名步骤只增加很小的前置延迟。
+        subagentName = await generateShortSubagentName(prompt, context.modelId);
+      } catch {
+        // 保留基于 prompt 的回退名称
+      }
+      context.options?.onSubagentEvent?.({
+        kind: "lifecycle",
+        phase: "started",
+        subagentId,
+        subagentName,
+        depth: depth + 1,
+        prompt,
+      });
+      try {
+        let summaryText = "";
+        for await (const chunk of streamAgentWithTokens(
+          [new HumanMessage(prompt)],
+          (token) => {
+            summaryText += token;
+            context.options?.onSubagentEvent?.({
+              kind: "token",
+              subagentId,
+              content: token,
+            });
+          },
+          context.modelId,
+          (reasoning) => {
+            context.options?.onSubagentEvent?.({
+              kind: "reasoning",
+              subagentId,
+              content: reasoning,
+            });
+          },
+          context.skillContext,
+          {
+            ...context.options,
+            planningEnabled: true,
+            planProgressEnabled: true,
+            subagentDepth: depth + 1,
+            onPlanEvent: (event) => {
+              context.options?.onSubagentEvent?.({
+                kind: "plan",
+                subagentId,
+                ...event,
+              });
+            },
+          }
+        )) {
+          const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
+          const part = key
+            ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string }>)[key]
+            : undefined;
+          if (key === "llmCall" && part?.messages?.length) {
+            const aiMsg = part.messages.find((m) => (m as { _getType?: () => string })._getType?.() === "ai") as
+              | { tool_calls?: Array<{ name: string; args?: unknown }> }
+              | undefined;
+            if (Array.isArray(aiMsg?.tool_calls)) {
+              for (const tc of aiMsg.tool_calls) {
+                context.options?.onSubagentEvent?.({
+                  kind: "tool_call",
+                  subagentId,
+                  name: tc.name,
+                  input: stringifyToolArgs(tc.args),
+                });
+              }
+            }
+          }
+          if (key === "toolNode" && part?.messages?.length) {
+            for (const msg of part.messages) {
+              const toolMsg = msg as { _getType?: () => string; name?: string; content?: string };
+              if (toolMsg._getType?.() === "tool" && toolMsg.name) {
+                context.options?.onSubagentEvent?.({
+                  kind: "tool_result",
+                  subagentId,
+                  name: toolMsg.name,
+                  output: typeof toolMsg.content === "string" ? toolMsg.content : "",
+                });
+              }
+            }
+          }
+          if (!summaryText && part?.messages?.length) {
+            const ai = part.messages
+              .filter((m) => (m as { _getType?: () => string })._getType?.() === "ai")
+              .pop();
+            if (ai) {
+              summaryText = getTextFromMessage(ai).trim();
+            }
+          }
+        }
+        const summary = summaryText.trim() || NO_VISIBLE_OUTPUT_MESSAGE;
+        context.options?.onSubagentEvent?.({
+          kind: "lifecycle",
+          phase: "completed",
+          subagentId,
+          subagentName,
+          depth: depth + 1,
+          prompt,
+          summary,
+        });
+        return summary;
+      } catch (error) {
+        const errText = error instanceof Error ? error.message : String(error);
+        context.options?.onSubagentEvent?.({
+          kind: "lifecycle",
+          phase: "failed",
+          subagentId,
+          subagentName,
+          depth: depth + 1,
+          prompt,
+          error: errText,
+        });
+        return `[error] Subagent failed: ${errText}`;
+      }
+    },
+    {
+      name: "task",
+      description: "Spawn a subagent with isolated context and return only its final summary.",
+      schema: z.object({
+        prompt: z.string().describe("Subtask instruction for the subagent"),
+      }),
+    }
+  );
+  return [...wrappedTools, taskTool as unknown as StructuredToolInterface];
 }
 
 type RuntimePlanStep = PlanStep & {
@@ -296,7 +539,7 @@ function forceCompletePlan(steps: RuntimePlanStep[]): RuntimePlanStep[] {
 }
 
 export function buildAgent(modelId?: string) {
-  const tools = getAllTools();
+  const tools = buildRuntimeTools(undefined, { modelId, options: {} });
   const model = getModelAdapter(modelId).getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
 
@@ -337,7 +580,7 @@ export async function runAgent(
   skillContext?: string,
   options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
-  const tools = buildRuntimeTools(options);
+  const tools = buildRuntimeTools(options, { modelId, skillContext, options });
   const systemMessage = new SystemMessage(buildSystemPrompt(skillContext));
   const adapter = getModelAdapter(modelId);
   const model = adapter.getLLM().bindTools(tools);
@@ -474,9 +717,64 @@ export async function* streamAgentWithTokens(
     return "";
   };
 
+  const executeToolCall = async (
+    tc: ToolCallResult,
+    toolMap: Map<string, StructuredToolInterface>
+  ): Promise<{ id: string; name: string; result: string }> => {
+    const tool = toolMap.get(tc.name);
+    let result: string;
+    if (tool) {
+      const args = safeParseArgs(tc.arguments);
+      if (tc.name === "write_file") {
+        const argsErr = getWriteFileArgsError(args as { path?: unknown; content?: unknown });
+        if (argsErr) {
+          result = `[error] ${argsErr} ${WRITE_FILE_SCHEMA_HINT}`;
+        } else {
+          try {
+            result = String(await tool.invoke(args));
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            result = msg.includes("expected schema") ? `[error] ${msg} ${WRITE_FILE_SCHEMA_HINT}` : `[error] ${msg}`;
+          }
+        }
+      } else {
+        try {
+          result = String(await tool.invoke(args));
+        } catch (e) {
+          result = `[error] ${e instanceof Error ? e.message : String(e)}`;
+        }
+      }
+    } else {
+      result = `[error] Unknown tool: ${tc.name}`;
+    }
+    return { id: tc.id, name: tc.name, result };
+  };
+
+  const executeToolCalls = async (
+    toolCalls: ToolCallResult[],
+    toolMap: Map<string, StructuredToolInterface>
+  ): Promise<Array<{ id: string; name: string; result: string }>> => {
+    const taskPromiseMap = new Map<string, Promise<{ id: string; name: string; result: string }>>();
+    for (const tc of toolCalls) {
+      if (tc.name === "task") {
+        taskPromiseMap.set(tc.id, executeToolCall(tc, toolMap));
+      }
+    }
+    const outputs: Array<{ id: string; name: string; result: string }> = [];
+    for (const tc of toolCalls) {
+      if (tc.name === "task") {
+        const taskResult = await taskPromiseMap.get(tc.id);
+        outputs.push(taskResult ?? { id: tc.id, name: tc.name, result: "[error] Unknown task execution failure" });
+        continue;
+      }
+      outputs.push(await executeToolCall(tc, toolMap));
+    }
+    return outputs;
+  };
+
   if (useReasoningStream) {
     try {
-      const tools = buildRuntimeTools(options);
+      const tools = buildRuntimeTools(options, { modelId, skillContext, options });
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
 
@@ -530,39 +828,14 @@ export async function* streamAgentWithTokens(
           return;
         }
 
+        const toolOutputs = await executeToolCalls(toolCalls, toolMap);
         const toolMessages: BaseMessage[] = [];
         let lastToolNameForPlan: string | undefined;
-        for (const tc of toolCalls) {
-          lastToolNameForPlan = tc.name;
-          const tool = toolMap.get(tc.name);
-          let result: string;
-          if (tool) {
-            const args = safeParseArgs(tc.arguments);
-            if (tc.name === "write_file") {
-              const argsErr = getWriteFileArgsError(args as { path?: unknown; content?: unknown });
-              if (argsErr) {
-                result = `[error] ${argsErr} ${WRITE_FILE_SCHEMA_HINT}`;
-              } else {
-                try {
-                  result = String(await tool.invoke(args));
-                } catch (e) {
-                  const msg = e instanceof Error ? e.message : String(e);
-                  result = msg.includes("expected schema") ? `[error] ${msg} ${WRITE_FILE_SCHEMA_HINT}` : `[error] ${msg}`;
-                }
-              }
-            } else {
-              try {
-                result = String(await tool.invoke(args));
-              } catch (e) {
-                result = `[error] ${e instanceof Error ? e.message : String(e)}`;
-              }
-            }
-          } else {
-            result = `[error] Unknown tool: ${tc.name}`;
-          }
-          toolMessages.push(new ToolMessage({ content: result, tool_call_id: tc.id, name: tc.name }));
+        for (const out of toolOutputs) {
+          lastToolNameForPlan = out.name;
+          toolMessages.push(new ToolMessage({ content: out.result, tool_call_id: out.id, name: out.name }));
           if (runtimePlanSteps.length > 0) {
-            runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(tc.name, result));
+            runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(out.name, out.result));
             planCurrentStep = computeCurrentStep(runtimePlanSteps);
           }
         }
@@ -591,8 +864,8 @@ export async function* streamAgentWithTokens(
     }
   }
 
-  const tools = buildRuntimeTools(options);
-  const toolNode = new ToolNode(tools);
+  const tools = buildRuntimeTools(options, { modelId, skillContext, options });
+  const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
   const model = adapter.getLLM().bindTools(tools);
   let state: BaseMessage[] = [...stateMessages];
   const maxRounds = 50;
@@ -662,22 +935,15 @@ export async function* streamAgentWithTokens(
       emitCurrentPlan("completed");
       break;
     }
-    const fullChunkTools = (fullChunk as AIMessage).tool_calls ?? [];
-    const toolResult = await toolNode.invoke({ messages: state });
-    let toolMessages = (toolResult as { messages?: BaseMessage[] }).messages ?? [];
-    toolMessages = toolMessages.map((m: BaseMessage) => {
-      if (m._getType() !== "tool") return m;
-      const content = typeof m.content === "string" ? m.content : "";
-      const tm = m as { name?: string; tool_call_id?: string };
-      if (tm.name === "write_file" && content.includes("expected schema")) {
-        return new ToolMessage({
-          content: `[error] 工具参数格式不符合要求。${WRITE_FILE_SCHEMA_HINT}`,
-          tool_call_id: tm.tool_call_id ?? "",
-          name: tm.name ?? "write_file",
-        });
-      }
-      return m;
-    });
+    const fullChunkTools = ((fullChunk as AIMessage).tool_calls ?? []).map((tc) => ({
+      id: tc.id ?? "",
+      name: tc.name,
+      arguments: JSON.stringify(tc.args ?? {}),
+    }));
+    const toolOutputs = await executeToolCalls(fullChunkTools, toolMap);
+    const toolMessages: BaseMessage[] = toolOutputs.map((out) => (
+      new ToolMessage({ content: out.result, tool_call_id: out.id, name: out.name })
+    ));
     if (runtimePlanSteps.length > 0) {
       const toolOutputs: Array<{ name?: string; content: string }> = [];
       for (const m of toolMessages) {

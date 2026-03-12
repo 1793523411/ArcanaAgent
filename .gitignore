@@ -133,6 +133,7 @@ dist/protocol.schema.json
 config/models.json
 config/models_backup.json
 
+
 .trae/**/*
 
 **/logs/*
@@ -141,3 +142,4 @@ skills/**/
 
 # 本地数据目录（不提交）
 data/
+config/models_in.json

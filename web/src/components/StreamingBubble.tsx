@@ -10,6 +10,30 @@ interface Props {
   reasoning?: string;
   status: StreamingStatus;
   toolLogs?: ToolLog[];
+  subagents?: Array<{
+    subagentId: string;
+    subagentName?: string;
+    depth: number;
+    prompt: string;
+    phase: "started" | "completed" | "failed";
+    status: StreamingStatus;
+    content: string;
+    reasoning: string;
+    toolLogs: ToolLog[];
+    plan: {
+      phase: "created" | "running" | "completed";
+      steps: Array<{
+        title: string;
+        acceptance_checks: string[];
+        evidences: string[];
+        completed: boolean;
+      }>;
+      currentStep: number;
+      toolName?: string;
+    } | null;
+    summary?: string;
+    error?: string;
+  }>;
   plan?: {
     phase: "created" | "running" | "completed";
     steps: Array<{
@@ -47,6 +71,7 @@ export default function StreamingBubble({
   reasoning,
   status,
   toolLogs = [],
+  subagents = [],
   plan,
   isStreaming = false,
   supportsReasoning = false,
@@ -56,6 +81,9 @@ export default function StreamingBubble({
 }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const [planCollapsed, setPlanCollapsed] = useState(false);
+  const [subagentsCollapsed, setSubagentsCollapsed] = useState(false);
+  const [subagentCollapsedMap, setSubagentCollapsedMap] = useState<Record<string, boolean>>({});
+  const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState(false);
   const reasoningRef = useRef<HTMLDivElement>(null);
   const userScrolledRef = useRef(false);
@@ -83,13 +111,52 @@ export default function StreamingBubble({
 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const hasToolLogs = toolLogs.length > 0;
+  const hasSubagents = subagents.length > 0;
+  const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   useEffect(() => {
     if (isStreaming && hasPlan) setPlanCollapsed(false);
   }, [isStreaming, hasPlan, plan?.steps.length]);
+  useEffect(() => {
+    if (!isStreaming) return;
+    setSubagentsCollapsed(false);
+  }, [isStreaming, subagents.length]);
+  useEffect(() => {
+    if (subagents.length === 0) return;
+    const finished = subagents.filter((s) => s.phase === "completed" || s.phase === "failed");
+    if (finished.length > 0) {
+      setSubagentCollapsedMap((prev) => {
+        const next = { ...prev };
+        for (const s of finished) next[s.subagentId] = true;
+        return next;
+      });
+      setSubSectionCollapsedMap((prev) => {
+        const next = { ...prev };
+        for (const s of finished) {
+          next[`${s.subagentId}:reasoning`] = true;
+          next[`${s.subagentId}:plan`] = true;
+          next[`${s.subagentId}:tools`] = true;
+          next[`${s.subagentId}:content`] = true;
+        }
+        return next;
+      });
+    }
+    if (finished.length === subagents.length) {
+      setSubagentsCollapsed(true);
+    }
+  }, [subagents]);
   const showThinkingSection = hasReasoning || (isStreaming && supportsReasoning);
   const copyableText = content.trim() || "";
+
+  const toggleSubagent = (subagentId: string) => {
+    setSubagentCollapsedMap((prev) => ({ ...prev, [subagentId]: !prev[subagentId] }));
+  };
+
+  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content") => {
+    const key = `${subagentId}:${section}`;
+    setSubSectionCollapsedMap((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
 
   const handleCopy = async () => {
     if (!copyableText) return;
@@ -234,6 +301,107 @@ export default function StreamingBubble({
         </div>
       )}
       {hasToolLogs && <ToolCallBlock logs={toolLogs} />}
+      {hasSubagents && (
+        <div className="mb-3 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+          <button
+            type="button"
+            onClick={() => setSubagentsCollapsed((c) => !c)}
+            className="w-full text-left text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between hover:text-[var(--color-text)] transition-colors"
+          >
+            <span>{subagentsCollapsed ? "▶" : "▼"} 子Agent执行</span>
+            <span>运行中 {runningSubagents} / 总计 {subagents.length}</span>
+          </button>
+          {!subagentsCollapsed && <div className="space-y-2">
+            {subagents.map((s) => {
+              const subCollapsed = !!subagentCollapsedMap[s.subagentId];
+              const hasSubReasoning = !!s.reasoning.trim();
+              const hasSubPlan = !!(s.plan?.steps?.length);
+              const hasSubTools = s.toolLogs.length > 0;
+              const hasSubContent = !!s.content.trim();
+              const reasoningCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:reasoning`];
+              const subPlanCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:plan`];
+              const subToolsCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:tools`];
+              const subContentCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:content`];
+              const subPlanPhaseLabel = s.plan?.phase === "completed" ? "已完成" : s.plan?.phase === "running" ? "执行中" : "初始化中";
+              const promptTrimmed = (s.prompt ?? "").replace(/\s+/g, " ").trim();
+              const subagentDisplayName = s.subagentName ?? (promptTrimmed ? promptTrimmed.slice(0, 40) + (promptTrimmed.length > 40 ? "…" : "") : s.subagentId);
+              return (
+                <div key={s.subagentId} className="text-sm px-2 py-2 rounded border border-[var(--color-border)] text-[var(--color-text)]">
+                  <button type="button" onClick={() => toggleSubagent(s.subagentId)} className="w-full text-left flex items-start gap-2 flex-wrap">
+                    <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{subCollapsed ? "▶" : "▼"}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
+                    <span className="text-[11px] text-[var(--color-text-muted)] min-w-0 flex-1 break-words" title={s.subagentId}>{subagentDisplayName}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">深度 {s.depth}</span>
+                    <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">
+                      {s.phase === "completed" ? "已完成" : s.phase === "failed" ? "失败" : "执行中"}
+                    </span>
+                  </button>
+                  {s.prompt && (
+                    <div className="mt-1 text-[11px] text-[var(--color-text-muted)] break-words">
+                      任务：{s.prompt}
+                    </div>
+                  )}
+                  {!subCollapsed && hasSubReasoning && (
+                    <div className="mt-2">
+                      <button type="button" onClick={() => toggleSubSection(s.subagentId, "reasoning")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                        {reasoningCollapsed ? "▶" : "▼"} 思考过程
+                      </button>
+                      {!reasoningCollapsed && (
+                        <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
+                          <MarkdownContent transformImageUrl={transformImageUrl}>{s.reasoning}</MarkdownContent>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!subCollapsed && hasSubPlan && (
+                    <div className="mt-2 p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+                      <button type="button" onClick={() => toggleSubSection(s.subagentId, "plan")} className="w-full text-left text-[11px] text-[var(--color-text-muted)] mb-1 flex items-center justify-between">
+                        <span>{subPlanCollapsed ? "▶" : "▼"} 执行计划 {subPlanPhaseLabel}</span>
+                        <span>{Math.min(s.plan?.currentStep ?? 0, s.plan?.steps.length ?? 0)}/{s.plan?.steps.length ?? 0}</span>
+                      </button>
+                      {!subPlanCollapsed && (
+                        <div className="space-y-1">
+                          {s.plan?.steps.map((step, idx) => (
+                            <div key={`${s.subagentId}-${idx}-${step.title}`} className="text-[12px] px-2 py-1 rounded border border-[var(--color-border)]">
+                              <div>{step.completed ? "✓" : idx === (s.plan?.currentStep ?? -1) ? "→" : "○"} {step.title}</div>
+                              <div className="opacity-80">验收：{step.acceptance_checks.join("；")}</div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {!subCollapsed && hasSubTools && (
+                    <div className="mt-2">
+                      <button type="button" onClick={() => toggleSubSection(s.subagentId, "tools")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                        {subToolsCollapsed ? "▶" : "▼"} 工具调用
+                      </button>
+                      {!subToolsCollapsed && <ToolCallBlock logs={s.toolLogs} />}
+                    </div>
+                  )}
+                  {!subCollapsed && hasSubContent && (
+                    <div className="mt-2">
+                      <button type="button" onClick={() => toggleSubSection(s.subagentId, "content")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                        {subContentCollapsed ? "▶" : "▼"} 回复正文
+                      </button>
+                      {!subContentCollapsed && (
+                        <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
+                          <MarkdownContent transformImageUrl={transformImageUrl}>{s.content}</MarkdownContent>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {s.phase === "failed" && s.error && (
+                    <div className="mt-2 text-[11px] text-[var(--color-error-text)] break-words">
+                      错误：{s.error}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>}
+        </div>
+      )}
       {content ? (
         <MarkdownContent transformImageUrl={transformImageUrl}>{content}</MarkdownContent>
       ) : (
