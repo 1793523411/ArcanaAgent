@@ -133,6 +133,7 @@ dist/protocol.schema.json
 config/models.json
 config/models_backup.json
 
+
 .trae/**/*
 
 **/logs/*

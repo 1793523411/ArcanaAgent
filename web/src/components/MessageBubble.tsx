@@ -28,10 +28,16 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const hasReasoning = typeof reasoning === "string" && reasoning.trim().length > 0;
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
   const [planCollapsed, setPlanCollapsed] = useState(true);
+  const [subagentsCollapsed, setSubagentsCollapsed] = useState(true);
+  const [subagentCollapsedMap, setSubagentCollapsedMap] = useState<Record<string, boolean>>({});
+  const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState(false);
   const toolLogs = message.toolLogs ?? [];
+  const subagents = message.subagents ?? [];
   const plan = message.type === "ai" ? message.plan : undefined;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  const hasSubagents = message.type === "ai" && subagents.length > 0;
+  const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
   const text = hasContent
@@ -52,6 +58,15 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
     } catch {
       /* ignore */
     }
+  };
+
+  const toggleSubagent = (subagentId: string) => {
+    setSubagentCollapsedMap((prev) => ({ ...prev, [subagentId]: !prev[subagentId] }));
+  };
+
+  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content") => {
+    const key = `${subagentId}:${section}`;
+    setSubSectionCollapsedMap((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
   // 转换图片 URL：将本地路径转换为 artifact URL
@@ -195,6 +210,103 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
           </div>
         )}
         {toolLogs.length > 0 && <ToolCallBlock logs={toolLogs} defaultCollapsed />}
+        {hasSubagents && (
+          <div className="mb-3 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+            <button
+              type="button"
+              onClick={() => setSubagentsCollapsed((c) => !c)}
+              className="w-full text-left text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between hover:text-[var(--color-text)] transition-colors"
+            >
+              <span>{subagentsCollapsed ? "▶" : "▼"} 子代理执行</span>
+              <span>运行中 {runningSubagents} / 总计 {subagents.length}</span>
+            </button>
+            {!subagentsCollapsed && <div className="space-y-2">
+              {subagents.map((s) => {
+                const subCollapsed = !!subagentCollapsedMap[s.subagentId];
+                const hasSubReasoning = !!s.reasoning?.trim();
+                const hasSubPlan = !!(s.plan?.steps?.length);
+                const hasSubTools = (s.toolLogs?.length ?? 0) > 0;
+                const hasSubContent = !!s.content?.trim();
+                const reasoningCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:reasoning`];
+                const subPlanCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:plan`];
+                const subToolsCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:tools`];
+                const subContentCollapsed = !!subSectionCollapsedMap[`${s.subagentId}:content`];
+                const subPlanPhaseLabel = s.plan?.phase === "completed" ? "已完成" : s.plan?.phase === "running" ? "执行中" : "初始化中";
+                return (
+                  <div key={s.subagentId} className="text-sm px-2 py-2 rounded border border-[var(--color-border)] text-[var(--color-text)]">
+                    <button type="button" onClick={() => toggleSubagent(s.subagentId)} className="w-full text-left flex items-center gap-2">
+                      <span>{subCollapsed ? "▶" : "▼"}</span>
+                      <span>{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
+                      <span className="text-[11px] text-[var(--color-text-muted)]">{s.subagentId}</span>
+                      <span className="text-[11px] text-[var(--color-text-muted)]">深度 {s.depth}</span>
+                      <span className="text-[11px] text-[var(--color-text-muted)]">
+                        {s.phase === "completed" ? "已完成" : s.phase === "failed" ? "失败" : "执行中"}
+                      </span>
+                    </button>
+                    {s.prompt && (
+                      <div className="mt-1 text-[11px] text-[var(--color-text-muted)] break-words">
+                        任务：{s.prompt}
+                      </div>
+                    )}
+                    {!subCollapsed && hasSubReasoning && (
+                      <div className="mt-2">
+                        <button type="button" onClick={() => toggleSubSection(s.subagentId, "reasoning")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                          {reasoningCollapsed ? "▶" : "▼"} 思考过程
+                        </button>
+                        {!reasoningCollapsed && (
+                          <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
+                            <MarkdownContent transformImageUrl={transformImageUrl}>{s.reasoning}</MarkdownContent>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!subCollapsed && hasSubPlan && (
+                      <div className="mt-2 p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+                        <button type="button" onClick={() => toggleSubSection(s.subagentId, "plan")} className="w-full text-left text-[11px] text-[var(--color-text-muted)] mb-1 flex items-center justify-between">
+                          <span>{subPlanCollapsed ? "▶" : "▼"} 执行计划 {subPlanPhaseLabel}</span>
+                          <span>{Math.min(s.plan?.currentStep ?? 0, s.plan?.steps.length ?? 0)}/{s.plan?.steps.length ?? 0}</span>
+                        </button>
+                        {!subPlanCollapsed && (
+                          <div className="space-y-1">
+                            {s.plan?.steps.map((step, idx) => (
+                              <div key={`${s.subagentId}-${idx}-${step.title}`} className="text-[12px] px-2 py-1 rounded border border-[var(--color-border)]">
+                                <div>{step.completed ? "✓" : idx === (s.plan?.currentStep ?? -1) ? "→" : "○"} {step.title}</div>
+                                <div className="opacity-80">验收：{step.acceptance_checks.join("；")}</div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {!subCollapsed && hasSubTools && (
+                      <div className="mt-2">
+                        <button type="button" onClick={() => toggleSubSection(s.subagentId, "tools")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                          {subToolsCollapsed ? "▶" : "▼"} 工具调用
+                        </button>
+                        {!subToolsCollapsed && <ToolCallBlock logs={s.toolLogs ?? []} defaultCollapsed />}
+                      </div>
+                    )}
+                    {!subCollapsed && hasSubContent && (
+                      <div className="mt-2">
+                        <button type="button" onClick={() => toggleSubSection(s.subagentId, "content")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                          {subContentCollapsed ? "▶" : "▼"} 回复正文
+                        </button>
+                        {!subContentCollapsed && (
+                          <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
+                            <MarkdownContent transformImageUrl={transformImageUrl}>{s.content}</MarkdownContent>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {s.phase === "failed" && s.error && (
+                      <div className="mt-2 text-[11px] text-[var(--color-error-text)] break-words">错误：{s.error}</div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>}
+          </div>
+        )}
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (

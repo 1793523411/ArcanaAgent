@@ -22,6 +22,7 @@ import { storedToLangChain, langChainToStored, getTextContent } from "../lib/mes
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
+import type { SubagentStreamEvent } from "../agent/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
@@ -67,6 +68,106 @@ function estimateTokens(text: string): number {
 
 function estimateTokensForMessages(messages: BaseMessage[]): number {
   return messages.reduce((sum, m) => sum + estimateTokens(getTextContent(m)), 0);
+}
+
+type PersistedSubagentLog = {
+  subagentId: string;
+  depth: number;
+  prompt: string;
+  phase: "started" | "completed" | "failed";
+  status: "thinking" | "tool" | null;
+  content: string;
+  reasoning: string;
+  toolLogs: Array<{ name: string; input: string; output: string }>;
+  plan?: {
+    phase: "created" | "running" | "completed";
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
+    currentStep: number;
+    toolName?: string;
+  };
+  summary?: string;
+  error?: string;
+};
+
+function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[] {
+  const map = new Map<string, PersistedSubagentLog>();
+  for (const ev of events) {
+    if (!("subagentId" in ev)) continue;
+    const existing = map.get(ev.subagentId) ?? {
+      subagentId: ev.subagentId,
+      depth: 1,
+      prompt: "",
+      phase: "started" as const,
+      status: "thinking" as const,
+      content: "",
+      reasoning: "",
+      toolLogs: [],
+    };
+    if (ev.kind === "lifecycle") {
+      const next: PersistedSubagentLog = {
+        ...existing,
+        depth: ev.depth,
+        prompt: ev.prompt,
+        phase: ev.phase,
+        summary: ev.summary ?? existing.summary,
+        error: ev.error ?? existing.error,
+        status: ev.phase === "completed" || ev.phase === "failed" ? null : existing.status,
+      };
+      map.set(ev.subagentId, next);
+      continue;
+    }
+    if (ev.kind === "token") {
+      map.set(ev.subagentId, {
+        ...existing,
+        status: null,
+        content: `${existing.content}${ev.content}`,
+      });
+      continue;
+    }
+    if (ev.kind === "reasoning") {
+      map.set(ev.subagentId, {
+        ...existing,
+        reasoning: `${existing.reasoning}${ev.content}`,
+      });
+      continue;
+    }
+    if (ev.kind === "tool_call") {
+      map.set(ev.subagentId, {
+        ...existing,
+        status: "tool",
+        toolLogs: [...existing.toolLogs, { name: ev.name, input: ev.input, output: "" }],
+      });
+      continue;
+    }
+    if (ev.kind === "tool_result") {
+      const logs = [...existing.toolLogs];
+      const idx = logs.findIndex((l) => l.name === ev.name && !l.output);
+      if (idx >= 0) logs[idx] = { ...logs[idx], output: ev.output };
+      map.set(ev.subagentId, {
+        ...existing,
+        status: null,
+        toolLogs: logs,
+      });
+      continue;
+    }
+    if (ev.kind === "plan") {
+      map.set(ev.subagentId, {
+        ...existing,
+        plan: {
+          phase: ev.phase,
+          steps: ev.steps,
+          currentStep: ev.currentStep,
+          toolName: ev.toolName,
+        },
+      });
+    }
+  }
+  return Array.from(map.values());
 }
 
 const createConversationBodySchema = { title: z.string().max(500).optional() };
@@ -302,6 +403,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let latestPlan: PlanStreamEvent | undefined;
+  const subagentEvents: SubagentStreamEvent[] = [];
 
   try {
     for await (const chunk of streamAgentWithTokens(
@@ -317,6 +419,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         onPlanEvent: (event) => {
           latestPlan = { ...event };
           writeImmediate("data: " + JSON.stringify({ type: "plan", ...event }) + "\n\n");
+        },
+        onSubagentEvent: (event) => {
+          subagentEvents.push(event);
+          writeImmediate("data: " + JSON.stringify({ type: "subagent", ...event }) + "\n\n");
         },
       }
     )) {
@@ -396,13 +502,21 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         target.plan = latestPlan;
       }
     }
+    const subagentLogs = buildSubagentLogs(subagentEvents);
+    if (subagentLogs.length > 0) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") {
+        target.subagents = subagentLogs;
+      }
+    }
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
+      if (m.subagents && m.subagents.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
-    if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0)) {
+    if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0)) {
       toStore.push({
         type: "ai",
         content: streamedContent.trim() || "(工具已执行)",
@@ -410,6 +524,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
         ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
+        ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
       });
     }
     const hasRealUsage = totalPromptTokens > 0 || totalCompletionTokens > 0;

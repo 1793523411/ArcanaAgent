@@ -15,6 +15,29 @@ interface Props {
   streamingReasoning: string;
   streamingStatus: StreamingStatus;
   streamingToolLogs: Array<{ name: string; input: string; output: string }>;
+  streamingSubagents: Array<{
+    subagentId: string;
+    depth: number;
+    prompt: string;
+    phase: "started" | "completed" | "failed";
+    status: StreamingStatus;
+    content: string;
+    reasoning: string;
+    toolLogs: Array<{ name: string; input: string; output: string }>;
+    plan: {
+      phase: "created" | "running" | "completed";
+      steps: Array<{
+        title: string;
+        acceptance_checks: string[];
+        evidences: string[];
+        completed: boolean;
+      }>;
+      currentStep: number;
+      toolName?: string;
+    } | null;
+    summary?: string;
+    error?: string;
+  }>;
   streamingPlan?: {
     phase: "created" | "running" | "completed";
     steps: Array<{
@@ -54,6 +77,7 @@ export default function ChatPanel({
   streamingReasoning,
   streamingStatus,
   streamingToolLogs,
+  streamingSubagents,
   streamingPlan,
   error,
   files,
@@ -88,7 +112,7 @@ export default function ChatPanel({
       el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
-  }, [messages.length, loading, streamingContent, streamingReasoning, streamingToolLogs.length, error]);
+  }, [messages.length, loading, streamingContent, streamingReasoning, streamingToolLogs.length, streamingSubagents.length, error]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0">
@@ -102,12 +126,13 @@ export default function ChatPanel({
             <span>定时任务正在执行中，Agent 正在处理您的请求...</span>
           </div>
         )}
-        {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0) && (
+        {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0 || streamingSubagents.length > 0) && (
           <StreamingBubble
           content={streamingContent}
           reasoning={streamingReasoning}
           status={streamingStatus}
           toolLogs={streamingToolLogs}
+          subagents={streamingSubagents}
           plan={streamingPlan ?? undefined}
           isStreaming={loading}
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}

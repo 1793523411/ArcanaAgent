@@ -60,6 +60,7 @@ export default function App() {
     streamingReasoning,
     streamingStatus,
     streamingToolLogs,
+    streamingSubagents,
     streamingPlan,
     sendError,
     usageTokens,
@@ -343,6 +344,7 @@ export default function App() {
               streamingReasoning={streamingReasoning}
               streamingStatus={streamingStatus}
               streamingToolLogs={streamingToolLogs}
+              streamingSubagents={streamingSubagents}
               streamingPlan={streamingPlan}
               error={error}
               files={files}

@@ -3,12 +3,37 @@ import { sendMessageStream, getMessages, getConversation, type Attachment } from
 import type { ConversationMeta, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
 
+type StreamingSubagent = {
+  subagentId: string;
+  depth: number;
+  prompt: string;
+  phase: "started" | "completed" | "failed";
+  status: StreamingStatus;
+  content: string;
+  reasoning: string;
+  toolLogs: ToolLog[];
+  plan: {
+    phase: "created" | "running" | "completed";
+    steps: Array<{
+      title: string;
+      acceptance_checks: string[];
+      evidences: string[];
+      completed: boolean;
+    }>;
+    currentStep: number;
+    toolName?: string;
+  } | null;
+  summary?: string;
+  error?: string;
+};
+
 type ConversationStreamState = {
   loading: boolean;
   streamingContent: string;
   streamingReasoning: string;
   streamingStatus: StreamingStatus;
   streamingToolLogs: ToolLog[];
+  streamingSubagents: StreamingSubagent[];
   streamingPlan: {
     phase: "created" | "running" | "completed";
     steps: Array<{
@@ -34,6 +59,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingReasoning: "",
   streamingStatus: null,
   streamingToolLogs: [],
+  streamingSubagents: [],
   streamingPlan: null,
   sendError: null,
   usage: null,
@@ -46,6 +72,7 @@ function createState(): ConversationStreamState {
     streamingReasoning: "",
     streamingStatus: null,
     streamingToolLogs: [],
+    streamingSubagents: [],
     streamingPlan: null,
     sendError: null,
     usage: null,
@@ -132,6 +159,7 @@ export function useSendMessage(options: {
         streamingReasoning: "",
         streamingStatus: "thinking",
         streamingToolLogs: [],
+        streamingSubagents: [],
         streamingPlan: null,
         sendError: null,
         usage: null,
@@ -209,6 +237,118 @@ export function useSendMessage(options: {
                 ...prev,
                 streamingToolLogs: logs,
               };
+            });
+            return;
+          }
+          if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
+            const payload = obj as {
+              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result";
+              subagentId: string;
+              depth?: number;
+              prompt?: string;
+              phase?: "started" | "completed" | "failed" | "created" | "running";
+              summary?: string;
+              error?: string;
+              content?: string;
+              steps?: Array<{
+                title: string;
+                acceptance_checks: string[];
+                evidences: string[];
+                completed: boolean;
+              } | string>;
+              currentStep?: number;
+              toolName?: string;
+              name?: string;
+              input?: string;
+              output?: string;
+            };
+            setConversationState(convId, (prev) => {
+              const existing = prev.streamingSubagents;
+              const idx = existing.findIndex((s) => s.subagentId === payload.subagentId);
+              const lifecyclePhase =
+                payload.phase === "started" || payload.phase === "completed" || payload.phase === "failed"
+                  ? payload.phase
+                  : "started";
+              const base: StreamingSubagent = idx >= 0
+                ? existing[idx]
+                : {
+                    subagentId: payload.subagentId,
+                    depth: typeof payload.depth === "number" ? payload.depth : 1,
+                    prompt: typeof payload.prompt === "string" ? payload.prompt : "",
+                    phase: lifecyclePhase,
+                    status: "thinking",
+                    content: "",
+                    reasoning: "",
+                    toolLogs: [],
+                    plan: null,
+                    summary: typeof payload.summary === "string" ? payload.summary : undefined,
+                    error: typeof payload.error === "string" ? payload.error : undefined,
+                  };
+              let nextItem: StreamingSubagent = {
+                ...base,
+                depth: typeof payload.depth === "number" ? payload.depth : base.depth,
+                prompt: typeof payload.prompt === "string" && payload.prompt ? payload.prompt : base.prompt,
+              };
+              if (payload.kind === "lifecycle") {
+                nextItem = {
+                  ...nextItem,
+                  phase: lifecyclePhase,
+                  summary: typeof payload.summary === "string" ? payload.summary : nextItem.summary,
+                  error: typeof payload.error === "string" ? payload.error : nextItem.error,
+                  status: lifecyclePhase === "completed" || lifecyclePhase === "failed" ? null : nextItem.status,
+                };
+              } else if (payload.kind === "token") {
+                nextItem = {
+                  ...nextItem,
+                  status: null,
+                  content: nextItem.content + (typeof payload.content === "string" ? payload.content : ""),
+                };
+              } else if (payload.kind === "reasoning") {
+                nextItem = {
+                  ...nextItem,
+                  reasoning: nextItem.reasoning + (typeof payload.content === "string" ? payload.content : ""),
+                };
+              } else if (payload.kind === "tool_call" && typeof payload.name === "string") {
+                nextItem = {
+                  ...nextItem,
+                  status: "tool",
+                  toolLogs: [...nextItem.toolLogs, { name: payload.name, input: payload.input ?? "", output: "" }],
+                };
+              } else if (payload.kind === "tool_result" && typeof payload.name === "string") {
+                const logs = [...nextItem.toolLogs];
+                const logIdx = logs.findIndex((tl) => tl.name === payload.name && !tl.output);
+                if (logIdx >= 0) logs[logIdx] = { ...logs[logIdx], output: payload.output ?? "" };
+                nextItem = { ...nextItem, status: null, toolLogs: logs };
+              } else if (payload.kind === "plan" && Array.isArray(payload.steps)) {
+                const normalizedSteps = payload.steps.map((s) => {
+                  if (typeof s === "string") {
+                    return { title: s, acceptance_checks: [`验证：${s}`], evidences: [], completed: false };
+                  }
+                  return {
+                    title: s.title,
+                    acceptance_checks: Array.isArray(s.acceptance_checks) ? s.acceptance_checks : [],
+                    evidences: Array.isArray(s.evidences) ? s.evidences : [],
+                    completed: !!s.completed,
+                  };
+                });
+                nextItem = {
+                  ...nextItem,
+                  plan: {
+                    phase: payload.phase === "created" || payload.phase === "running" || payload.phase === "completed"
+                      ? payload.phase
+                      : "created",
+                    steps: normalizedSteps,
+                    currentStep: typeof payload.currentStep === "number" ? payload.currentStep : 0,
+                    toolName: payload.toolName,
+                  },
+                };
+              }
+              if (idx >= 0) {
+                const next = [...existing];
+                next[idx] = nextItem;
+                return { ...prev, streamingSubagents: next };
+              }
+              return { ...prev, streamingSubagents: [...existing, nextItem] };
             });
             return;
           }
@@ -317,6 +457,7 @@ export function useSendMessage(options: {
     streamingReasoning: activeState.streamingReasoning,
     streamingStatus: activeState.streamingStatus,
     streamingToolLogs: activeState.streamingToolLogs,
+    streamingSubagents: activeState.streamingSubagents,
     streamingPlan: activeState.streamingPlan,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,

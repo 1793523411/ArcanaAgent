@@ -34,6 +34,20 @@ export interface PlanLog {
   toolName?: string;
 }
 
+export interface SubagentLog {
+  subagentId: string;
+  depth: number;
+  prompt: string;
+  phase: "started" | "completed" | "failed";
+  status: "thinking" | "tool" | null;
+  content: string;
+  reasoning: string;
+  toolLogs: ToolLog[];
+  plan?: PlanLog;
+  summary?: string;
+  error?: string;
+}
+
 export interface StoredMessage {
   type: "human" | "ai" | "system";
   content: string;
@@ -47,6 +61,8 @@ export interface StoredMessage {
   toolLogs?: ToolLog[];
   /** 执行计划（仅 ai），用于会话结束后回看 */
   plan?: PlanLog;
+  /** 子代理执行详情（仅 ai），用于会话结束后回看 */
+  subagents?: SubagentLog[];
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
