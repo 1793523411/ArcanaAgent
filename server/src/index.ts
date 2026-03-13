@@ -15,6 +15,7 @@ import {
   getConversationExport,
   postConversationMessage,
   postConversationMessageSync,
+  postConversationCompress,
   deleteConversationById,
   postChat,
   getConfig,
@@ -76,6 +77,7 @@ app.get("/api/conversations/:id/attachments/:filename", getConversationAttachmen
 app.get("/api/conversations/:id/artifacts", getConversationArtifacts);
 app.get("/api/conversations/:id/artifacts/*", getConversationArtifactFile);
 app.post("/api/conversations/:id/messages", postConversationMessage);
+app.post("/api/conversations/:id/compress", postConversationCompress);
 app.delete("/api/conversations/:id", deleteConversationById);
 app.post("/api/conversations/:id/messages/sync", postConversationMessageSync);
 app.post("/api/chat", postChat);

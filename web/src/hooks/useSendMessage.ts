@@ -52,6 +52,18 @@ type ConversationStreamState = {
     completionTokens: number;
     totalTokens: number;
   } | null;
+  contextUsage: {
+    strategy: "full" | "trim" | "compress";
+    contextWindow: number;
+    thresholdTokens: number;
+    tokenThresholdPercent: number;
+    contextMessageCount: number;
+    estimatedTokens?: number;
+    promptTokens?: number;
+    trimToLast?: number;
+    olderCount?: number;
+    recentCount?: number;
+  } | null;
 };
 
 const EMPTY_STATE: ConversationStreamState = {
@@ -64,6 +76,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingPlan: null,
   sendError: null,
   usage: null,
+  contextUsage: null,
 };
 
 function createState(): ConversationStreamState {
@@ -77,6 +90,7 @@ function createState(): ConversationStreamState {
     streamingPlan: null,
     sendError: null,
     usage: null,
+    contextUsage: null,
   };
 }
 
@@ -164,6 +178,7 @@ export function useSendMessage(options: {
         streamingPlan: null,
         sendError: null,
         usage: null,
+        contextUsage: null,
       }));
 
       const attachments: Attachment[] | undefined = toSend.length
@@ -189,6 +204,7 @@ export function useSendMessage(options: {
               completionTokens?: number;
               totalTokens?: number;
             };
+            const rawContext = (obj as { context?: Record<string, unknown> }).context;
             setConversationState(convId, (prev) => {
               const p = typeof promptTokens === "number" ? promptTokens : 0;
               const c = typeof completionTokens === "number" ? completionTokens : 0;
@@ -201,8 +217,53 @@ export function useSendMessage(options: {
               return {
                 ...prev,
                 usage: t > 0 ? { promptTokens: p, completionTokens: c, totalTokens: t } : prev.usage,
+                contextUsage: rawContext && typeof rawContext === "object"
+                  ? {
+                      strategy: (rawContext.strategy as "full" | "trim" | "compress") ?? (prev.contextUsage?.strategy ?? "full"),
+                      contextWindow: typeof rawContext.contextWindow === "number" ? rawContext.contextWindow : (prev.contextUsage?.contextWindow ?? 0),
+                      thresholdTokens: typeof rawContext.thresholdTokens === "number" ? rawContext.thresholdTokens : (prev.contextUsage?.thresholdTokens ?? 0),
+                      tokenThresholdPercent: typeof rawContext.tokenThresholdPercent === "number" ? rawContext.tokenThresholdPercent : (prev.contextUsage?.tokenThresholdPercent ?? 75),
+                      contextMessageCount: typeof rawContext.contextMessageCount === "number" ? rawContext.contextMessageCount : (prev.contextUsage?.contextMessageCount ?? 0),
+                      estimatedTokens: typeof rawContext.estimatedTokens === "number" ? rawContext.estimatedTokens : prev.contextUsage?.estimatedTokens,
+                      promptTokens: typeof rawContext.promptTokens === "number" ? rawContext.promptTokens : p || prev.contextUsage?.promptTokens,
+                      trimToLast: typeof rawContext.trimToLast === "number" ? rawContext.trimToLast : prev.contextUsage?.trimToLast,
+                      olderCount: typeof rawContext.olderCount === "number" ? rawContext.olderCount : prev.contextUsage?.olderCount,
+                      recentCount: typeof rawContext.recentCount === "number" ? rawContext.recentCount : prev.contextUsage?.recentCount,
+                    }
+                  : prev.contextUsage,
               };
             });
+            return;
+          }
+          if (obj.type === "context") {
+            const payload = obj as {
+              strategy?: "full" | "trim" | "compress";
+              contextWindow?: number;
+              thresholdTokens?: number;
+              tokenThresholdPercent?: number;
+              contextMessageCount?: number;
+              estimatedTokens?: number;
+              trimToLast?: number;
+              olderCount?: number;
+              recentCount?: number;
+            };
+            if (typeof payload.contextWindow !== "number" || payload.contextWindow <= 0) return;
+            const contextWindow = payload.contextWindow;
+            setConversationState(convId, (prev) => ({
+              ...prev,
+              contextUsage: {
+                strategy: payload.strategy ?? "full",
+                contextWindow,
+                thresholdTokens: payload.thresholdTokens ?? Math.floor(contextWindow * ((payload.tokenThresholdPercent ?? 75) / 100)),
+                tokenThresholdPercent: payload.tokenThresholdPercent ?? 75,
+                contextMessageCount: payload.contextMessageCount ?? prev.contextUsage?.contextMessageCount ?? 0,
+                estimatedTokens: payload.estimatedTokens,
+                promptTokens: prev.contextUsage?.promptTokens,  // 保留上一轮的 promptTokens，避免显示跳变
+                trimToLast: payload.trimToLast,
+                olderCount: payload.olderCount,
+                recentCount: payload.recentCount,
+              },
+            }));
             return;
           }
           if (obj.type === "token" && typeof obj.content === "string") {
@@ -467,6 +528,7 @@ export function useSendMessage(options: {
     streamingPlan: activeState.streamingPlan,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,
+    contextUsage: activeState.contextUsage,
     clearStreaming,
     abortStreaming,
   };

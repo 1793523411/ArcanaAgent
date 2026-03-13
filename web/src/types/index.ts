@@ -48,18 +48,34 @@ export interface SubagentLog {
 }
 
 export interface StoredMessage {
-  type: "human" | "ai" | "system";
+  type: "human" | "ai" | "system" | "tool";
   content: string;
   /** 产出该条 AI 回复的模型 ID */
   modelId?: string;
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
+  /** 工具消息的 ID（仅 tool 类型） */
+  tool_call_id?: string;
+  /** 工具名称（仅 tool 类型） */
+  name?: string;
   toolLogs?: ToolLog[];
   plan?: PlanLog;
   subagents?: SubagentLog[];
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  contextUsage?: {
+    strategy: "full" | "trim" | "compress";
+    contextWindow: number;
+    thresholdTokens: number;
+    tokenThresholdPercent: number;
+    contextMessageCount: number;
+    estimatedTokens?: number;
+    promptTokens?: number;
+    trimToLast?: number;
+    olderCount?: number;
+    recentCount?: number;
+  };
 }
 
 export interface ContextStrategyConfig {
@@ -67,6 +83,7 @@ export interface ContextStrategyConfig {
   trimToLast: number;
   tokenThresholdPercent: number;
   compressKeepRecent: number;
+  saveToolMessages?: boolean;
 }
 
 export type McpServerConfig =
@@ -109,7 +126,7 @@ export interface UserConfig {
   mcpServers: McpServerConfig[];
   availableToolIds?: string[];
   modelId?: string;
-  availableModels?: Array<{ id: string; name: string; provider: string }>;
+  availableModels?: Array<{ id: string; name: string; provider: string; contextWindow: number; maxTokens: number }>;
   context?: ContextStrategyConfig;
   planning?: PlanningConfig;
   mcpStatus?: McpStatusItem[];

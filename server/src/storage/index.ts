@@ -51,14 +51,17 @@ export interface SubagentLog {
 }
 
 export interface StoredMessage {
-  type: "human" | "ai" | "system";
+  type: "human" | "ai" | "system" | "tool";
   content: string;
   /** 产出该条 AI 回复的模型 ID */
   modelId?: string;
   /** 推理/思考过程（仅 ai，支持思考的模型） */
   reasoningContent?: string;
   tool_calls?: Array<{ name: string; args: string }>;
+  /** 工具消息的 ID（仅 tool 类型） */
   tool_call_id?: string;
+  /** 工具名称（仅 tool 类型） */
+  name?: string;
   /** 工具执行日志（name + 输入 + 输出），持久化展示用 */
   toolLogs?: ToolLog[];
   /** 执行计划（仅 ai），用于会话结束后回看 */
@@ -68,6 +71,18 @@ export interface StoredMessage {
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  contextUsage?: {
+    strategy: "full" | "trim" | "compress";
+    contextWindow: number;
+    thresholdTokens: number;
+    tokenThresholdPercent: number;
+    contextMessageCount: number;
+    estimatedTokens?: number;
+    promptTokens?: number;
+    trimToLast?: number;
+    olderCount?: number;
+    recentCount?: number;
+  };
 }
 
 export interface ConversationContextSnapshot {
@@ -99,6 +114,8 @@ export interface ContextSnapshotMeta {
   totalMessages: number;
   contextMessageCount: number;
   generatedAt: string;
+  contextWindow: number;
+  thresholdTokens: number;
   estimatedTokens?: number;
   tokenThresholdPercent?: number;
   trimToLast?: number;

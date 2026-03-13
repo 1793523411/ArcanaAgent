@@ -95,6 +95,7 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
 - For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
 - For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
+- For file/content discovery in terminal commands, prefer \`rg\` first; only fall back to \`find\` when \`rg\` is unavailable or unsuitable
 - Use \`task\` only for complex tasks that benefit from decomposition; for simple tasks, solve directly in the main agent
 - When multiple independent subtasks exist, you may call \`task\` multiple times in the same turn
 
