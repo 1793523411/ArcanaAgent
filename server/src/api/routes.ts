@@ -36,6 +36,7 @@ import {
   logToolCall,
   PerformanceTimer,
 } from "../lib/logger.js";
+import { estimateBaseMessageTokens, estimateTextTokens } from "../lib/tokenizer.js";
 
 
 function convId(req: Request): string {
@@ -57,17 +58,6 @@ function buildSkillContext(convId: string): string {
     "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
     "Use absolute paths when saving. The user can preview files saved here directly in the UI." +
     artifactListText;
-}
-
-function estimateTokens(text: string): number {
-  const cleaned = typeof text === "string" ? text.replace(/\s+/g, " ").trim() : "";
-  if (!cleaned) return 0;
-  // 简单估算：约 4 个字符 ≈ 1 token
-  return Math.ceil(cleaned.length / 4);
-}
-
-function estimateTokensForMessages(messages: BaseMessage[]): number {
-  return messages.reduce((sum, m) => sum + estimateTokens(getTextContent(m)), 0);
 }
 
 type PersistedSubagentLog = {
@@ -346,6 +336,17 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
+  const contextUsageBase = {
+    strategy: contextMeta.strategy,
+    contextWindow: contextMeta.contextWindow,
+    thresholdTokens: contextMeta.thresholdTokens,
+    tokenThresholdPercent: contextMeta.tokenThresholdPercent ?? 75,
+    contextMessageCount: contextMessages.length + 1,
+    estimatedTokens: contextMeta.estimatedTokens,
+    trimToLast: contextMeta.trimToLast,
+    olderCount: contextMeta.olderCount,
+    recentCount: contextMeta.recentCount,
+  };
 
   const existingMessages = getMessages(id);
   const isFirstMessage = existingMessages.length === 0;
@@ -387,6 +388,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   writeImmediate("data: " + JSON.stringify({ type: "status", status: "thinking" }) + "\n\n");
+  writeImmediate("data: " + JSON.stringify({ type: "context", ...contextUsageBase }) + "\n\n");
 
   const logger = getConversationLogger(id);
   const requestTimer = new PerformanceTimer();
@@ -409,6 +411,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let toolCallCount = 0;
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
+  let firstPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
 
@@ -437,7 +440,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }>)[key] : undefined;
       if (key === "usage" && part && typeof part === "object" && "prompt_tokens" in part) {
         const u = part as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-        totalPromptTokens += typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
+        const prompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
+        if (firstPromptTokensForContext === null && prompt > 0) firstPromptTokensForContext = prompt;
+        totalPromptTokens += prompt;
         totalCompletionTokens += typeof u.completion_tokens === "number" ? u.completion_tokens : 0;
       }
       if (part?.reasoning) {
@@ -480,8 +485,18 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         const reasoning = typeof part.reasoning === "string" ? part.reasoning : undefined;
         for (const msg of part.messages) {
           const t = (msg as { _getType?: () => string })._getType?.();
-          if (t === "tool") continue;
           const stored = langChainToStored(msg);
+
+          // 根据配置决定是否保存 tool 消息到历史记录
+          if (stored.type === "tool") {
+            const saveToolMessages = config.context?.saveToolMessages ?? true;
+            if (saveToolMessages) {
+              collectedStored.push(stored);
+            }
+            continue;
+          }
+
+          // 保存 AI 消息
           if (stored.type === "ai") {
             if (typeof stored.content === "string" && stored.content.trim()) {
               streamedContent = stored.content;
@@ -534,20 +549,30 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
       });
     }
+    // usageTokens: 本轮对话的总 token 消耗（所有 LLM 调用的累加），用于计费统计
     const hasRealUsage = totalPromptTokens > 0 || totalCompletionTokens > 0;
-    const promptTokens = hasRealUsage ? totalPromptTokens : estimateTokensForMessages(lcMessages);
-    const completionTokens = hasRealUsage ? totalCompletionTokens : estimateTokens(streamedContent || "");
+    const promptTokens = hasRealUsage ? totalPromptTokens : estimateBaseMessageTokens(lcMessages);
+    const completionTokens = hasRealUsage ? totalCompletionTokens : estimateTextTokens(streamedContent || "");
     const totalTokens = promptTokens + completionTokens;
+    // contextPromptTokens: 上下文体积（仅第一次 LLM 调用的 prompt），用于展示压缩策略效果
+    // 优先级：真实值（API 返回）> 估算值（本地算法）> 回退到总 promptTokens
+    const contextPromptTokens = firstPromptTokensForContext
+      ?? (typeof contextMeta.estimatedTokens === "number" ? contextMeta.estimatedTokens : undefined)
+      ?? promptTokens;
     const usagePayload = { promptTokens, completionTokens, totalTokens };
     const lastAi = toStore.filter((m) => m.type === "ai").pop();
     if (lastAi && totalTokens > 0) {
       lastAi.usageTokens = usagePayload;
+      lastAi.contextUsage = {
+        ...contextUsageBase,
+        promptTokens: contextPromptTokens,
+      };
     }
     if (toStore.length > 0) {
       appendMessages(id, toStore);
     }
     writeImmediate(
-      "data: " + JSON.stringify({ type: "usage", ...usagePayload }) + "\n\n",
+      "data: " + JSON.stringify({ type: "usage", ...usagePayload, context: { ...contextUsageBase, promptTokens: contextPromptTokens } }) + "\n\n",
     );
     flushNow();
 
@@ -589,6 +614,17 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   lcMessages.push(new HumanMessage(text));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
+  const contextUsageBase = {
+    strategy: contextMeta.strategy,
+    contextWindow: contextMeta.contextWindow,
+    thresholdTokens: contextMeta.thresholdTokens,
+    tokenThresholdPercent: contextMeta.tokenThresholdPercent ?? 75,
+    contextMessageCount: contextMessages.length + 1,
+    estimatedTokens: contextMeta.estimatedTokens,
+    trimToLast: contextMeta.trimToLast,
+    olderCount: contextMeta.olderCount,
+    recentCount: contextMeta.recentCount,
+  };
 
   const existingMessagesSync = getMessages(id);
   const isFirstMessageSync = existingMessagesSync.length === 0;
@@ -608,9 +644,13 @@ export async function postConversationMessageSync(req: Request, res: Response): 
       if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
       return s;
     });
+    const lastAi = newStored.filter((m) => m.type === "ai").pop();
+    if (lastAi && lastAi.type === "ai") {
+      lastAi.contextUsage = contextUsageBase;
+    }
     appendMessages(id, newStored);
-    const lastAi = resultMessages.filter((m) => m._getType() === "ai").pop();
-    const reply = lastAi ? getTextContent(lastAi) : "";
+    const lastAiMsg = resultMessages.filter((m) => m._getType() === "ai").pop();
+    const reply = lastAiMsg ? getTextContent(lastAiMsg) : "";
     res.json({ reply, messages: newStored });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -899,6 +939,71 @@ export function getConversationExport(req: Request, res: Response): void {
   res.setHeader("Content-Disposition", `attachment; filename="${id}.md"`);
   res.setHeader("Content-Type", "text/markdown; charset=utf-8");
   res.send(markdown);
+}
+
+// ─── 手动压缩上下文 ─────────────────────────────────────────────
+
+export async function postConversationCompress(req: Request, res: Response): Promise<void> {
+  const id = convId(req);
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+
+  const config = loadUserConfig();
+  const messages = getMessages(id);
+
+  // 如果消息数量太少，不需要压缩
+  if (messages.length < 5) {
+    res.status(400).json({ error: "消息数量太少（至少需要5条消息），不需要压缩" });
+    return;
+  }
+
+  const logger = getConversationLogger(id);
+  logger.info("Manual compression requested", {
+    messageCount: messages.length,
+    strategy: config.context?.strategy || 'default',
+  });
+
+  try {
+    // 强制处理上下文（forceCompress: true）
+    // - 跳过阈值检查，即使当前 token 用量很低也会执行
+    // - 策略仍然使用用户配置的策略（compress 或 trim）
+    const startTime = Date.now();
+    const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, undefined, true);
+    const duration = Date.now() - startTime;
+
+    logger.info("Manual compression completed", {
+      strategy: contextMeta.strategy,
+      totalMessages: contextMeta.totalMessages,
+      estimatedTokens: contextMeta.estimatedTokens,
+      olderCount: contextMeta.olderCount,
+      recentCount: contextMeta.recentCount,
+      trimToLast: contextMeta.trimToLast,
+      durationMs: duration,
+    });
+
+    // 返回压缩后的统计信息
+    res.json({
+      success: true,
+      strategy: contextMeta.strategy,
+      totalMessages: contextMeta.totalMessages,
+      estimatedTokens: contextMeta.estimatedTokens,
+      olderCount: contextMeta.olderCount,
+      recentCount: contextMeta.recentCount,
+      trimToLast: contextMeta.trimToLast,
+    });
+
+    logger.info("Manual compression completed", {
+      strategy: contextMeta.strategy,
+      totalMessages: contextMeta.totalMessages,
+      estimatedTokens: contextMeta.estimatedTokens,
+    });
+  } catch (e) {
+    logError(id, e instanceof Error ? e : String(e), { stage: "manual_compress" });
+    res.status(500).json({ error: String(e) });
+  }
 }
 
 // ─── 健康检查 ─────────────────────────────────────────────

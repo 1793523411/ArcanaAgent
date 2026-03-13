@@ -33,6 +33,8 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider: string;
+  contextWindow: number;
+  maxTokens: number;
   supportsImage?: boolean;
   supportsReasoning?: boolean;
 }
@@ -50,6 +52,8 @@ export function listModels(): ModelInfo[] {
         id: m.id,
         name: m.name,
         provider,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
         supportsImage: input.includes("image"),
         supportsReasoning: (m as { reasoning?: boolean }).reasoning === true,
       });

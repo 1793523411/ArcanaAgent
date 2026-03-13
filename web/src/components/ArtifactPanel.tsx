@@ -27,6 +27,36 @@ function baseName(path: string): string {
   return idx >= 0 ? path.slice(idx + 1) : path;
 }
 
+function languageFromPath(path: string): string {
+  const name = baseName(path).toLowerCase();
+  const ext = name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "";
+  if (["sh", "bash", "zsh"].includes(ext)) return "bash";
+  if (["js", "mjs", "cjs"].includes(ext)) return "javascript";
+  if (["ts", "tsx"].includes(ext)) return "typescript";
+  if (["jsx"].includes(ext)) return "jsx";
+  if (["json"].includes(ext)) return "json";
+  if (["py"].includes(ext)) return "python";
+  if (["go"].includes(ext)) return "go";
+  if (["java"].includes(ext)) return "java";
+  if (["rb"].includes(ext)) return "ruby";
+  if (["rs"].includes(ext)) return "rust";
+  if (["yml", "yaml"].includes(ext)) return "yaml";
+  if (["xml"].includes(ext)) return "xml";
+  if (["html", "htm"].includes(ext)) return "html";
+  if (["css"].includes(ext)) return "css";
+  if (["sql"].includes(ext)) return "sql";
+  if (["md", "markdown"].includes(ext)) return "markdown";
+  if (["toml"].includes(ext)) return "toml";
+  if (["ini", "conf"].includes(ext)) return "ini";
+  return "";
+}
+
+function isCodeLikeText(mime: string, path: string): boolean {
+  const lang = languageFromPath(path);
+  if (lang && lang !== "markdown") return true;
+  return mime === "application/json";
+}
+
 function fileIcon(mime: string): string {
   if (mime.startsWith("image/")) return "🖼";
   if (mime === "application/pdf") return "📄";
@@ -340,6 +370,7 @@ function FilePreview({
 }) {
   const url = getArtifactUrl(conversationId, artifact.path);
   const mime = artifact.mimeType;
+  const codeLanguage = languageFromPath(artifact.path) || (mime === "application/json" ? "json" : "");
 
   if (loading) {
     return (
@@ -382,6 +413,14 @@ function FilePreview({
   }
 
   if (textContent !== null) {
+    if (isCodeLikeText(mime, artifact.path)) {
+      const fenced = `\`\`\`${codeLanguage}\n${textContent}\n\`\`\``;
+      return (
+        <div className="p-5 overflow-auto h-full">
+          <MarkdownContent>{fenced}</MarkdownContent>
+        </div>
+      );
+    }
     return (
       <pre className="p-4 text-sm font-mono text-[var(--color-text)] whitespace-pre-wrap break-words overflow-auto h-full">
         {textContent}

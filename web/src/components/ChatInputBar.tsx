@@ -16,10 +16,21 @@ interface Props {
   placeholder?: string;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
-  models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean }>;
+  models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean; contextWindow?: number }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
   disabled?: boolean;
+  contextUsage?: {
+    strategy?: "full" | "trim" | "compress";
+    percentByWindow?: number;
+    percentByThreshold?: number;
+    sessionTokens?: number;
+    totalTokens: number;
+    thresholdTokens?: number;
+    tokenThresholdPercent?: number;
+  } | null;
+  onCompress?: () => void;
+  compressing?: boolean;
 }
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -46,13 +57,20 @@ export default function ChatInputBar({
   modelId,
   onModelChange,
   disabled = false,
+  contextUsage = null,
+  onCompress,
+  compressing = false,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [contextTooltipOpen, setContextTooltipOpen] = useState(false);
 
   useEffect(() => {
-    if (loading) setModelMenuOpen(false);
+    if (loading) {
+      setModelMenuOpen(false);
+      setContextTooltipOpen(false);
+    }
   }, [loading]);
 
   const autoResize = useCallback(() => {
@@ -90,6 +108,23 @@ export default function ChatInputBar({
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
   const supportsImage = currentModel?.supportsImage !== false;
+  const strategyLabel = {
+    full: "全量上下文",
+    trim: "截断",
+    compress: "压缩",
+  } as const;
+  const displayPercent = contextUsage ? (contextUsage.percentByThreshold ?? contextUsage.percentByWindow) : undefined;
+  const strategyText = contextUsage?.strategy ? strategyLabel[contextUsage.strategy] : "未知";
+
+  // 调试日志
+  if (contextUsage) {
+    console.log('[ChatInputBar] Context Usage:', {
+      strategy: contextUsage.strategy,
+      hasCompress: !!onCompress,
+      showButton: contextUsage.strategy === "compress" && !!onCompress,
+      compressing,
+    });
+  }
 
   return (
     <form
@@ -179,6 +214,79 @@ export default function ChatInputBar({
             )}
           </div>
           <div className="flex items-center gap-2">
+            {contextUsage && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setContextTooltipOpen(!contextTooltipOpen)}
+                  className="flex items-center gap-1 p-0.5 rounded-full hover:bg-[var(--color-surface-hover)] transition-colors"
+                  aria-label="查看上下文 token 详情"
+                  title={contextUsage.sessionTokens != null ? `上下文估算 token：${contextUsage.sessionTokens.toLocaleString()}` : "上下文估算 token：0"}
+                >
+                  <span
+                    className="relative block w-3.5 h-3.5 rounded-full"
+                    style={{
+                      background:
+                        displayPercent != null
+                          ? `conic-gradient(var(--color-accent) ${displayPercent}%, var(--color-border) ${displayPercent}% 100%)`
+                          : "conic-gradient(var(--color-border) 100%, var(--color-border) 100%)",
+                    }}
+                  >
+                    <span className="absolute inset-[2px] rounded-full bg-[var(--color-surface)]" />
+                  </span>
+                  <span className="text-[12px] text-[var(--color-text-muted)]">
+                    {displayPercent != null ? `${Math.round(displayPercent)}%` : "0%"}
+                  </span>
+                </button>
+                {contextTooltipOpen && (
+                  <>
+                    {/* 点击外部关闭 */}
+                    <div
+                      className="fixed inset-0 z-10"
+                      onClick={() => setContextTooltipOpen(false)}
+                    />
+                    <div className="absolute bottom-full right-0 mb-2 z-20 animate-in fade-in slide-in-from-bottom-1 duration-150">
+                      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-[12px] text-[var(--color-text)] space-y-1 whitespace-nowrap">
+                        <div className="font-medium">上下文占用</div>
+                        <div className="text-[var(--color-text-muted)]">
+                          当前策略：{strategyText}
+                        </div>
+                        <div className="text-[var(--color-text-muted)]">
+                          上下文估算 token：{contextUsage.sessionTokens != null
+                            ? `${contextUsage.sessionTokens.toLocaleString()} / ${contextUsage.totalTokens.toLocaleString()} tokens`
+                            : `0 / ${contextUsage.totalTokens.toLocaleString()} tokens`}
+                        </div>
+                        <div className="text-[var(--color-text-muted)]">
+                          策略触发阈值：{typeof contextUsage.thresholdTokens === "number"
+                            ? `${contextUsage.thresholdTokens.toLocaleString()} tokens`
+                            : "未设置"}
+                          {typeof contextUsage.tokenThresholdPercent === "number" ? `（${contextUsage.tokenThresholdPercent}%）` : ""}
+                        </div>
+                        <div className="text-[var(--color-text-muted)]">
+                          相对触发阈值占用：{contextUsage.percentByThreshold != null ? `${Math.round(contextUsage.percentByThreshold)}%` : "0%"}
+                        </div>
+                        {contextUsage.strategy === "compress" && onCompress && (
+                          <div className="pt-1.5 mt-1.5 border-t border-[var(--color-border)]">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onCompress();
+                                setContextTooltipOpen(false);
+                              }}
+                              disabled={compressing}
+                              className="w-full px-3 py-1 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            >
+                              {compressing ? "压缩中..." : "立即压缩"}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
             {models.length > 1 && !loading && !disabled ? (
               <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                 <DropdownMenu.Trigger asChild>

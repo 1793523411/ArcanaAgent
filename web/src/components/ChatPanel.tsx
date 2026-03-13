@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { StoredMessage, StreamingStatus } from "../types";
 import MessageBubble from "./MessageBubble";
 import StreamingBubble from "./StreamingBubble";
@@ -65,6 +65,20 @@ interface Props {
     completionTokens: number;
     totalTokens: number;
   } | null;
+  contextUsage?: {
+    strategy: "full" | "trim" | "compress";
+    contextWindow: number;
+    thresholdTokens: number;
+    tokenThresholdPercent: number;
+    contextMessageCount: number;
+    estimatedTokens?: number;
+    promptTokens?: number;
+    trimToLast?: number;
+    olderCount?: number;
+    recentCount?: number;
+  } | null;
+  onCompress?: () => void;
+  compressing?: boolean;
 }
 
 export default function ChatPanel({
@@ -91,12 +105,66 @@ export default function ChatPanel({
   artifactsPanelOpen,
   isTaskExecuting = false,
   usageTokens = null,
+  contextUsage = null,
+  onCompress,
+  compressing = false,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
   const lastScrollHeightRef = useRef(0);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const STICK_THRESHOLD_PX = 120;
+  const selectedModel = (models.find((m) => m.id === modelId) ?? models[0]) as
+    | { id: string; name: string; supportsReasoning?: boolean; contextWindow?: number }
+    | undefined;
+
+  // 获取配置中的策略（从 URL /api/config 读取）
+  const [configStrategy, setConfigStrategy] = useState<"full" | "trim" | "compress" | undefined>();
+
+  useEffect(() => {
+    fetch('/api/config')
+      .then(r => r.json())
+      .then(config => {
+        setConfigStrategy(config.context?.strategy);
+      })
+      .catch(() => {});
+  }, []);
+
+  const latestAiWithContext = [...(messages ?? [])]
+    .reverse()
+    .find((m) => m.type === "ai" && m.contextUsage);
+  const latestMessageContextUsage = latestAiWithContext?.contextUsage ?? null;
+  const effectiveContextUsage = contextUsage ?? latestMessageContextUsage ?? null;
+  const fallbackContextWindow = selectedModel?.contextWindow ?? 200000; // 默认 200k tokens
+  const effectiveContextWindow = effectiveContextUsage?.contextWindow ?? fallbackContextWindow;
+  const effectiveThresholdTokens = effectiveContextUsage?.thresholdTokens;
+  const effectiveThresholdPercent = effectiveContextUsage?.tokenThresholdPercent ?? 75;
+  // 优先使用配置中的策略，而不是历史消息中的策略
+  const effectiveStrategy = configStrategy ?? effectiveContextUsage?.strategy ?? "compress";
+  const effectiveSessionTokens = effectiveContextUsage?.promptTokens ?? effectiveContextUsage?.estimatedTokens ?? null;
+  const displayContextUsage = effectiveContextWindow > 0
+    ? {
+        strategy: effectiveStrategy,
+        percentByWindow: effectiveSessionTokens != null
+          ? Math.min(100, Math.max(0, (effectiveSessionTokens / effectiveContextWindow) * 100))
+          : undefined,
+        percentByThreshold: effectiveSessionTokens != null && typeof effectiveThresholdTokens === "number" && effectiveThresholdTokens > 0
+          ? Math.min(100, Math.max(0, (effectiveSessionTokens / effectiveThresholdTokens) * 100))
+          : undefined,
+        sessionTokens: effectiveSessionTokens ?? undefined,
+        totalTokens: effectiveContextWindow,
+        thresholdTokens: effectiveThresholdTokens ?? Math.floor(effectiveContextWindow * (effectiveThresholdPercent / 100)),
+        tokenThresholdPercent: effectiveThresholdPercent,
+      }
+    : null;
+
+  // 调试日志
+  console.log('[ChatPanel] Display Context Usage:', {
+    displayContextUsage,
+    hasOnCompress: !!onCompress,
+    compressing,
+    effectiveContextUsage,
+  });
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
@@ -110,10 +178,19 @@ export default function ChatPanel({
   const scrollToBottom = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
   };
+
+  // 切换对话时立即定位到底部，避免首屏闪动
+  useLayoutEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    shouldStickToBottomRef.current = true;
+    lastScrollHeightRef.current = el.scrollHeight;
+  }, [conversationId]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -129,6 +206,7 @@ export default function ChatPanel({
     const raf = requestAnimationFrame(() => {
       if (!el) return;
       const again = el.scrollHeight - el.scrollTop - el.clientHeight;
+      // 消息更新时使用瞬时滚动，避免流式输出时动画卡顿
       if (again <= STICK_THRESHOLD_PX) el.scrollTop = el.scrollHeight;
     });
     return () => cancelAnimationFrame(raf);
@@ -137,9 +215,11 @@ export default function ChatPanel({
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
-        {(messages ?? []).map((m, i) => (
-          <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
-        ))}
+        {(messages ?? [])
+          .filter((m) => m.type !== "tool") // 过滤掉 tool 消息，它们的内容已在 toolLogs 中展示
+          .map((m, i) => (
+            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
+          ))}
         {isTaskExecuting && !loading && (
           <div className="p-4 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] text-sm flex items-center gap-3">
             <div className="animate-spin h-5 w-5 border-2 border-[var(--color-accent)] border-t-transparent rounded-full"></div>
@@ -196,6 +276,9 @@ export default function ChatPanel({
               modelId={modelId}
               onModelChange={onModelChange}
               disabled={isTaskExecuting}
+              contextUsage={displayContextUsage}
+              onCompress={onCompress}
+              compressing={compressing}
             />
           </div>
           {artifactCount > 0 && onToggleArtifacts && (

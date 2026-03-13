@@ -31,7 +31,7 @@ function CopyButton({ text }: { text: string }) {
 
 function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
   const text = typeof children === "string" ? children : String(children ?? "");
-  const lang = className?.replace("language-", "") ?? "";
+  const lang = className?.match(/language-([\w-]+)/)?.[1] ?? "";
   return (
     <div className="relative group my-3">
       {lang && (

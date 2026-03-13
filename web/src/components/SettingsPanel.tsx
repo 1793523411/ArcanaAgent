@@ -10,6 +10,7 @@ const DEFAULT_CONTEXT: ContextStrategyConfig = {
   trimToLast: 20,
   tokenThresholdPercent: 75,
   compressKeepRecent: 20,
+  saveToolMessages: true,
 };
 
 const DEFAULT_PLANNING: PlanningConfig = {
@@ -206,7 +207,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         <Dialog.Content
           onPointerDownOutside={onClose}
           onEscapeKeyDown={onClose}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] max-w-[780px] h-[85vh] min-h-[420px] max-h-[680px] flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl z-[101] overflow-hidden"
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[95%] max-w-[1000px] h-[90vh] min-h-[500px] max-h-[900px] flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl z-[101] overflow-hidden"
         >
           <Dialog.Title id="settings-title" className="sr-only">
             全局设置
@@ -302,6 +303,23 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                       ? "压缩：使用 LLM 将旧对话做摘要。当估算 token 超过模型上下文窗口的设定比例时触发。"
                       : "截断：直接丢弃旧消息，仅保留最近若干条。当估算 token 超过设定比例时触发。"}
                   </div>
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm text-[var(--color-text)]">工具调用记录</legend>
+                    <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                      <input
+                        type="checkbox"
+                        checked={ctx.saveToolMessages ?? true}
+                        onChange={(e) => setContext({ saveToolMessages: e.target.checked })}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span>保存完整工具输出到上下文</span>
+                    </label>
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      <strong>开启</strong>：工具返回的完整内容（如读取的文件、命令输出等）会保存到历史，下一轮对话 agent 可以直接查看。
+                      <br />
+                      <strong>关闭</strong>：工具结果仅在当前对话展示，不会加入下一轮上下文，agent 需要时会重新调用工具。节省 token 但可能增加工具调用次数。
+                    </p>
+                  </fieldset>
                   <div className="grid grid-cols-2 gap-3">
                     <label className="flex flex-col gap-1 text-sm text-[var(--color-text)] col-span-2 sm:col-span-1">
                       <span>token 超过上下文窗口比例（%）时触发</span>

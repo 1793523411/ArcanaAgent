@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages } from "./api";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation } from "./api";
 import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
@@ -22,6 +22,7 @@ export default function App() {
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [artifactPaneWidth, setArtifactPaneWidth] = useState(50);
   const [isResizing, setIsResizing] = useState(false);
+  const [compressing, setCompressing] = useState(false);
   const mainRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
@@ -64,6 +65,7 @@ export default function App() {
     streamingPlan,
     sendError,
     usageTokens,
+    contextUsage,
   } = useSendMessage({
     currentConversationId: current?.id,
     onAfterSend: loadList,
@@ -128,6 +130,41 @@ export default function App() {
     a.download = `conversation-${id}.${format === "json" ? "json" : "md"}`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleCompress = async () => {
+    if (!current?.id || compressing) return;
+    setCompressing(true);
+
+    // 立即显示压缩提示
+    toast("正在处理上下文，请稍候...", "info");
+
+    try {
+      const result = await compressConversation(current.id);
+
+      // 根据结果显示不同的提示
+      if (result.strategy === "compress" && result.olderCount && result.olderCount > 0) {
+        toast(`压缩成功！已将 ${result.olderCount} 条旧消息压缩为摘要，保留 ${result.recentCount} 条最近消息`, "success");
+      } else if (result.strategy === "trim" && result.trimToLast) {
+        toast(`截断成功！已保留最近 ${result.trimToLast} 条消息`, "success");
+      } else if (result.strategy === "compress" && (!result.olderCount || result.olderCount === 0)) {
+        toast("消息数量较少，暂无需压缩", "info");
+      } else {
+        toast(`处理完成（策略：${result.strategy}）`, "success");
+      }
+
+      // 刷新消息列表以反映压缩后的效果
+      await refreshConversationMessages(current.id);
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      if (errorMsg.includes("至少需要5条消息")) {
+        toast("消息数量太少，暂无需处理", "info");
+      } else {
+        toast(`处理失败: ${errorMsg}`, "error");
+      }
+    } finally {
+      setCompressing(false);
+    }
   };
 
   const [deleting, setDeleting] = useState(false);
@@ -357,6 +394,9 @@ export default function App() {
               artifactsPanelOpen={showArtifacts}
               isTaskExecuting={executingTaskConversations.has(current.id)}
               usageTokens={usageTokens}
+              contextUsage={contextUsage}
+              onCompress={handleCompress}
+              compressing={compressing}
             />
           )}
         </div>

@@ -169,6 +169,8 @@ export interface ModelInfo {
   id: string;
   name: string;
   provider: string;
+  contextWindow: number;
+  maxTokens: number;
   supportsImage?: boolean;
   supportsReasoning?: boolean;
 }
@@ -283,4 +285,28 @@ export async function getArtifactText(conversationId: string, filePath: string):
   const r = await fetch(getArtifactUrl(conversationId, filePath));
   if (!r.ok) throw new Error("Failed to fetch artifact");
   return r.text();
+}
+
+// ─── 手动压缩 ─────────────────────────────────
+
+export interface CompressResult {
+  success: boolean;
+  strategy: "full" | "trim" | "compress";
+  totalMessages: number;
+  estimatedTokens?: number;
+  olderCount?: number;
+  recentCount?: number;
+  trimToLast?: number;
+}
+
+export async function compressConversation(conversationId: string): Promise<CompressResult> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/compress`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(typeof err?.error === "string" ? err.error : "压缩失败");
+  }
+  return r.json();
 }

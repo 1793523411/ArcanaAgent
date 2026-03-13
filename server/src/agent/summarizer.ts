@@ -20,6 +20,8 @@ function messagesToText(msgs: StoredMessage[]): string {
 
 export async function summarizeMessages(older: StoredMessage[], modelId?: string): Promise<string> {
   if (older.length === 0) return "";
+  console.log(`[Summarizer] Starting to summarize ${older.length} messages with model ${modelId || 'default'}...`);
+  const startTime = Date.now();
   const text = messagesToText(older);
   const llm = getLLM(modelId);
   const res = await llm.invoke([
@@ -28,5 +30,7 @@ export async function summarizeMessages(older: StoredMessage[], modelId?: string
   ]);
   const content = typeof res.content === "string" ? res.content : "";
   const summary = content.trim();
+  const duration = Date.now() - startTime;
+  console.log(`[Summarizer] Completed in ${duration}ms, summary length: ${summary.length} chars`);
   return summary || "（摘要生成失败）";
 }

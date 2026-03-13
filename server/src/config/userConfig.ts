@@ -38,6 +38,8 @@ export interface ContextStrategyConfig {
   tokenThresholdPercent: number;
   /** 压缩策略：保留最近 N 条原文，其余做摘要 */
   compressKeepRecent: number;
+  /** 是否保存工具调用结果到上下文（包含完整输出），关闭则只保存摘要到 toolLogs */
+  saveToolMessages?: boolean;
 }
 
 export interface PromptTemplate {
@@ -68,6 +70,7 @@ const defaultContext: ContextStrategyConfig = {
   trimToLast: 20,
   tokenThresholdPercent: 75,
   compressKeepRecent: 20,
+  saveToolMessages: true,  // 默认开启，保存完整工具输出到上下文
 };
 
 const defaultConfig: UserConfig = {

@@ -23,21 +23,43 @@ export interface BuildContextResult {
 export async function buildContextForAgent(
   id: string,
   modelId?: string,
-  currentHumanMsg?: StoredMessage
+  currentHumanMsg?: StoredMessage,
+  forceCompress?: boolean
 ): Promise<BuildContextResult> {
   const all = getMessages(id);
   const convMeta = getConversation(id);
   const contextWindow = getModelContextWindow(modelId);
   const tokenThresholdPercent = convMeta?.context?.tokenThresholdPercent ?? DEFAULT_TOKEN_THRESHOLD_PERCENT;
   const threshold = Math.floor(contextWindow * (tokenThresholdPercent / 100));
+  const promptOverheadTokens = (() => {
+    for (let i = all.length - 1; i >= 0; i--) {
+      const m = all[i];
+      if (m.type !== "ai") continue;
+      const prompt = m.contextUsage?.promptTokens;
+      const estimated = m.contextUsage?.estimatedTokens;
+      if (typeof prompt === "number" && typeof estimated === "number") {
+        return Math.max(0, prompt - estimated);
+      }
+    }
+    return 0;
+  })();
+  const adjustEstimatedTokens = (estimated: number) => estimated + promptOverheadTokens;
 
   const fullContext = currentHumanMsg ? [...all, currentHumanMsg] : all;
-  const estimatedFull = estimateContextTokens(fullContext);
+  const estimatedFull = adjustEstimatedTokens(estimateContextTokens(fullContext));
 
-  if (estimatedFull <= threshold) {
+  // 手动压缩时跳过阈值检查
+  if (!forceCompress && estimatedFull <= threshold) {
     return {
       messages: all,
-      meta: { strategy: "full", totalMessages: all.length, estimatedTokens: estimatedFull, tokenThresholdPercent },
+      meta: {
+        strategy: "full",
+        totalMessages: all.length,
+        contextWindow,
+        thresholdTokens: threshold,
+        estimatedTokens: estimatedFull,
+        tokenThresholdPercent,
+      },
     };
   }
 
@@ -48,6 +70,7 @@ export async function buildContextForAgent(
     else rest.push(m);
   }
 
+  // 获取配置的策略，不因为 forceCompress 而改变策略类型
   const strategy = convMeta?.context?.strategy ?? "trim";
   let trimToLast = convMeta?.context?.trimToLast ?? DEFAULT_TRIM_TO_LAST;
   const compressKeepRecent = convMeta?.context?.compressKeepRecent ?? DEFAULT_COMPRESS_KEEP_RECENT;
@@ -56,17 +79,43 @@ export async function buildContextForAgent(
     const kept = rest.slice(-n);
     const candidate = [...system, ...kept];
     const toEstimate = currentHumanMsg ? [...candidate, currentHumanMsg] : candidate;
-    const est = estimateContextTokens(toEstimate);
+    const est = adjustEstimatedTokens(estimateContextTokens(toEstimate));
     return { messages: candidate, estimatedTokens: est, trimToLast: n };
   };
 
   if (strategy === "trim") {
+    // 手动触发时，直接按配置截断，不进行二分查找
+    if (forceCompress) {
+      const { messages, estimatedTokens, trimToLast: n } = doTrim(trimToLast);
+      return {
+        messages,
+        meta: {
+          strategy: "trim",
+          totalMessages: all.length,
+          contextWindow,
+          thresholdTokens: threshold,
+          estimatedTokens,
+          tokenThresholdPercent,
+          trimToLast: n,
+        },
+      };
+    }
+
+    // 自动触发时，二分查找满足阈值的最大保留数
     while (trimToLast >= 1) {
       const { messages, estimatedTokens, trimToLast: n } = doTrim(trimToLast);
       if (estimatedTokens <= threshold) {
         return {
           messages,
-          meta: { strategy: "trim", totalMessages: all.length, estimatedTokens, tokenThresholdPercent, trimToLast: n },
+          meta: {
+            strategy: "trim",
+            totalMessages: all.length,
+            contextWindow,
+            thresholdTokens: threshold,
+            estimatedTokens,
+            tokenThresholdPercent,
+            trimToLast: n,
+          },
         };
       }
       trimToLast = Math.max(1, Math.floor(trimToLast / 2));
@@ -74,7 +123,15 @@ export async function buildContextForAgent(
     const { messages, estimatedTokens, trimToLast: n } = doTrim(1);
     return {
       messages,
-      meta: { strategy: "trim", totalMessages: all.length, estimatedTokens, tokenThresholdPercent, trimToLast: n },
+      meta: {
+        strategy: "trim",
+        totalMessages: all.length,
+        contextWindow,
+        thresholdTokens: threshold,
+        estimatedTokens,
+        tokenThresholdPercent,
+        trimToLast: n,
+      },
     };
   }
 
@@ -103,7 +160,7 @@ export async function buildContextForAgent(
 
   const result = await buildCompressResult();
   const toEstimate = currentHumanMsg ? [...result, currentHumanMsg] : result;
-  const estimatedTokens = estimateContextTokens(toEstimate);
+  const estimatedTokens = adjustEstimatedTokens(estimateContextTokens(toEstimate));
 
   if (estimatedTokens <= threshold) {
     return {
@@ -111,6 +168,8 @@ export async function buildContextForAgent(
       meta: {
         strategy: "compress",
         totalMessages: all.length,
+        contextWindow,
+        thresholdTokens: threshold,
         estimatedTokens,
         tokenThresholdPercent,
         olderCount: older.length,
@@ -119,11 +178,61 @@ export async function buildContextForAgent(
     };
   }
 
+  // 压缩后仍然超过阈值，尝试减少保留的 recent 消息数
+  if (recentCount > 10) {
+    const reducedRecentCount = Math.max(10, Math.floor(recentCount / 2));
+    const reducedRecent = rest.slice(-reducedRecentCount);
+    const reducedOlder = rest.slice(0, -reducedRecentCount);
+    let reducedSummary: string;
+    if (reducedOlder.length === 0) {
+      // 没有旧消息可压缩，回退到 trim
+    } else {
+      const cached = getConversationSummary(id, reducedOlder.length);
+      if (cached) {
+        reducedSummary = cached.summary;
+      } else {
+        reducedSummary = await summarizeMessages(reducedOlder, modelId);
+        saveConversationSummary(id, reducedSummary, reducedOlder.length, rest.length);
+      }
+      const reducedSummaryMsg: StoredMessage = {
+        type: "system",
+        content: `[此前对话摘要]\n${reducedSummary}`,
+      };
+      const reducedResult = [...system, reducedSummaryMsg, ...reducedRecent];
+      const reducedToEstimate = currentHumanMsg ? [...reducedResult, currentHumanMsg] : reducedResult;
+      const reducedEstimated = adjustEstimatedTokens(estimateContextTokens(reducedToEstimate));
+      if (reducedEstimated <= threshold) {
+        return {
+          messages: reducedResult,
+          meta: {
+            strategy: "compress",
+            totalMessages: all.length,
+            contextWindow,
+            thresholdTokens: threshold,
+            estimatedTokens: reducedEstimated,
+            tokenThresholdPercent,
+            olderCount: reducedOlder.length,
+            recentCount: reducedRecentCount,
+          },
+        };
+      }
+    }
+  }
+
+  // 压缩策略失败，回退到 trim 策略
   const { messages: trimResult, estimatedTokens: trimEst, trimToLast: n } = doTrim(trimToLast);
   if (trimEst <= threshold) {
     return {
       messages: trimResult,
-      meta: { strategy: "trim", totalMessages: all.length, estimatedTokens: trimEst, tokenThresholdPercent, trimToLast: n },
+      meta: {
+        strategy: "trim",
+        totalMessages: all.length,
+        contextWindow,
+        thresholdTokens: threshold,
+        estimatedTokens: trimEst,
+        tokenThresholdPercent,
+        trimToLast: n,
+      },
     };
   }
   let t = trimToLast;
@@ -133,14 +242,30 @@ export async function buildContextForAgent(
     if (out.estimatedTokens <= threshold) {
       return {
         messages: out.messages,
-        meta: { strategy: "trim", totalMessages: all.length, estimatedTokens: out.estimatedTokens, tokenThresholdPercent, trimToLast: t },
+        meta: {
+          strategy: "trim",
+          totalMessages: all.length,
+          contextWindow,
+          thresholdTokens: threshold,
+          estimatedTokens: out.estimatedTokens,
+          tokenThresholdPercent,
+          trimToLast: t,
+        },
       };
     }
   }
   const final = doTrim(1);
   return {
     messages: final.messages,
-    meta: { strategy: "trim", totalMessages: all.length, estimatedTokens: final.estimatedTokens, tokenThresholdPercent, trimToLast: 1 },
+    meta: {
+      strategy: "trim",
+      totalMessages: all.length,
+      contextWindow,
+      thresholdTokens: threshold,
+      estimatedTokens: final.estimatedTokens,
+      tokenThresholdPercent,
+      trimToLast: 1,
+    },
   };
 }
 

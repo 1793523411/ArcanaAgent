@@ -177,7 +177,7 @@ export default function PromptTemplatesPanel({ onClose, onLaunch }: Props) {
         <Dialog.Content
           onPointerDownOutside={onClose}
           onEscapeKeyDown={onClose}
-          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[92%] max-w-[880px] h-[86vh] min-h-[460px] max-h-[760px] flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl z-[101] overflow-hidden"
+          className="fixed left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[95%] max-w-[1100px] h-[90vh] min-h-[500px] max-h-[900px] flex flex-col bg-[var(--color-surface)] border border-[var(--color-border)] rounded-2xl shadow-xl z-[101] overflow-hidden"
         >
           <Dialog.Title className="px-6 pt-5 text-lg font-semibold text-[var(--color-text)]">
             模板管理

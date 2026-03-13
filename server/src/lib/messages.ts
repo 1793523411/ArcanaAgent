@@ -1,4 +1,4 @@
-import { HumanMessage, AIMessage, SystemMessage, BaseMessage } from "@langchain/core/messages";
+import { HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
 import type { StoredMessage } from "../storage/index.js";
 import { readAttachmentBase64 } from "../storage/index.js";
 
@@ -30,6 +30,13 @@ export function storedToLangChain(m: StoredMessage, convId?: string): BaseMessag
       tool_calls: m.tool_calls as never,
     });
   }
+  if (m.type === "tool") {
+    return new ToolMessage({
+      content: m.content,
+      tool_call_id: m.tool_call_id ?? "",
+      name: m.name ?? "",
+    });
+  }
   return new SystemMessage(m.content);
 }
 
@@ -42,6 +49,15 @@ export function langChainToStored(msg: BaseMessage): StoredMessage {
       type: "ai",
       content: typeof ai.content === "string" ? ai.content : JSON.stringify(ai.content ?? ""),
       tool_calls: ai.tool_calls?.map((tc) => ({ name: tc.name, args: typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args) })),
+    };
+  }
+  if (type === "tool") {
+    const tool = msg as { content: string; tool_call_id?: string; name?: string };
+    return {
+      type: "tool",
+      content: typeof tool.content === "string" ? tool.content : JSON.stringify(tool.content ?? ""),
+      tool_call_id: tool.tool_call_id,
+      name: tool.name,
     };
   }
   return { type: "system", content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) };
