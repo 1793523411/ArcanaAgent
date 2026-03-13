@@ -11,6 +11,7 @@ import { convertToOpenAITool } from "@langchain/core/utils/function_calling";
 import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude, type PlanStep } from "./planning.js";
+import { backgroundManager } from "./backgroundManager.js";
 import { resolve } from "path";
 import { z } from "zod";
 
@@ -98,6 +99,24 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - For file/content discovery in terminal commands, prefer \`rg\` first; only fall back to \`find\` when \`rg\` is unavailable or unsuitable
 - Use \`task\` only for complex tasks that benefit from decomposition; for simple tasks, solve directly in the main agent
 - When multiple independent subtasks exist, you may call \`task\` multiple times in the same turn
+
+**Background tasks for long-running commands:**
+- Use \`background_run\` for commands that likely take multiple seconds to complete. Judge by these criteria:
+  - **Network I/O**: Downloads, uploads, API calls, git clone, package installation
+  - **Heavy computation**: Compilation, builds, compression, video/image processing, model training
+  - **Batch operations**: Full test suites, database migrations, batch file processing
+  - **Script execution**: Any shell/Python/Node/etc. script where runtime is unpredictable — prefer background by default
+  - **Waiting/polling**: sleep >3s, watching for changes, waiting for service startup
+- Common examples (but not limited to):
+  - Package: \`npm install\`, \`pip install\`, \`yarn\`, \`composer install\`, \`go get\`
+  - Build: \`npm run build\`, \`docker build\`, \`cargo build\`, \`make\`, \`webpack\`
+  - Test: \`npm test\`, \`pytest\`, \`cargo test\` (full suites, not single tests)
+  - Files: \`wget\`, \`curl\`, \`tar\`, \`zip\`, \`rsync\`, \`dd\`
+  - Scripts: \`python script.py\`, \`bash script.sh\`, \`node script.js\`, \`./script\` — default to background unless user explicitly says it's quick
+- **Judgment principle**: When uncertain, prefer \`background_run\`. Cost of false positive (quick command in background) is low; cost of false negative (slow command blocking) is high.
+- After spawning, continue immediately with other work — completion notifications auto-inject as \`[bg:task_id][status] preview\`
+- Use \`background_check\` for full output, \`background_cancel\` to terminate
+- Max 4 concurrent tasks for parallel execution
 
 **CRITICAL — Always provide a final text response:**
 - After ALL tool calls are complete, you MUST generate a clear text response summarizing the results, findings, or output for the user.
@@ -203,6 +222,13 @@ function getLastAssistantText(messages: BaseMessage[]): string {
     if (text) return text;
   }
   return "";
+}
+
+function buildBackgroundResultMessage(): HumanMessage | null {
+  const notifications = backgroundManager.drainNotifications();
+  if (notifications.length === 0) return null;
+  const lines = notifications.map((item) => `[bg:${item.taskId}][${item.status}] ${item.result}`);
+  return new HumanMessage(`<background-results>\n${lines.join("\n")}\n</background-results>`);
 }
 
 function createSubagentId(): string {
@@ -593,7 +619,8 @@ export async function runAgent(
   ];
 
   const callModel = async (state: MessagesState) => {
-    const response = await model.invoke([systemMessage, ...state.messages]);
+    const bgMessage = buildBackgroundResultMessage();
+    const response = await model.invoke([systemMessage, ...state.messages, ...(bgMessage ? [bgMessage] : [])]);
     return { messages: [response] };
   };
 
@@ -785,6 +812,8 @@ export async function* streamAgentWithTokens(
       let lastHadContent = false;
       let reachedMaxRounds = false;
       for (let round = 0; round < maxRounds; round++) {
+        const bgMessage = buildBackgroundResultMessage();
+        if (bgMessage) conversationMessages = [...conversationMessages, bgMessage];
         const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools
         );
@@ -883,6 +912,8 @@ export async function* streamAgentWithTokens(
   let lastHadContent = false;
   let reachedMaxRounds = false;
   for (let round = 0; round < maxRounds; round++) {
+    const bgMessage = buildBackgroundResultMessage();
+    if (bgMessage) state = [...state, bgMessage];
     const stream = await model.stream([systemMessage, ...state]);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
