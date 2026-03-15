@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import type { ConversationMode } from "../types";
 
 export interface FileWithData {
   file: File;
@@ -19,6 +20,9 @@ interface Props {
   models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean; contextWindow?: number }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
+  modeLocked?: boolean;
   disabled?: boolean;
   contextUsage?: {
     strategy?: "full" | "trim" | "compress";
@@ -56,6 +60,9 @@ export default function ChatInputBar({
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
+  modeLocked = false,
   disabled = false,
   contextUsage = null,
   onCompress,
@@ -64,11 +71,13 @@ export default function ChatInputBar({
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [contextTooltipOpen, setContextTooltipOpen] = useState(false);
 
   useEffect(() => {
     if (loading) {
       setModelMenuOpen(false);
+      setModeMenuOpen(false);
       setContextTooltipOpen(false);
     }
   }, [loading]);
@@ -107,6 +116,7 @@ export default function ChatInputBar({
   };
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
+  const modeLabel = mode === "team" ? "Team Mode" : "默认模式";
   const supportsImage = currentModel?.supportsImage !== false;
   const strategyLabel = {
     full: "全量上下文",
@@ -115,16 +125,6 @@ export default function ChatInputBar({
   } as const;
   const displayPercent = contextUsage ? (contextUsage.percentByThreshold ?? contextUsage.percentByWindow) : undefined;
   const strategyText = contextUsage?.strategy ? strategyLabel[contextUsage.strategy] : "未知";
-
-  // 调试日志
-  if (contextUsage) {
-    console.log('[ChatInputBar] Context Usage:', {
-      strategy: contextUsage.strategy,
-      hasCompress: !!onCompress,
-      showButton: contextUsage.strategy === "compress" && !!onCompress,
-      compressing,
-    });
-  }
 
   return (
     <form
@@ -286,6 +286,57 @@ export default function ChatInputBar({
                   </>
                 )}
               </div>
+            )}
+            {!loading && !disabled ? (
+              <DropdownMenu.Root open={modeMenuOpen} onOpenChange={setModeMenuOpen}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={loading || disabled || modeLocked}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed disabled:opacity-60 hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                  >
+                    <span>{modeLabel}</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                      <path d="M18 15l-6-6-6 6" />
+                    </svg>
+                  </button>
+                </DropdownMenu.Trigger>
+                {!modeLocked && (
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      side="top"
+                      sideOffset={4}
+                      align="end"
+                      className="min-w-[160px] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-50"
+                    >
+                      <DropdownMenu.Item
+                        onSelect={() => onModeChange("default")}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${mode === "default" ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        默认模式
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        onSelect={() => onModeChange("team")}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${mode === "team" ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        Team Mode
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                )}
+              </DropdownMenu.Root>
+            ) : (
+              <span className="text-[13px] text-[var(--color-text-muted)] px-2 py-1">
+                {modeLabel}
+              </span>
             )}
             {models.length > 1 && !loading && !disabled ? (
               <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>

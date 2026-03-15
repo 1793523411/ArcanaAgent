@@ -1,8 +1,12 @@
+export type ConversationMode = "default" | "team";
+export type AgentRole = "planner" | "coder" | "reviewer" | "tester";
+
 export interface ConversationMeta {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
+  mode?: ConversationMode;
 }
 
 export interface StoredAttachment {
@@ -31,10 +35,22 @@ export interface PlanLog {
   toolName?: string;
 }
 
+export interface ApprovalLog {
+  requestId: string;
+  operationType: string;
+  operationDescription: string;
+  approved: boolean;
+  createdAt: string;
+}
+
 export interface SubagentLog {
   subagentId: string;
   /** 语义化展示名（由任务 prompt 派生） */
   subagentName?: string;
+  /** 角色类型（team 模式） */
+  role?: AgentRole;
+  /** 依赖的已完成子 agent ID（team 模式多轮协作） */
+  dependsOn?: string[];
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -43,6 +59,8 @@ export interface SubagentLog {
   reasoning: string;
   toolLogs: ToolLog[];
   plan?: PlanLog;
+  /** 审批记录（team 模式） */
+  approvalLogs?: ApprovalLog[];
   summary?: string;
   error?: string;
 }

@@ -16,6 +16,7 @@ import {
   ensureWorkspace,
   type StoredMessage,
   type ConversationMeta,
+  type ConversationMode,
 } from "../storage/index.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
 import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
@@ -23,6 +24,7 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
+import { approvalManager } from "../agent/approvalManager.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
@@ -63,6 +65,8 @@ function buildSkillContext(convId: string): string {
 type PersistedSubagentLog = {
   subagentId: string;
   subagentName?: string;
+  role?: "planner" | "coder" | "reviewer" | "tester";
+  dependsOn?: string[];
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -81,6 +85,13 @@ type PersistedSubagentLog = {
     currentStep: number;
     toolName?: string;
   };
+  approvalLogs?: Array<{
+    requestId: string;
+    operationType: string;
+    operationDescription: string;
+    approved: boolean;
+    createdAt: string;
+  }>;
   summary?: string;
   error?: string;
 };
@@ -106,6 +117,8 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
         prompt: ev.prompt,
         phase: ev.phase,
         subagentName: ev.subagentName ?? existing.subagentName,
+        role: ev.role ?? existing.role,
+        dependsOn: ev.dependsOn ?? existing.dependsOn,
         summary: ev.summary ?? existing.summary,
         error: ev.error ?? existing.error,
         status: ev.phase === "completed" || ev.phase === "failed" ? null : existing.status,
@@ -162,12 +175,42 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
     if (ev.kind === "subagent_name") {
       const cur = map.get(ev.subagentId);
       if (cur) map.set(ev.subagentId, { ...cur, subagentName: ev.subagentName });
+      continue;
+    }
+    if (ev.kind === "approval_request") {
+      const cur = map.get(ev.subagentId) ?? existing;
+      const logs = cur.approvalLogs ?? [];
+      map.set(ev.subagentId, {
+        ...cur,
+        approvalLogs: [...logs, {
+          requestId: ev.requestId,
+          operationType: ev.operationType,
+          operationDescription: ev.operationDescription,
+          approved: false,
+          createdAt: new Date().toISOString(),
+        }],
+      });
+      continue;
+    }
+    if (ev.kind === "approval_response") {
+      const cur = map.get(ev.subagentId);
+      if (cur?.approvalLogs) {
+        const updated = cur.approvalLogs.map((a) =>
+          a.requestId === ev.requestId ? { ...a, approved: ev.approved } : a
+        );
+        map.set(ev.subagentId, { ...cur, approvalLogs: updated });
+      }
+      continue;
     }
   }
   return Array.from(map.values());
 }
 
-const createConversationBodySchema = { title: z.string().max(500).optional() };
+const conversationModeSchema = z.enum(["default", "team"]);
+const createConversationBodySchema = {
+  title: z.string().max(500).optional(),
+  mode: conversationModeSchema.optional(),
+};
 const createConversationBody = z.object(createConversationBodySchema);
 
 export function getConversations(req: Request, res: Response): void {
@@ -191,8 +234,9 @@ export function postConversations(req: Request, res: Response): void {
       return;
     }
     const title = parsed.data.title?.trim();
+    const mode: ConversationMode = parsed.data.mode ?? "default";
     const config = loadUserConfig();
-    const { id, meta } = createConversation(config.context, title || undefined);
+    const { id, meta } = createConversation(config.context, title || undefined, mode);
     logConversation("create", id, meta.title);
     res.status(201).json(meta);
   } catch (e) {
@@ -294,8 +338,14 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   }
   const body = req.body as {
     text?: string;
+    mode?: ConversationMode;
     attachments?: Array<{ type: string; mimeType?: string; data: string }>;
   };
+  const conversationMode: ConversationMode = meta.mode ?? "default";
+  if (body?.mode && body.mode !== conversationMode) {
+    res.status(400).json({ error: "Conversation mode is immutable" });
+    return;
+  }
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
   if (!text && attachments.length === 0) {
@@ -303,7 +353,27 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     return;
   }
 
-  const textPart = text || (attachments.length ? "请分析图片" : " ");
+  // Save attachments first so we can tell the agent about file paths
+  const config = loadUserConfig();
+  const displayText = text || "[图片]";
+  const storedAttachments: Array<{ type: "image"; file: string; mimeType?: string }> = [];
+  for (const a of attachments) {
+    if ((a.type === "image" || !a.type) && typeof a.data === "string") {
+      const fileRef = saveAttachmentFile(id, a.mimeType || "image/png", a.data);
+      storedAttachments.push({ type: "image", file: fileRef, mimeType: a.mimeType || "image/png" });
+    }
+  }
+
+  // Build text part with attachment file paths so the agent knows where files are
+  let textPart = text || (attachments.length ? "请分析图片" : " ");
+  if (storedAttachments.length > 0) {
+    const pathLines = storedAttachments.map((a, i) => {
+      const absPath = getAttachmentAbsolutePath(id, a.file);
+      return `- Attachment ${i + 1}: ${absPath ?? a.file} (${a.mimeType ?? "image/png"})`;
+    });
+    textPart += `\n\n[Attached files on disk — use these absolute paths if you need to read/process the files]\n${pathLines.join("\n")}`;
+  }
+
   const humanContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }> =
     attachments.length === 0
       ? textPart
@@ -317,15 +387,6 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             })),
         ];
 
-  const config = loadUserConfig();
-  const displayText = text || "[图片]";
-  const storedAttachments: Array<{ type: "image"; file: string; mimeType?: string }> = [];
-  for (const a of attachments) {
-    if ((a.type === "image" || !a.type) && typeof a.data === "string") {
-      const fileRef = saveAttachmentFile(id, a.mimeType || "image/png", a.data);
-      storedAttachments.push({ type: "image", file: fileRef, mimeType: a.mimeType || "image/png" });
-    }
-  }
   const humanMsg: StoredMessage = {
     type: "human",
     content: displayText,
@@ -363,19 +424,31 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     res.socket.setTimeout(0);
   }
 
+  // S6: Handle client disconnect — cancel pending approvals and abort agent execution
+  const abortController = new AbortController();
+  let clientDisconnected = false;
+  req.on("close", () => {
+    clientDisconnected = true;
+    abortController.abort();
+    approvalManager.cancelConversation(id);
+  });
+
   const FLUSH_INTERVAL = 30;
   let writeBuf = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const flushNow = () => {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
-    if (writeBuf) {
-      res.write(writeBuf);
+    if (writeBuf && !clientDisconnected) {
+      try { res.write(writeBuf); } catch { /* client gone */ }
+      writeBuf = "";
+    } else {
       writeBuf = "";
     }
   };
 
   const write = (data: string) => {
+    if (clientDisconnected) return;
     writeBuf += data;
     if (flushTimer === null) {
       flushTimer = setTimeout(flushNow, FLUSH_INTERVAL);
@@ -383,6 +456,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   const writeImmediate = (data: string) => {
+    if (clientDisconnected) return;
     writeBuf += data;
     flushNow();
   };
@@ -423,8 +497,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       onReasoningToken,
       skillContext,
       {
+        conversationMode,
+        conversationId: id,
         planningEnabled: config.planning?.enabled ?? true,
         workspacePath,
+        abortSignal: abortController.signal,
         planProgressEnabled: config.planning?.streamProgress ?? true,
         onPlanEvent: (event) => {
           latestPlan = { ...event };
@@ -600,7 +677,12 @@ export async function postConversationMessageSync(req: Request, res: Response): 
     res.status(404).json({ error: "Conversation not found" });
     return;
   }
-  const body = req.body as { text?: string };
+  const body = req.body as { text?: string; mode?: ConversationMode };
+  const conversationMode: ConversationMode = meta.mode ?? "default";
+  if (body?.mode && body.mode !== conversationMode) {
+    res.status(400).json({ error: "Conversation mode is immutable" });
+    return;
+  }
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text) {
     res.status(400).json({ error: "Missing or empty text" });
@@ -636,6 +718,8 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 
   try {
     const resultMessages = await runAgent(lcMessages, config.modelId, skillContext, {
+      conversationMode,
+      conversationId: id,
       planningEnabled: config.planning?.enabled ?? true,
       workspacePath,
     });
@@ -1010,4 +1094,51 @@ export async function postConversationCompress(req: Request, res: Response): Pro
 
 export function getHealth(_req: Request, res: Response): void {
   res.json({ status: "ok" });
+}
+
+// ─── 审批接口 ─────────────────────────────────────────────
+
+export function getApprovals(req: Request, res: Response): void {
+  const id = convId(req);
+  if (!id) {
+    res.status(400).json({ error: "Missing conversation id" });
+    return;
+  }
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const pending = approvalManager.getPendingRequests(id);
+  res.json(pending);
+}
+
+export function postApprovalDecision(req: Request, res: Response): void {
+  const id = convId(req);
+  const requestId = Array.isArray(req.params.requestId) ? req.params.requestId[0] ?? "" : req.params.requestId;
+  if (!id || !requestId) {
+    res.status(400).json({ error: "Missing conversation id or request id" });
+    return;
+  }
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const body = req.body as { approved?: boolean };
+  if (typeof body?.approved !== "boolean") {
+    res.status(400).json({ error: "Missing or invalid 'approved' boolean field" });
+    return;
+  }
+  // Verify requestId belongs to this conversation (S2: prevent cross-conversation approval)
+  if (!approvalManager.belongsToConversation(requestId, id)) {
+    res.status(404).json({ error: "Approval request not found in this conversation" });
+    return;
+  }
+  const resolved = approvalManager.resolveRequest(requestId, body.approved);
+  if (!resolved) {
+    res.status(404).json({ error: "Approval request not found or already resolved" });
+    return;
+  }
+  res.json({ ok: true, requestId, approved: body.approved });
 }

@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
@@ -7,9 +7,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // 开发模式使用项目 data/ 目录，生产模式使用用户主目录
 const isDev = process.env.IS_DEV === 'true';
-const DATA_DIR = process.env.DATA_DIR ?? (isDev
+const DATA_DIR = resolve(process.env.DATA_DIR ?? (isDev
   ? join(__dirname, "../../../data")
-  : join(homedir(), ".rule-agent"));
+  : join(homedir(), ".rule-agent")));
 
 const CONFIG_PATH = join(DATA_DIR, "user-config.json");
 

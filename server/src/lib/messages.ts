@@ -1,11 +1,28 @@
 import { HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
 import type { StoredMessage } from "../storage/index.js";
-import { readAttachmentBase64 } from "../storage/index.js";
+import { readAttachmentBase64, getAttachmentAbsolutePath } from "../storage/index.js";
 
 function buildHumanContent(m: StoredMessage, convId?: string): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
   const attachments = m.attachments ?? [];
   if (attachments.length === 0) return m.content || " ";
-  const textPart = m.content || " ";
+  let textPart = m.content || " ";
+
+  // Append absolute file paths so the agent knows where attachment files are on disk
+  if (convId && attachments.length > 0) {
+    const pathLines: string[] = [];
+    attachments.forEach((a, i) => {
+      if (a.file) {
+        const absPath = getAttachmentAbsolutePath(convId, a.file);
+        if (absPath) {
+          pathLines.push(`- Attachment ${i + 1}: ${absPath} (${a.mimeType ?? "image/png"})`);
+        }
+      }
+    });
+    if (pathLines.length > 0) {
+      textPart += `\n\n[Attached files on disk — use these absolute paths if you need to read/process the files]\n${pathLines.join("\n")}`;
+    }
+  }
+
   const imageParts: Array<{ type: "image_url"; image_url: { url: string } }> = [];
   for (const a of attachments) {
     if (a.type !== "image") continue;

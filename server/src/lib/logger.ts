@@ -1,8 +1,8 @@
 import { createLogger, format, transports, Logger } from "winston";
-import { join } from "path";
+import { join, resolve } from "path";
 import { existsSync, mkdirSync } from "fs";
 
-const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const LOGS_DIR = join(DATA_DIR, "logs");
 const CONVERSATIONS_DIR = join(DATA_DIR, "conversations");
 

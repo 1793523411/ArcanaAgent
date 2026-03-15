@@ -1,4 +1,5 @@
 import ChatInputBar, { type FileWithData } from "./ChatInputBar";
+import type { ConversationMode } from "../types";
 
 interface Props {
   input: string;
@@ -7,9 +8,11 @@ interface Props {
   loading: boolean;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
-  models: Array<{ id: string; name: string; provider?: string }>;
+  models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean; contextWindow?: number }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
 }
 
 export default function WelcomeBox({
@@ -22,6 +25,8 @@ export default function WelcomeBox({
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
 }: Props) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 min-h-0 overflow-auto">
@@ -44,6 +49,8 @@ export default function WelcomeBox({
           models={models}
           modelId={modelId}
           onModelChange={onModelChange}
+          mode={mode}
+          onModeChange={onModeChange}
           placeholder="今天我能为你做些什么？"
         />
       </div>

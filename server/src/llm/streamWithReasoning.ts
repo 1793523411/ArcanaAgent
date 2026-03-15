@@ -76,7 +76,8 @@ export async function streamChatCompletionsWithReasoning(
   onToken: (token: string) => void,
   onReasoningToken: (token: string) => void,
   tools?: Array<Record<string, unknown>>,
-  temperature = 0
+  temperature = 0,
+  abortSignal?: AbortSignal
 ): Promise<StreamReasoningResult> {
   const openAIMessages = messages.map(messageToOpenAI);
   const url = baseUrl.replace(/\/$/, "") + "/chat/completions";
@@ -99,6 +100,7 @@ export async function streamChatCompletionsWithReasoning(
       Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify(body),
+    signal: abortSignal,
   });
   if (!res.ok) {
     const t = await res.text();
@@ -114,8 +116,14 @@ export async function streamChatCompletionsWithReasoning(
   const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
   let lastUsage: TokenUsage | undefined;
 
+  // Timeout per chunk read: if no data arrives for 3 minutes, consider the connection dead
+  const CHUNK_TIMEOUT_MS = 3 * 60 * 1000;
+
   while (true) {
-    const { done, value } = await reader.read();
+    const timeoutPromise = new Promise<{ done: true; value: undefined }>((_, reject) =>
+      setTimeout(() => reject(new Error("Stream read timeout: no data received for 3 minutes")), CHUNK_TIMEOUT_MS)
+    );
+    const { done, value } = await Promise.race([reader.read(), timeoutPromise]);
     if (done) break;
     buf += decoder.decode(value, { stream: true });
     const lines = buf.split("\n");

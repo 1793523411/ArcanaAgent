@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { StoredMessage, StreamingStatus } from "../types";
+import type { AgentRole, ConversationMode, StoredMessage, StreamingStatus } from "../types";
 import MessageBubble from "./MessageBubble";
 import StreamingBubble from "./StreamingBubble";
 import ChatInputBar, { type FileWithData } from "./ChatInputBar";
@@ -18,6 +18,8 @@ interface Props {
   streamingSubagents: Array<{
     subagentId: string;
     subagentName?: string;
+    role?: AgentRole;
+    dependsOn?: string[];
     depth: number;
     prompt: string;
     phase: "started" | "completed" | "failed";
@@ -50,15 +52,29 @@ interface Props {
     currentStep: number;
     toolName?: string;
   } | null;
+  pendingApprovals?: Array<{
+    requestId: string;
+    subagentId: string;
+    operationType: string;
+    operationDescription: string;
+    details: Record<string, unknown>;
+  }>;
+  onApproval?: (requestId: string, approved: boolean) => void;
+  processingApprovals?: Set<string>;
   error: string | null;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
   models: Array<{ id: string; name: string; provider?: string; supportsReasoning?: boolean }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
+  modeLocked?: boolean;
   artifactCount?: number;
   onToggleArtifacts?: () => void;
   artifactsPanelOpen?: boolean;
+  showTeamPanel?: boolean;
+  onToggleTeamPanel?: () => void;
   isTaskExecuting?: boolean;
   usageTokens?: {
     promptTokens: number;
@@ -94,15 +110,23 @@ export default function ChatPanel({
   streamingToolLogs,
   streamingSubagents,
   streamingPlan,
+  pendingApprovals = [],
+  onApproval,
+  processingApprovals,
   error,
   files,
   onFilesChange,
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
+  modeLocked = true,
   artifactCount = 0,
   onToggleArtifacts,
   artifactsPanelOpen,
+  showTeamPanel,
+  onToggleTeamPanel,
   isTaskExecuting = false,
   usageTokens = null,
   contextUsage = null,
@@ -157,14 +181,6 @@ export default function ChatPanel({
         tokenThresholdPercent: effectiveThresholdPercent,
       }
     : null;
-
-  // 调试日志
-  console.log('[ChatPanel] Display Context Usage:', {
-    displayContextUsage,
-    hasOnCompress: !!onCompress,
-    compressing,
-    effectiveContextUsage,
-  });
 
   const handleScroll = () => {
     const el = scrollContainerRef.current;
@@ -234,11 +250,13 @@ export default function ChatPanel({
           toolLogs={streamingToolLogs}
           subagents={streamingSubagents}
           plan={streamingPlan ?? undefined}
+          pendingApprovals={pendingApprovals}
+          onApproval={onApproval}
+          processingApprovals={processingApprovals}
+          conversationId={conversationId}
           isStreaming={loading}
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
-          modelId={modelId}
-          conversationId={conversationId}
           usageTokens={usageTokens || undefined}
         />
         )}
@@ -275,12 +293,34 @@ export default function ChatPanel({
               models={models}
               modelId={modelId}
               onModelChange={onModelChange}
+              mode={mode}
+              onModeChange={onModeChange}
+              modeLocked={modeLocked}
               disabled={isTaskExecuting}
               contextUsage={displayContextUsage}
               onCompress={onCompress}
               compressing={compressing}
             />
           </div>
+          {mode === "team" && onToggleTeamPanel && (
+            <button
+              onClick={onToggleTeamPanel}
+              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
+                showTeamPanel
+                  ? "bg-[var(--color-accent)] text-white"
+                  : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+              }`}
+              title="Team Panel"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              Team
+            </button>
+          )}
           {artifactCount > 0 && onToggleArtifacts && (
             <button
               onClick={onToggleArtifacts}

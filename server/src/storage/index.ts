@@ -3,7 +3,7 @@ import { join, resolve } from "path";
 import type { ContextStrategyConfig } from "../config/userConfig.js";
 import { closeConversationLogger } from "../lib/logger.js";
 
-const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const CONVERSATIONS_DIR = join(DATA_DIR, "conversations");
 
 const DEFAULT_TRIM_TO_LAST = 20;
@@ -34,10 +34,22 @@ export interface PlanLog {
   toolName?: string;
 }
 
+export interface ApprovalLog {
+  requestId: string;
+  operationType: string;
+  operationDescription: string;
+  approved: boolean;
+  createdAt: string;
+}
+
 export interface SubagentLog {
   subagentId: string;
   /** 语义化展示名（由任务 prompt 派生） */
   subagentName?: string;
+  /** 角色类型（team 模式） */
+  role?: "planner" | "coder" | "reviewer" | "tester";
+  /** 依赖的已完成子 agent ID（team 模式多轮协作） */
+  dependsOn?: string[];
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -46,6 +58,8 @@ export interface SubagentLog {
   reasoning: string;
   toolLogs: ToolLog[];
   plan?: PlanLog;
+  /** 审批记录（team 模式） */
+  approvalLogs?: ApprovalLog[];
   summary?: string;
   error?: string;
 }
@@ -92,11 +106,14 @@ export interface ConversationContextSnapshot {
   compressKeepRecent?: number;
 }
 
+export type ConversationMode = "default" | "team";
+
 export interface ConversationMeta {
   id: string;
   title: string;
   createdAt: string;
   updatedAt: string;
+  mode?: ConversationMode;
   context?: ConversationContextSnapshot;
 }
 
@@ -245,7 +262,8 @@ export function listConversations(): ConversationMeta[] {
 
 export function createConversation(
   snapshotContext?: ContextStrategyConfig,
-  initialTitle?: string
+  initialTitle?: string,
+  mode: ConversationMode = "default"
 ): { id: string; meta: ConversationMeta } {
   ensureDir(CONVERSATIONS_DIR);
   const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -257,6 +275,7 @@ export function createConversation(
     title: initialTitle?.trim() || "新对话",
     createdAt: now,
     updatedAt: now,
+    mode,
   };
   if (snapshotContext) {
     meta.context = {
@@ -437,7 +456,7 @@ function normalizeWorkspaceOutputs(convId: string): void {
 }
 
 export function ensureWorkspace(convId: string): string {
-  const dir = workspaceDir(convId);
+  const dir = resolve(workspaceDir(convId));
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   normalizeWorkspaceOutputs(convId);
   return dir;

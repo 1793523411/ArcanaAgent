@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation } from "./api";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval } from "./api";
 import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import TeamPanel from "./components/TeamPanel";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
+import type { ConversationMode } from "./types";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -17,12 +19,14 @@ export default function App() {
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
+  const [showTeamPanel, setShowTeamPanel] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
   const [executingTaskConversations, setExecutingTaskConversations] = useState<Set<string>>(new Set());
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [artifactPaneWidth, setArtifactPaneWidth] = useState(50);
   const [isResizing, setIsResizing] = useState(false);
   const [compressing, setCompressing] = useState(false);
+  const [draftMode, setDraftMode] = useState<ConversationMode>("default");
   const mainRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
@@ -63,6 +67,7 @@ export default function App() {
     streamingToolLogs,
     streamingSubagents,
     streamingPlan,
+    pendingApprovals,
     sendError,
     usageTokens,
     contextUsage,
@@ -72,6 +77,25 @@ export default function App() {
     setMessages,
     setCurrent,
   });
+
+  // Shared approval state to prevent duplicate submissions from StreamingBubble + TeamPanel
+  const [processingApprovals, setProcessingApprovals] = useState<Set<string>>(new Set());
+  const handleApproval = useCallback(async (requestId: string, approved: boolean) => {
+    if (!current?.id) return;
+    if (processingApprovals.has(requestId)) return; // already processing
+    setProcessingApprovals((prev) => new Set(prev).add(requestId));
+    try {
+      await submitApproval(current.id, requestId, approved);
+    } catch {
+      // approval removed via SSE approval_response event
+    } finally {
+      setProcessingApprovals((prev) => {
+        const next = new Set(prev);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }, [current?.id, processingApprovals]);
 
   useEffect(() => {
     setShowArtifacts(false);
@@ -100,11 +124,11 @@ export default function App() {
     if (!text) {
       throw new Error("模板渲染结果为空");
     }
-    const meta = await createConversation();
+    const meta = await createConversation(undefined, draftMode);
     setMessages([]);
     loadList();
     navigate(`/c/${meta.id}`);
-    send(meta.id, text, []);
+    send(meta.id, text, [], meta.mode ?? draftMode);
   };
 
   const handleSelectConversation = (meta: { id: string }) => {
@@ -192,11 +216,11 @@ export default function App() {
 
   const handleStartFromWelcome = async () => {
     try {
-      const meta = await createConversation();
+      const meta = await createConversation(undefined, draftMode);
       setMessages([]);
       loadList();
       navigate(`/c/${meta.id}`);
-      send(meta.id);
+      send(meta.id, undefined, undefined, meta.mode ?? draftMode);
     } catch (e) {
       toast(`创建对话失败: ${e instanceof Error ? e.message : String(e)}`, "error");
     }
@@ -204,7 +228,7 @@ export default function App() {
 
   const handleWelcomeSend = () => {
     if (current) {
-      send(current.id);
+      send(current.id, undefined, undefined, current.mode ?? "default");
     } else {
       handleStartFromWelcome();
     }
@@ -368,6 +392,8 @@ export default function App() {
               models={models}
               modelId={modelId}
               onModelChange={setModelId}
+              mode={draftMode}
+              onModeChange={setDraftMode}
             />
           ) : (
             <ChatPanel
@@ -375,7 +401,7 @@ export default function App() {
               conversationId={current.id}
               input={input}
               onInputChange={setInput}
-              onSend={() => send(current.id)}
+              onSend={() => send(current.id, undefined, undefined, current.mode ?? "default")}
               loading={loading}
               streamingContent={streamingContent}
               streamingReasoning={streamingReasoning}
@@ -383,15 +409,23 @@ export default function App() {
               streamingToolLogs={streamingToolLogs}
               streamingSubagents={streamingSubagents}
               streamingPlan={streamingPlan}
+              pendingApprovals={pendingApprovals}
+              onApproval={handleApproval}
+              processingApprovals={processingApprovals}
               error={error}
               files={files}
               onFilesChange={setFiles}
               models={models}
               modelId={modelId}
               onModelChange={setModelId}
+              mode={current.mode ?? "default"}
+              onModeChange={() => undefined}
+              modeLocked
               artifactCount={artifactCount}
               onToggleArtifacts={() => setShowArtifacts((prev) => !prev)}
               artifactsPanelOpen={showArtifacts}
+              showTeamPanel={showTeamPanel}
+              onToggleTeamPanel={() => setShowTeamPanel((prev) => !prev)}
               isTaskExecuting={executingTaskConversations.has(current.id)}
               usageTokens={usageTokens}
               contextUsage={contextUsage}
@@ -417,6 +451,22 @@ export default function App() {
             />
             </div>
           </>
+        )}
+        {showTeamPanel && current && (current.mode ?? "default") === "team" && (
+          <div className="min-w-0 min-h-0 overflow-hidden shrink-0" style={{ width: "280px" }}>
+            <TeamPanel
+              streamingSubagents={streamingSubagents}
+              historicalSubagents={(() => {
+                const lastAi = [...messages].reverse().find((m) => m.type === "ai");
+                return lastAi?.subagents ?? [];
+              })()}
+              pendingApprovals={pendingApprovals}
+              onApproval={handleApproval}
+              processingApprovals={processingApprovals}
+              conversationId={current.id}
+              onClose={() => setShowTeamPanel(false)}
+            />
+          </div>
         )}
         {isResizing && <div className="absolute inset-0 z-20 cursor-col-resize" />}
       </main>

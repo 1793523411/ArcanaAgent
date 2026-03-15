@@ -1,4 +1,4 @@
-import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate } from "../types";
+import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate, ConversationMode } from "../types";
 
 const BASE = "/api";
 function encodeArtifactPath(filePath: string): string {
@@ -26,11 +26,14 @@ export async function listConversations(params?: { limit?: number; offset?: numb
   return r.json();
 }
 
-export async function createConversation(title?: string): Promise<ConversationMeta> {
+export async function createConversation(title?: string, mode?: ConversationMode): Promise<ConversationMeta> {
   const r = await fetch(`${BASE}/conversations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(title ? { title } : {}),
+    body: JSON.stringify({
+      ...(title ? { title } : {}),
+      ...(mode ? { mode } : {}),
+    }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -83,6 +86,7 @@ export async function sendMessageStream(
   onDone: () => void,
   onError: (err: string) => void,
   attachments?: Attachment[],
+  mode?: ConversationMode,
   signal?: AbortSignal
 ): Promise<void> {
   let res: Response;
@@ -96,6 +100,7 @@ export async function sendMessageStream(
       body: JSON.stringify({
         text,
         ...(attachments?.length ? { attachments } : {}),
+        ...(mode ? { mode } : {}),
       }),
       signal,
       cache: "no-store",
@@ -309,4 +314,36 @@ export async function compressConversation(conversationId: string): Promise<Comp
     throw new Error(typeof err?.error === "string" ? err.error : "压缩失败");
   }
   return r.json();
+}
+
+// ─── Approval API ───────────────────────────────────────────
+
+export interface ApprovalRequest {
+  requestId: string;
+  conversationId: string;
+  subagentId: string;
+  role?: string;
+  operationType: string;
+  operationDescription: string;
+  details: Record<string, unknown>;
+  createdAt: string;
+  status: "pending" | "approved" | "rejected";
+}
+
+export async function getPendingApprovals(conversationId: string): Promise<ApprovalRequest[]> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/approvals`);
+  if (!r.ok) return [];
+  return r.json();
+}
+
+export async function submitApproval(conversationId: string, requestId: string, approved: boolean): Promise<void> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/approvals/${requestId}`, {
+    method: "POST",
+    body: JSON.stringify({ approved }),
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({ error: r.statusText }));
+    throw new Error(typeof err?.error === "string" ? err.error : "Approval submission failed");
+  }
 }

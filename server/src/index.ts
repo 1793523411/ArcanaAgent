@@ -22,6 +22,8 @@ import {
   putConfig,
   getModels,
   getHealth,
+  getApprovals,
+  postApprovalDecision,
   getSkillsList,
   postSkillsUpload,
   deleteSkillById,
@@ -78,6 +80,8 @@ app.get("/api/conversations/:id/artifacts", getConversationArtifacts);
 app.get("/api/conversations/:id/artifacts/*", getConversationArtifactFile);
 app.post("/api/conversations/:id/messages", postConversationMessage);
 app.post("/api/conversations/:id/compress", postConversationCompress);
+app.get("/api/conversations/:id/approvals", getApprovals);
+app.post("/api/conversations/:id/approvals/:requestId", postApprovalDecision);
 app.delete("/api/conversations/:id", deleteConversationById);
 app.post("/api/conversations/:id/messages/sync", postConversationMessageSync);
 app.post("/api/chat", postChat);

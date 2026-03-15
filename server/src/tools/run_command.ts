@@ -2,6 +2,7 @@ import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
+import { resolve } from "path";
 
 const MAX_TIMEOUT_MS = 600_000; // 10 分钟，足够处理图片生成等耗时操作
 const DEFAULT_TIMEOUT_MS = 600_000; // 默认也设为 10 分钟
@@ -98,7 +99,8 @@ function formatRunCommandResult(payload: {
 export const run_command = tool(
   async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
     const blocked = isDangerous(input.command);
-    const cwd = input.working_directory && existsSync(input.working_directory) ? input.working_directory : process.cwd();
+    const rawCwd = input.working_directory ? resolve(input.working_directory) : process.cwd();
+    const cwd = existsSync(rawCwd) ? rawCwd : process.cwd();
     if (blocked) {
       return formatRunCommandResult({
         status: "blocked",
