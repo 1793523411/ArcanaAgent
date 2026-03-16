@@ -13,6 +13,9 @@ interface Props {
   onModelChange: (modelId: string) => void;
   mode: ConversationMode;
   onModeChange: (mode: ConversationMode) => void;
+  teams?: Array<{ id: string; name: string }>;
+  teamId?: string;
+  onTeamChange?: (teamId: string) => void;
 }
 
 export default function WelcomeBox({
@@ -27,6 +30,9 @@ export default function WelcomeBox({
   onModelChange,
   mode,
   onModeChange,
+  teams,
+  teamId,
+  onTeamChange,
 }: Props) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 min-h-0 overflow-auto">
@@ -51,6 +57,9 @@ export default function WelcomeBox({
           onModelChange={onModelChange}
           mode={mode}
           onModeChange={onModeChange}
+          teams={teams}
+          teamId={teamId}
+          onTeamChange={onTeamChange}
           placeholder="今天我能为你做些什么？"
         />
       </div>

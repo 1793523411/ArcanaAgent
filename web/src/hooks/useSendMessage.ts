@@ -361,7 +361,7 @@ export function useSendMessage(options: {
                 : {
                     subagentId: payload.subagentId,
                     subagentName: typeof payload.subagentName === "string" ? payload.subagentName : undefined,
-                    role: (payload.role === "planner" || payload.role === "coder" || payload.role === "reviewer" || payload.role === "tester") ? payload.role : undefined,
+                    role: typeof payload.role === "string" && payload.role ? payload.role : undefined,
                     dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : undefined,
                     depth: typeof payload.depth === "number" ? payload.depth : 1,
                     prompt: typeof payload.prompt === "string" ? payload.prompt : "",
@@ -380,7 +380,7 @@ export function useSendMessage(options: {
                 prompt: typeof payload.prompt === "string" && payload.prompt ? payload.prompt : base.prompt,
               };
               if (payload.kind === "lifecycle") {
-                const parsedRole = (payload.role === "planner" || payload.role === "coder" || payload.role === "reviewer" || payload.role === "tester") ? payload.role : undefined;
+                const parsedRole = typeof payload.role === "string" && payload.role ? payload.role : undefined;
                 nextItem = {
                   ...nextItem,
                   subagentName: typeof payload.subagentName === "string" ? payload.subagentName : nextItem.subagentName,

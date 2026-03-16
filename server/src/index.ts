@@ -31,6 +31,17 @@ import {
   postTemplates,
   putTemplateById,
   deleteTemplateById,
+  getAgents,
+  postAgents,
+  getAgentById,
+  putAgentById,
+  deleteAgentById,
+  generateAgentFromDescription,
+  getTeams,
+  postTeams,
+  getTeamById,
+  putTeamById,
+  deleteTeamById,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -95,6 +106,19 @@ app.get("/api/templates", getTemplates);
 app.post("/api/templates", postTemplates);
 app.put("/api/templates/:id", putTemplateById);
 app.delete("/api/templates/:id", deleteTemplateById);
+
+// Agent / Team 管理 API
+app.get("/api/agents", getAgents);
+app.post("/api/agents", postAgents);
+app.post("/api/agents/generate", generateAgentFromDescription);
+app.get("/api/agents/:id", getAgentById);
+app.put("/api/agents/:id", putAgentById);
+app.delete("/api/agents/:id", deleteAgentById);
+app.get("/api/teams", getTeams);
+app.post("/api/teams", postTeams);
+app.get("/api/teams/:id", getTeamById);
+app.put("/api/teams/:id", putTeamById);
+app.delete("/api/teams/:id", deleteTeamById);
 
 // 定时任务 API
 app.get("/api/scheduled-tasks", getTasks);

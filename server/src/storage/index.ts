@@ -46,8 +46,8 @@ export interface SubagentLog {
   subagentId: string;
   /** 语义化展示名（由任务 prompt 派生） */
   subagentName?: string;
-  /** 角色类型（team 模式） */
-  role?: "planner" | "coder" | "reviewer" | "tester";
+  /** 角色类型（team 模式，对应 AgentDef ID） */
+  role?: string;
   /** 依赖的已完成子 agent ID（team 模式多轮协作） */
   dependsOn?: string[];
   depth: number;
@@ -114,6 +114,8 @@ export interface ConversationMeta {
   createdAt: string;
   updatedAt: string;
   mode?: ConversationMode;
+  /** team 模式下使用的团队 ID，默认 "default" */
+  teamId?: string;
   context?: ConversationContextSnapshot;
 }
 
@@ -263,7 +265,8 @@ export function listConversations(): ConversationMeta[] {
 export function createConversation(
   snapshotContext?: ContextStrategyConfig,
   initialTitle?: string,
-  mode: ConversationMode = "default"
+  mode: ConversationMode = "default",
+  teamId?: string
 ): { id: string; meta: ConversationMeta } {
   ensureDir(CONVERSATIONS_DIR);
   const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
@@ -276,6 +279,7 @@ export function createConversation(
     createdAt: now,
     updatedAt: now,
     mode,
+    ...(mode === "team" ? { teamId: teamId ?? "default" } : {}),
   };
   if (snapshotContext) {
     meta.context = {

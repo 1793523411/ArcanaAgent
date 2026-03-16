@@ -1,11 +1,11 @@
-import { useState } from "react";
-import type { AgentRole, SubagentLog } from "../types";
-import { ROLE_CONFIG, getRoleConfig } from "../constants/roles";
+import { useState, useRef, useLayoutEffect, useEffect, useCallback, useMemo } from "react";
+import type { SubagentLog, ApprovalLog } from "../types";
+import { getRoleConfig } from "../constants/roles";
 
 interface SubagentInfo {
   subagentId: string;
   subagentName?: string;
-  role?: AgentRole;
+  role?: string;
   dependsOn?: string[];
   phase: "started" | "completed" | "failed";
 }
@@ -34,8 +34,207 @@ interface Props {
   onClose: () => void;
 }
 
+/* ── Pipeline DAG types ── */
+type FullAgent = SubagentInfo & { dependsOn?: string[] };
+interface DagEdge { fromId: string; toId: string }
+interface NodeRect { x: number; y: number; w: number; h: number }
+
+function getPhaseColor(agent: SubagentInfo): string {
+  if (agent.phase === "completed") return "#10B981";
+  if (agent.phase === "failed") return "#EF4444";
+  return getRoleConfig(agent.role)?.color ?? "var(--color-accent)";
+}
+
+/* ── PipelineDag component ── */
+function PipelineDag({ layers, edges, agentMap }: {
+  layers: FullAgent[][];
+  edges: DagEdge[];
+  agentMap: Map<string, FullAgent>;
+}) {
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+  const [rects, setRects] = useState<Map<string, NodeRect>>(new Map());
+  const [wrapperH, setWrapperH] = useState(0);
+
+  const measure = useCallback(() => {
+    const w = wrapperRef.current;
+    if (!w) return;
+    const wRect = w.getBoundingClientRect();
+    const next = new Map<string, NodeRect>();
+    for (const [id, el] of nodeRefs.current) {
+      const r = el.getBoundingClientRect();
+      next.set(id, {
+        x: r.left - wRect.left,
+        y: r.top - wRect.top,
+        w: r.width,
+        h: r.height,
+      });
+    }
+    setRects(next);
+    setWrapperH(w.scrollHeight);
+  }, []);
+
+  // Measure after every render that changes layers
+  useLayoutEffect(() => {
+    measure();
+  }, [layers, measure]);
+
+  // Re-measure on resize
+  useEffect(() => {
+    const w = wrapperRef.current;
+    if (!w) return;
+    const ro = new ResizeObserver(() => measure());
+    ro.observe(w);
+    return () => ro.disconnect();
+  }, [measure]);
+
+  // Build SVG paths
+  const paths = useMemo(() => {
+    if (rects.size === 0) return [];
+    return edges.map((e) => {
+      const from = rects.get(e.fromId);
+      const to = rects.get(e.toId);
+      if (!from || !to) return null;
+      const px = from.x + from.w / 2;
+      const py = from.y + from.h;
+      const cx = to.x + to.w / 2;
+      const cy = to.y;
+      const midY = (py + cy) / 2;
+      const d = `M ${px} ${py} C ${px} ${midY}, ${cx} ${midY}, ${cx} ${cy}`;
+      // Color: both completed → green, otherwise border color
+      const fromAgent = agentMap.get(e.fromId);
+      const toAgent = agentMap.get(e.toId);
+      const bothDone = fromAgent?.phase === "completed" && toAgent?.phase === "completed";
+      return { key: `${e.fromId}-${e.toId}`, d, done: bothDone };
+    }).filter(Boolean) as { key: string; d: string; done: boolean }[];
+  }, [rects, edges, agentMap]);
+
+  const LAYER_GAP = 28;
+
+  return (
+    <div ref={wrapperRef} className="relative">
+      {/* SVG edge overlay */}
+      <svg
+        style={{
+          position: "absolute",
+          top: 0,
+          left: 0,
+          width: "100%",
+          height: wrapperH || "100%",
+          pointerEvents: "none",
+          overflow: "visible",
+        }}
+      >
+        <defs>
+          <marker
+            id="dag-arrow"
+            viewBox="0 0 6 6"
+            refX="6"
+            refY="3"
+            markerWidth="5"
+            markerHeight="5"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 6 3 L 0 6 Z" fill="var(--color-border)" />
+          </marker>
+          <marker
+            id="dag-arrow-done"
+            viewBox="0 0 6 6"
+            refX="6"
+            refY="3"
+            markerWidth="5"
+            markerHeight="5"
+            orient="auto-start-reverse"
+          >
+            <path d="M 0 0 L 6 3 L 0 6 Z" fill="#10B981" opacity="0.5" />
+          </marker>
+        </defs>
+        {paths.map((p) => (
+          <path
+            key={p.key}
+            d={p.d}
+            fill="none"
+            stroke={p.done ? "#10B981" : "var(--color-border)"}
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            opacity={p.done ? 0.45 : 0.6}
+            markerEnd={p.done ? "url(#dag-arrow-done)" : "url(#dag-arrow)"}
+            style={{ transition: "opacity 0.3s, stroke 0.3s" }}
+          />
+        ))}
+      </svg>
+
+      {/* Layer rows */}
+      {layers.map((layer, layerIdx) => (
+        <div
+          key={layerIdx}
+          className="flex flex-wrap gap-2 justify-center"
+          style={{
+            marginTop: layerIdx > 0 ? LAYER_GAP : 0,
+            position: "relative",
+            zIndex: 1,
+          }}
+        >
+          {layer.map((agent) => {
+            const rc = getRoleConfig(agent.role);
+            const phaseColor = getPhaseColor(agent);
+            const displayName = agent.subagentName ?? agent.subagentId.slice(0, 8);
+            return (
+              <div
+                key={agent.subagentId}
+                ref={(el) => {
+                  if (el) nodeRefs.current.set(agent.subagentId, el);
+                  else nodeRefs.current.delete(agent.subagentId);
+                }}
+                className="flex items-center gap-1.5 pl-0 pr-2 py-1 rounded-md text-[10px]"
+                style={{
+                  minWidth: 72,
+                  maxWidth: 120,
+                  border: "1px solid var(--color-border)",
+                  borderLeft: `3px solid ${phaseColor}`,
+                  backgroundColor: `${phaseColor}0F`,
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                  opacity: 1,
+                  transform: "translateY(0)",
+                  transition: "opacity 0.3s ease-out, transform 0.3s ease-out, background-color 0.3s",
+                  transitionDelay: `${layerIdx * 80}ms`,
+                }}
+                title={`${displayName}\n${agent.dependsOn?.length ? `Depends on: ${agent.dependsOn.join(", ")}` : "No dependencies"}`}
+              >
+                <span className="pl-1.5 shrink-0" style={{ color: rc?.color }}>{rc?.icon ?? "\u{1F916}"}</span>
+                <span
+                  className="truncate font-medium leading-tight"
+                  style={{ color: phaseColor, maxWidth: 72 }}
+                >
+                  {displayName}
+                </span>
+                <span
+                  className="w-1.5 h-1.5 rounded-full shrink-0 ml-auto"
+                  style={{
+                    backgroundColor: phaseColor,
+                    boxShadow: agent.phase === "started" ? `0 0 5px ${phaseColor}` : "none",
+                    animation: agent.phase === "started" ? "dag-pulse 1.5s ease-in-out infinite" : "none",
+                  }}
+                />
+              </div>
+            );
+          })}
+        </div>
+      ))}
+
+      {/* Pulse animation for active nodes */}
+      <style>{`
+        @keyframes dag-pulse {
+          0%, 100% { opacity: 1; box-shadow: 0 0 4px currentColor; }
+          50% { opacity: 0.5; box-shadow: 0 0 8px currentColor; }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+/* ── Main TeamPanel ── */
 export default function TeamPanel({ streamingSubagents, historicalSubagents, pendingApprovals, onApproval, processingApprovals: externalProcessing, conversationId, onClose }: Props) {
-  // Use shared processingApprovals from parent if available, otherwise local fallback
   const [localProcessing, setLocalProcessing] = useState<Set<string>>(new Set());
   const processingApprovals = externalProcessing ?? localProcessing;
 
@@ -47,7 +246,7 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
   ];
 
   // Group by role
-  const roleGroups = new Map<AgentRole | "unknown", SubagentInfo[]>();
+  const roleGroups = new Map<string, SubagentInfo[]>();
   for (const agent of allAgents) {
     const key = agent.role ?? "unknown";
     const list = roleGroups.get(key) ?? [];
@@ -59,20 +258,93 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
   const totalCount = allAgents.length;
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
-  const roles: (AgentRole | "unknown")[] = ["planner", "coder", "reviewer", "tester", "unknown"];
+  const roles: string[] = [...new Set(allAgents.map((a) => a.role ?? "unknown"))];
+
+  // Extract historical approval records from stored subagent logs
+  const historicalApprovals = useMemo(() => {
+    const records: (ApprovalLog & { subagentId: string; subagentName?: string; role?: string })[] = [];
+    const pendingIds = new Set(pendingApprovals.map((p) => p.requestId));
+    for (const s of historicalSubagents) {
+      if (!s.approvalLogs?.length) continue;
+      for (const a of s.approvalLogs) {
+        // skip any that are still pending (already shown in pending section)
+        if (pendingIds.has(a.requestId)) continue;
+        records.push({ ...a, subagentId: s.subagentId, subagentName: s.subagentName, role: s.role });
+      }
+    }
+    return records;
+  }, [historicalSubagents, pendingApprovals]);
+
+  // Compute pipeline data
+  const pipelineData = useMemo(() => {
+    if (totalCount === 0) return null;
+
+    const hasDeps = allAgents.some((a) => {
+      const full = [...streamingSubagents, ...historicalSubagents];
+      const match = full.find((f) => f.subagentId === a.subagentId);
+      return match && "dependsOn" in match && Array.isArray((match as { dependsOn?: string[] }).dependsOn) && ((match as { dependsOn?: string[] }).dependsOn!).length > 0;
+    });
+    if (!hasDeps && totalCount <= 1) return null;
+
+    // Merge full info for dependsOn
+    const fullAgents: FullAgent[] = allAgents.map((a) => {
+      const streaming = streamingSubagents.find((s) => s.subagentId === a.subagentId);
+      const historical = historicalSubagents.find((s) => s.subagentId === a.subagentId);
+      const deps = streaming?.dependsOn ?? (historical as { dependsOn?: string[] })?.dependsOn;
+      return { ...a, dependsOn: deps };
+    });
+
+    // Topological layers
+    const placed = new Set<string>();
+    const layers: FullAgent[][] = [];
+    const remainingSet = new Set(fullAgents.map((a) => a.subagentId));
+    const agentMap = new Map(fullAgents.map((a) => [a.subagentId, a]));
+
+    while (remainingSet.size > 0) {
+      const layer: FullAgent[] = [];
+      for (const id of remainingSet) {
+        const a = agentMap.get(id)!;
+        const deps = a.dependsOn ?? [];
+        if (deps.length === 0 || deps.every((d) => placed.has(d))) {
+          layer.push(a);
+        }
+      }
+      if (layer.length === 0) {
+        layers.push(Array.from(remainingSet).map((id) => agentMap.get(id)!));
+        break;
+      }
+      layers.push(layer);
+      for (const a of layer) {
+        placed.add(a.subagentId);
+        remainingSet.delete(a.subagentId);
+      }
+    }
+
+    // Build edges
+    const edges: DagEdge[] = [];
+    for (const agent of fullAgents) {
+      for (const depId of agent.dependsOn ?? []) {
+        if (agentMap.has(depId)) {
+          edges.push({ fromId: depId, toId: agent.subagentId });
+        }
+      }
+    }
+
+    return { layers, edges, agentMap };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalCount, streamingSubagents, historicalSubagents]);
 
   const handleApproval = async (requestId: string, approved: boolean) => {
     if (onApproval) {
       onApproval(requestId, approved);
       return;
     }
-    // Fallback: local handling
     setLocalProcessing((prev) => new Set(prev).add(requestId));
     try {
       const { submitApproval } = await import("../api");
       await submitApproval(conversationId, requestId, approved);
     } catch {
-      // The approval will be removed from pendingApprovals via the stream event
+      // removed via stream event
     } finally {
       setLocalProcessing((prev) => {
         const next = new Set(prev);
@@ -118,107 +390,17 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
           </div>
         )}
 
-        {/* Pipeline Visualization */}
-        {totalCount > 0 && (() => {
-          // Build adjacency: nodes + edges from dependsOn
-          const hasDeps = allAgents.some((a) => {
-            const full = [...streamingSubagents, ...historicalSubagents];
-            const match = full.find((f) => f.subagentId === a.subagentId);
-            return match && "dependsOn" in match && Array.isArray((match as { dependsOn?: string[] }).dependsOn) && ((match as { dependsOn?: string[] }).dependsOn!).length > 0;
-          });
-          if (!hasDeps && totalCount <= 1) return null;
-
-          // Merge full info for dependsOn
-          type FullAgent = SubagentInfo & { dependsOn?: string[] };
-          const fullAgents: FullAgent[] = allAgents.map((a) => {
-            const streaming = streamingSubagents.find((s) => s.subagentId === a.subagentId);
-            const historical = historicalSubagents.find((s) => s.subagentId === a.subagentId);
-            const deps = streaming?.dependsOn ?? (historical as { dependsOn?: string[] })?.dependsOn;
-            return { ...a, dependsOn: deps };
-          });
-
-          // Topological layers: agents with no deps first
-          const placed = new Set<string>();
-          const layers: FullAgent[][] = [];
-          const remainingSet = new Set(fullAgents.map((a) => a.subagentId));
-          const agentMap = new Map(fullAgents.map((a) => [a.subagentId, a]));
-
-          while (remainingSet.size > 0) {
-            const layer: FullAgent[] = [];
-            for (const id of remainingSet) {
-              const a = agentMap.get(id)!;
-              const deps = a.dependsOn ?? [];
-              if (deps.length === 0 || deps.every((d) => placed.has(d))) {
-                layer.push(a);
-              }
-            }
-            if (layer.length === 0) {
-              // Circular or missing deps — dump rest into last layer
-              layers.push(Array.from(remainingSet).map((id) => agentMap.get(id)!));
-              break;
-            }
-            layers.push(layer);
-            for (const a of layer) {
-              placed.add(a.subagentId);
-              remainingSet.delete(a.subagentId);
-            }
-          }
-
-          return (
-            <div className="space-y-1.5">
-              <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">Pipeline</h4>
-              <div className="space-y-0">
-                {layers.map((layer, layerIdx) => (
-                  <div key={layerIdx}>
-                    {/* Connection line from previous layer */}
-                    {layerIdx > 0 && (
-                      <div className="flex justify-center py-0.5">
-                        <div className="w-px h-4 bg-[var(--color-border)]" />
-                      </div>
-                    )}
-                    {/* Layer nodes */}
-                    <div className="flex flex-wrap gap-1.5 justify-center">
-                      {layer.map((agent) => {
-                        const rc = getRoleConfig(agent.role);
-                        const phaseColor =
-                          agent.phase === "completed" ? "#10B981"
-                          : agent.phase === "failed" ? "#EF4444"
-                          : rc?.color ?? "var(--color-accent)";
-                        const displayName = agent.subagentName ?? agent.subagentId.slice(0, 8);
-                        return (
-                          <div
-                            key={agent.subagentId}
-                            className="flex items-center gap-1 px-2 py-1 rounded-md border text-[10px]"
-                            style={{
-                              borderColor: phaseColor,
-                              backgroundColor: `${phaseColor}10`,
-                            }}
-                            title={`${displayName}\n${agent.dependsOn?.length ? `Depends on: ${agent.dependsOn.join(", ")}` : "No dependencies"}`}
-                          >
-                            <span style={{ color: rc?.color }}>{rc?.icon ?? "\u{1F916}"}</span>
-                            <span
-                              className="max-w-[80px] truncate font-medium"
-                              style={{ color: phaseColor }}
-                            >
-                              {displayName}
-                            </span>
-                            <span
-                              className="w-1.5 h-1.5 rounded-full shrink-0"
-                              style={{
-                                backgroundColor: phaseColor,
-                                boxShadow: agent.phase === "started" ? `0 0 4px ${phaseColor}` : "none",
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          );
-        })()}
+        {/* Pipeline DAG */}
+        {pipelineData && (
+          <div className="space-y-1.5">
+            <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">Pipeline</h4>
+            <PipelineDag
+              layers={pipelineData.layers}
+              edges={pipelineData.edges}
+              agentMap={pipelineData.agentMap}
+            />
+          </div>
+        )}
 
         {/* Team Roster */}
         <div className="space-y-1.5">
@@ -229,15 +411,11 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
           {roles.map((roleKey) => {
             const agents = roleGroups.get(roleKey);
             if (!agents?.length) return null;
-            const config = roleKey !== "unknown" ? ROLE_CONFIG[roleKey] : null;
+            const config = roleKey !== "unknown" ? getRoleConfig(roleKey) : null;
             return (
               <div key={roleKey} className="space-y-1">
                 {agents.map((agent) => {
-                  const rc = getRoleConfig(agent.role);
-                  const phaseColor =
-                    agent.phase === "completed" ? "#10B981"
-                    : agent.phase === "failed" ? "#EF4444"
-                    : rc?.color ?? "var(--color-accent)";
+                  const phaseColor = getPhaseColor(agent);
                   const phaseLabel =
                     agent.phase === "completed" ? "completed"
                     : agent.phase === "failed" ? "failed"
@@ -248,11 +426,9 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                       key={agent.subagentId}
                       className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
                     >
-                      {/* Role icon */}
                       <span className="text-sm shrink-0" style={{ color: config?.color }}>
                         {config?.icon ?? "\u{1F916}"}
                       </span>
-                      {/* Name + role */}
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-medium text-[var(--color-text)] truncate">{displayName}</div>
                         {config && (
@@ -261,7 +437,6 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                           </div>
                         )}
                       </div>
-                      {/* Status dot */}
                       <span className="shrink-0 flex items-center gap-1">
                         <span
                           className="w-2 h-2 rounded-full"
@@ -280,7 +455,7 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
           })}
         </div>
 
-        {/* Pending Approvals */}
+        {/* Approvals */}
         <div className="space-y-1.5">
           <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">
             Approvals
@@ -290,10 +465,11 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
               </span>
             )}
           </h4>
-          {pendingApprovals.length === 0 ? (
-            <p className="text-xs text-[var(--color-text-muted)] italic py-2">No pending approvals</p>
+          {pendingApprovals.length === 0 && historicalApprovals.length === 0 ? (
+            <p className="text-xs text-[var(--color-text-muted)] italic py-2">No approvals</p>
           ) : (
             <div className="space-y-2">
+              {/* Pending approvals – with action buttons */}
               {pendingApprovals.map((approval) => {
                 const isProcessing = processingApprovals.has(approval.requestId);
                 const agentInfo = allAgents.find((a) => a.subagentId === approval.subagentId);
@@ -303,7 +479,6 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                     key={approval.requestId}
                     className="rounded-lg border border-[#F59E0B]/40 bg-[#F59E0B]/5 p-2.5 space-y-2"
                   >
-                    {/* Operation header */}
                     <div className="flex items-start gap-2">
                       <svg
                         width="14"
@@ -329,16 +504,12 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                         </div>
                       </div>
                     </div>
-
-                    {/* Agent info */}
                     {agentInfo && (
                       <div className="flex items-center gap-1 text-[10px] text-[var(--color-text-muted)]">
                         <span style={{ color: rc?.color }}>{rc?.icon ?? "\u{1F916}"}</span>
                         <span>{agentInfo.subagentName ?? agentInfo.subagentId}</span>
                       </div>
                     )}
-
-                    {/* Action buttons */}
                     <div className="flex gap-2">
                       <button
                         type="button"
@@ -356,6 +527,45 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                       >
                         {isProcessing ? "..." : "Reject"}
                       </button>
+                    </div>
+                  </div>
+                );
+              })}
+              {/* Historical approvals – read-only with result badge */}
+              {historicalApprovals.map((record) => {
+                const rc = getRoleConfig(record.role);
+                const isApproved = record.approved;
+                return (
+                  <div
+                    key={record.requestId}
+                    className={`rounded-lg border p-2.5 space-y-1 ${
+                      isApproved
+                        ? "border-[#10B981]/30 bg-[#10B981]/5"
+                        : "border-[#EF4444]/30 bg-[#EF4444]/5"
+                    }`}
+                  >
+                    <div className="flex items-start gap-2">
+                      <span
+                        className={`shrink-0 mt-0.5 text-[11px] font-semibold px-1.5 py-0.5 rounded ${
+                          isApproved
+                            ? "bg-[#10B981]/15 text-[#10B981]"
+                            : "bg-[#EF4444]/15 text-[#EF4444]"
+                        }`}
+                      >
+                        {isApproved ? "Approved" : "Rejected"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-xs font-medium text-[var(--color-text)]">
+                          {record.operationType}
+                        </div>
+                        <div className="text-[10px] text-[var(--color-text-muted)] mt-0.5 break-all">
+                          {record.operationDescription}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 text-[10px] text-[var(--color-text-muted)]">
+                      <span style={{ color: rc?.color }}>{rc?.icon ?? "\u{1F916}"}</span>
+                      <span>{record.subagentName ?? record.subagentId}</span>
                     </div>
                   </div>
                 );

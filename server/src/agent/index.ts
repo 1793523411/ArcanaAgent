@@ -14,7 +14,8 @@ import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { backgroundManager } from "./backgroundManager.js";
 import { resolve } from "path";
 import { z } from "zod";
-import { ROLE_CONFIGS, type AgentRole } from "./roles.js";
+import { getAgentConfig, isValidTeamAgent, getTeamAgents, type AgentRole } from "./roles.js";
+import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
@@ -34,6 +35,7 @@ interface AgentExecutionOptions {
   subagentDepth?: number;
   conversationMode?: ConversationMode;
   conversationId?: string;
+  teamId?: string;
   subagentId?: string;
   subagentSystemPromptOverride?: string;
   subagentRole?: AgentRole;
@@ -117,6 +119,8 @@ const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant wit
 ## Tool Usage Strategy
 You have access to built-in tools (run_command, read_file, calculator, get_time, etc.) and MCP tools from external servers (listed below if connected).
 
+**CRITICAL: Never output your internal reasoning or planning as text.** Do NOT write things like "I need to call tool X" or "Let me think about which tool to use" — just call the tool directly. Your visible output should only contain information meant for the user, never your own thought process about tool selection or task decomposition.
+
 **When to use tools vs. direct response:**
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
@@ -186,7 +190,13 @@ Each conversation has a dedicated workspace directory. Save ALL generated files 
 - If the user references something not in your available context, acknowledge this honestly and ask for clarification rather than guessing.
 - When the conversation is long, briefly recap relevant context before diving into a complex task.`;
 
-const TEAM_MODE_PROMPT = `
+function buildTeamModePrompt(teamId: string): string {
+  const agents = getTeamAgents(teamId);
+  const team = getTeamDef(teamId);
+  const agentList = agents.map((a) => `  - **${a.id}** (${a.icon} ${a.name}): ${a.description}`).join("\n");
+  const agentIds = agents.map((a) => `\`${a.id}\``).join(", ");
+
+  let prompt = `
 
 ## Team Mode — Orchestrator Role
 You are operating in **team orchestration mode** as the Coordinator. You delegate implementation work to specialized sub-agents via the \`task\` tool.
@@ -196,30 +206,23 @@ You are operating in **team orchestration mode** as the Coordinator. You delegat
 - For **any task that requires tool execution** (running commands, reading/writing files, coding, testing, analysis): you **MUST** delegate via the \`task\` tool. **Do NOT** call run_command, read_file, write_file, etc. yourself.
 - Your job as coordinator: analyze the request → decide if delegation is needed → decompose into tasks → delegate via \`task\` → synthesize results → report to user.
 - When in doubt, delegate. It's better to delegate a simple coding task than to bypass the team workflow.
-- **IMPORTANT: After sub-agents complete, do NOT "fix up" or "continue" their work by calling tools yourself.** If something needs fixing, delegate a NEW sub-agent (e.g., a coder to fix issues, a tester to run tests, a reviewer to check code). The ONLY tools you should call are \`task\` (to delegate) and optionally \`read_file\` (to check results before deciding next steps). Never call run_command or write_file directly.
+- **IMPORTANT: After sub-agents complete, do NOT "fix up" or "continue" their work by calling tools yourself.** If something needs fixing, delegate a NEW sub-agent. The ONLY tools you should call are \`task\` (to delegate) and optionally \`read_file\` (to check results before deciding next steps). Never call run_command or write_file directly.
+
+### Available Team Members
+${agentList}
 
 ### Delegation Rules
-- **Always specify a role** when calling the \`task\` tool: \`planner\`, \`coder\`, \`reviewer\`, or \`tester\`.
-- Choose roles based on the task:
-  - **planner**: decompose complex tasks, analyze dependencies, produce structured plans
-  - **coder**: implement code changes, create files, write features, execute commands
-  - **reviewer**: review code for bugs, security issues, style problems (read-only)
-  - **tester**: run test suites, validate behavior, write test cases
-- For a task like "build X with tests and code review", you should delegate at minimum:
-  1. **coder** to implement the feature
-  2. **tester** (dependsOn coder) to write and run tests
-  3. **reviewer** (dependsOn coder) to review the code
-  - Do NOT write tests or do review yourself — that defeats the purpose of team mode.
+- **Always specify a role** when calling the \`task\` tool. Available roles: ${agentIds}.
+- Choose the most appropriate agent based on the task requirements and each agent's specialization.
+- For complex tasks, decompose them and assign to multiple agents with proper dependencies.
 
 ### Orchestration Patterns
-- **Simple task**: delegate directly to the appropriate role (e.g., coder for a single feature).
-- **Code + Review**: delegate to coder → then reviewer (with \`dependsOn\` referencing coder's ID) → then coder (fix, with \`dependsOn\` referencing reviewer's ID) if issues found.
-- **Full pipeline**: planner → coder (\`dependsOn: [planner_id]\`) → reviewer (\`dependsOn: [coder_id]\`) → coder fix (\`dependsOn: [reviewer_id]\`) → tester (\`dependsOn: [coder_fix_id]\`).
-- **Parallel work**: spawn multiple coders for independent subtasks, then a tester (\`dependsOn: [coder1_id, coder2_id]\`) to validate all.
+- **Simple task**: delegate directly to the appropriate agent.
+- **Pipeline**: delegate sequentially with \`dependsOn\` to chain agent outputs.
+- **Parallel work**: spawn multiple agents for independent subtasks, then a follow-up agent (\`dependsOn: [agent1_id, agent2_id]\`) to validate or synthesize.
 
 ### Context Passing with \`dependsOn\`
 - Each completed sub-agent's result starts with \`[subagentId: xxx] [name: xxx]\`. **Use the exact subagentId or name** in subsequent \`dependsOn\` arrays.
-- Example: if coder returns \`[subagentId: sub_123] [name: 实现解析器]\`, then call reviewer with \`dependsOn: ["sub_123"]\` or \`dependsOn: ["实现解析器"]\`.
 - The system will automatically inject the prior agent's summary into the new agent's context.
 - **You MUST call dependent tasks in separate rounds** (not in the same turn), so you have the subagentId from the prior task's result.
 
@@ -229,8 +232,14 @@ You are operating in **team orchestration mode** as the Coordinator. You delegat
 - Do NOT interleave your own tool calls between sub-agent delegations.
 
 ### Safety
-- Do not execute high-risk refactors directly. First delegate a plan draft, then review and explicitly approve before implementation.
-`;
+- Do not execute high-risk refactors directly. First delegate a plan draft, then review and explicitly approve before implementation.`;
+
+  if (team?.coordinatorPrompt) {
+    prompt += `\n\n### Additional Instructions\n${team.coordinatorPrompt}`;
+  }
+
+  return prompt;
+}
 
 function buildMcpToolsSection(): string {
   const mcpTools = getMcpTools();
@@ -239,9 +248,12 @@ function buildMcpToolsSection(): string {
   return `\n\n## Available MCP Tools\nThe following MCP tools are currently connected and ready to use. Call them directly without asking the user for tool names:\n${lines.join("\n")}`;
 }
 
-function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default"): string {
-  const modePrompt = conversationMode === "team" ? TEAM_MODE_PROMPT : "";
-  return BASE_SYSTEM_PROMPT + modePrompt + buildMcpToolsSection() + (skillContext || getSkillCatalogForAgent());
+function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
+  const modePrompt = conversationMode === "team" ? buildTeamModePrompt(teamId ?? "default") : "";
+  const workspaceSection = workspacePath
+    ? `\n\n## Current Workspace\nYour workspace absolute path is: \`${workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${workspacePath}/filename.ext\`. Never write files to any other location.`
+    : "";
+  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + buildMcpToolsSection() + (skillContext || getSkillCatalogForAgent());
 }
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
@@ -369,16 +381,106 @@ const MAX_TOOL_CALL_ROUNDS_MESSAGE = "(已达到最大工具调用轮次)";
 const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展示文本)";
 const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
 
-function filterToolsByRole(tools: StructuredToolInterface[], role: AgentRole): StructuredToolInterface[] {
-  const config = ROLE_CONFIGS[role];
+/* ── Context-window safeguards ── */
+/** Max characters per single tool result (≈2k tokens). Longer results get truncated. */
+const MAX_SINGLE_TOOL_RESULT_CHARS = 8000;
+/** Soft cap on total character length of all messages before we start pruning old tool results (≈30k tokens). */
+const MAX_CONVERSATION_CHARS = 120_000;
+
+/** Truncate a single tool result string to stay within MAX_SINGLE_TOOL_RESULT_CHARS. */
+function truncateToolResult(result: string): string {
+  if (result.length <= MAX_SINGLE_TOOL_RESULT_CHARS) return result;
+  const omitted = result.length - MAX_SINGLE_TOOL_RESULT_CHARS;
+  // For JSON-like output, keep only the head to avoid breaking structure
+  const looksLikeJson = result.trimStart().startsWith("{") || result.trimStart().startsWith("[");
+  if (looksLikeJson) {
+    return result.slice(0, MAX_SINGLE_TOOL_RESULT_CHARS) + `\n... [truncated ${omitted} chars, output too long]`;
+  }
+  // For plain text, keep head + tail for more context
+  const half = Math.floor(MAX_SINGLE_TOOL_RESULT_CHARS / 2);
+  return `${result.slice(0, half)}\n\n... [truncated ${omitted} chars] ...\n\n${result.slice(-half)}`;
+}
+
+/**
+ * Estimate total character length of a message array (rough proxy for token count).
+ */
+function estimateMessagesChars(messages: BaseMessage[]): number {
+  let total = 0;
+  for (const m of messages) {
+    const c = m.content;
+    if (typeof c === "string") {
+      total += c.length;
+    } else if (Array.isArray(c)) {
+      for (const part of c as unknown[]) {
+        if (typeof part === "string") total += part.length;
+        else if (part && typeof part === "object") {
+          const text = (part as { text?: string }).text;
+          if (typeof text === "string") total += text.length;
+        }
+      }
+    }
+  }
+  return total;
+}
+
+/**
+ * Prune conversation messages when total size exceeds MAX_CONVERSATION_CHARS.
+ * Strategy: compress old ToolMessage contents (keep the most recent ones intact).
+ * We never remove messages — just shorten older tool results to a brief summary.
+ */
+function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
+  const total = estimateMessagesChars(messages);
+  if (total <= MAX_CONVERSATION_CHARS) return messages;
+
+  // Find all ToolMessage indices, newest last
+  const toolIndices: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    if (messages[i]._getType() === "tool") toolIndices.push(i);
+  }
+
+  // Keep the last 4 tool results intact; compress the rest
+  const protectedCount = 4;
+  const compressible = toolIndices.slice(0, Math.max(0, toolIndices.length - protectedCount));
+  if (compressible.length === 0) return messages;
+
+  const cloned = [...messages];
+  let currentTotal = total;
+  for (const idx of compressible) {
+    if (currentTotal <= MAX_CONVERSATION_CHARS) break;
+    const msg = cloned[idx];
+    const content = typeof msg.content === "string" ? msg.content : "";
+    // Build summary and check it's actually shorter before replacing
+    const headLen = Math.min(100, content.length);
+    const tailLen = Math.min(100, Math.max(0, content.length - headLen));
+    const marker = ` ... [pruned ${content.length - headLen - tailLen} chars] ... `;
+    const summaryLen = headLen + marker.length + tailLen;
+    if (content.length <= summaryLen) continue; // pruning wouldn't shrink it
+    const summary = content.slice(0, headLen) + marker + (tailLen > 0 ? content.slice(-tailLen) : "");
+    const toolMsg = msg as ToolMessage;
+    cloned[idx] = new ToolMessage({
+      content: summary,
+      tool_call_id: toolMsg.tool_call_id,
+      name: (toolMsg as unknown as { name?: string }).name,
+    });
+    currentTotal -= (content.length - summary.length);
+  }
+  return cloned;
+}
+
+function filterToolsByRole(tools: StructuredToolInterface[], agentId: string): StructuredToolInterface[] {
+  const config = getAgentConfig(agentId);
   if (!config || config.deniedTools.length === 0) return tools;
   return tools.filter((t) => !config.deniedTools.includes(t.name));
 }
 
-function buildSubagentSystemPrompt(role: AgentRole, skillContext?: string): string {
-  const config = ROLE_CONFIGS[role];
+function buildSubagentSystemPrompt(agentId: string, skillContext?: string, workspacePath?: string): string {
+  const config = getAgentConfig(agentId);
   const base = BASE_SYSTEM_PROMPT + buildMcpToolsSection() + (skillContext || getSkillCatalogForAgent());
-  return base + `\n\n## Role: ${config.displayName}\n${config.systemPromptAddendum}`;
+  const wsSection = workspacePath
+    ? `\n\n## Current Workspace\nYour workspace absolute path is: \`${workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${workspacePath}/filename.ext\`. Never write files to any other location.`
+    : "";
+  if (!config) return base + wsSection;
+  return base + wsSection + `\n\n## Role: ${config.displayName}\n${config.systemPromptAddendum}`;
 }
 
 const HIGH_RISK_COMMAND_PATTERNS = [
@@ -530,6 +632,24 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
   const tools = getAllTools();
   const workspacePath = options?.workspacePath;
   const wrappedTools = tools.map((t) => {
+    if (t.name === "write_file" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: 输出路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "write_file",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
     if (t.name !== "run_command") return t;
     const wrapped = tool(
       async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
@@ -610,7 +730,8 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       if (context.options?.abortSignal?.aborted) {
         return "[aborted] Task cancelled — client disconnected.";
       }
-      const role = (conversationMode === "team" && input.role && input.role in ROLE_CONFIGS)
+      const teamId = context.options?.teamId ?? "default";
+      const role = (conversationMode === "team" && input.role && isValidTeamAgent(input.role, teamId))
         ? (input.role as AgentRole)
         : undefined;
       const dependsOn = Array.isArray(input.dependsOn) ? input.dependsOn.filter((id) => typeof id === "string") : [];
@@ -682,7 +803,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           subagentRole: role,
           subagentId,
           ...(role ? {
-            subagentSystemPromptOverride: buildSubagentSystemPrompt(role, context.skillContext),
+            subagentSystemPromptOverride: buildSubagentSystemPrompt(role, context.skillContext, context.options?.workspacePath),
           } : {}),
           onPlanEvent: (event) => {
             context.options?.onSubagentEvent?.({
@@ -793,11 +914,13 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
     },
     {
       name: "task",
-      description: "Spawn a subagent to perform a subtask. Returns the result prefixed with [subagentId: xxx] [name: xxx] — use these identifiers in dependsOn of subsequent tasks to pass context. In team mode, always specify a role.",
+      description: conversationMode === "team"
+        ? `Spawn a subagent to perform a subtask. Returns the result prefixed with [subagentId: xxx] [name: xxx] — use these identifiers in dependsOn of subsequent tasks to pass context. In team mode, always specify a role from the available team members.`
+        : "Spawn a subagent to perform a subtask. Returns the result prefixed with [subagentId: xxx] [name: xxx] — use these identifiers in dependsOn of subsequent tasks to pass context.",
       schema: z.object({
         prompt: z.string().describe("Subtask instruction for the subagent"),
         role: z.string().optional()
-          .describe("Role specialization for the subagent. In team mode, use one of: planner, coder, reviewer, tester. In default mode this is ignored."),
+          .describe("Agent role ID for the subagent. In team mode, must be one of the available team members. In default mode this is ignored."),
         dependsOn: z.array(z.string()).optional()
           .describe("subagentId or name of previously completed sub-agents whose results should be injected as context."),
       }),
@@ -872,10 +995,27 @@ export function buildAgent(modelId?: string) {
   const model = getModelAdapter(modelId).getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
 
+  const truncateToolNode = async (state: MessagesState) => {
+    const result = await toolNode.invoke(state);
+    return {
+      messages: (result.messages as BaseMessage[]).map((m) => {
+        if (m._getType() === "tool" && typeof m.content === "string") {
+          const truncated = truncateToolResult(m.content);
+          if (truncated !== m.content) {
+            const tm = m as ToolMessage;
+            return new ToolMessage({ content: truncated, tool_call_id: tm.tool_call_id, name: (tm as unknown as { name?: string }).name });
+          }
+        }
+        return m;
+      }),
+    };
+  };
+
   const callModel = async (state: MessagesState) => {
+    const prunedMessages = pruneConversationIfNeeded(state.messages);
     const response = await model.invoke([
       new SystemMessage(buildSystemPrompt(undefined, "default")),
-      ...state.messages,
+      ...prunedMessages,
     ]);
     return { messages: [response] };
   };
@@ -895,7 +1035,7 @@ export function buildAgent(modelId?: string) {
 
   const graph = new StateGraph(MessagesAnnotation)
     .addNode("llmCall", callModel)
-    .addNode("toolNode", toolNode)
+    .addNode("toolNode", truncateToolNode)
     .addEdge(START, "llmCall")
     .addConditionalEdges("llmCall", shouldContinue, ["toolNode", END])
     .addEdge("toolNode", "llmCall");
@@ -910,7 +1050,7 @@ export async function runAgent(
   options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
   const tools = buildRuntimeTools(options, { modelId, skillContext, options });
-  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default"));
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath));
   const adapter = getModelAdapter(modelId);
   const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -920,9 +1060,26 @@ export async function runAgent(
     ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
   ];
 
+  const truncateToolNode = async (state: MessagesState) => {
+    const result = await toolNode.invoke(state);
+    return {
+      messages: (result.messages as BaseMessage[]).map((m) => {
+        if (m._getType() === "tool" && typeof m.content === "string") {
+          const truncated = truncateToolResult(m.content);
+          if (truncated !== m.content) {
+            const tm = m as ToolMessage;
+            return new ToolMessage({ content: truncated, tool_call_id: tm.tool_call_id, name: (tm as unknown as { name?: string }).name });
+          }
+        }
+        return m;
+      }),
+    };
+  };
+
   const callModel = async (state: MessagesState) => {
     const bgMessage = buildBackgroundResultMessage();
-    const response = await model.invoke([systemMessage, ...state.messages, ...(bgMessage ? [bgMessage] : [])]);
+    const prunedMessages = pruneConversationIfNeeded(state.messages);
+    const response = await model.invoke([systemMessage, ...prunedMessages, ...(bgMessage ? [bgMessage] : [])]);
     return { messages: [response] };
   };
 
@@ -939,7 +1096,7 @@ export async function runAgent(
 
   const graph = new StateGraph(MessagesAnnotation)
     .addNode("llmCall", callModel)
-    .addNode("toolNode", toolNode)
+    .addNode("toolNode", truncateToolNode)
     .addEdge(START, "llmCall")
     .addConditionalEdges("llmCall", shouldContinue, ["toolNode", END])
     .addEdge("toolNode", "llmCall")
@@ -957,7 +1114,7 @@ export async function* streamAgentWithTokens(
   skillContext?: string,
   options?: StreamAgentOptions
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
-  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default");
+  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath);
   const systemMessage = new SystemMessage(systemPromptText);
   const adapter = getModelAdapter(modelId);
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
@@ -989,7 +1146,8 @@ export async function* streamAgentWithTokens(
     baseMessages: BaseMessage[],
     reasoningCb: (token: string) => void
   ): Promise<{ content: string; reasoningContent: string; usage?: import("../llm/streamWithReasoning.js").TokenUsage }> => {
-    const first = await adapter.streamSingleTurn(baseMessages, onToken, reasoningCb, [], options?.abortSignal);
+    const pruned = pruneConversationIfNeeded(baseMessages);
+    const first = await adapter.streamSingleTurn(pruned, onToken, reasoningCb, [], options?.abortSignal);
     const firstContent = first.content?.trim() ?? "";
     if (firstContent) {
       return {
@@ -1002,7 +1160,7 @@ export async function* streamAgentWithTokens(
     let lastUsage = first.usage;
     for (let retry = 0; retry < 2; retry++) {
       const attempt = await adapter.streamSingleTurn(
-        [...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)],
+        [...pruned, new HumanMessage(FINAL_ONLY_PROMPT)],
         onToken,
         reasoningCb,
         [],
@@ -1028,6 +1186,7 @@ export async function* streamAgentWithTokens(
     baseMessages: BaseMessage[]
   ): Promise<string> => {
     const modelNoTools = adapter.getLLM();
+    const pruned = pruneConversationIfNeeded(baseMessages);
     const streamOnce = async (msgs: BaseMessage[]) => {
       const stream = await modelNoTools.stream(msgs);
       let content = "";
@@ -1040,10 +1199,10 @@ export async function* streamAgentWithTokens(
       }
       return content;
     };
-    const firstContent = await streamOnce([systemMessage, ...baseMessages]);
+    const firstContent = await streamOnce([systemMessage, ...pruned]);
     if (firstContent.trim()) return firstContent;
     for (let retry = 0; retry < 2; retry++) {
-      const attemptContent = await streamOnce([systemMessage, ...baseMessages, new HumanMessage(FINAL_ONLY_PROMPT)]);
+      const attemptContent = await streamOnce([systemMessage, ...pruned, new HumanMessage(FINAL_ONLY_PROMPT)]);
       if (attemptContent.trim()) return attemptContent;
     }
     return "";
@@ -1083,7 +1242,7 @@ export async function* streamAgentWithTokens(
     } else {
       result = `[error] Unknown tool: ${tc.name}`;
     }
-    return { id: tc.id, name: tc.name, result };
+    return { id: tc.id, name: tc.name, result: truncateToolResult(result) };
   };
 
   const executeToolCalls = async (
@@ -1163,6 +1322,8 @@ export async function* streamAgentWithTokens(
         }
         const bgMessage = buildBackgroundResultMessage();
         if (bgMessage) conversationMessages = [...conversationMessages, bgMessage];
+        // Prune old tool results to stay within context window
+        conversationMessages = pruneConversationIfNeeded(conversationMessages);
         const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools, options?.abortSignal
         );
@@ -1268,6 +1429,8 @@ export async function* streamAgentWithTokens(
     }
     const bgMessage = buildBackgroundResultMessage();
     if (bgMessage) state = [...state, bgMessage];
+    // Prune old tool results to stay within context window
+    state = pruneConversationIfNeeded(state);
     // Wrap LangChain stream with abort signal and per-chunk timeout
     const streamSignal = options?.abortSignal;
     const stream = await model.stream([systemMessage, ...state], streamSignal ? { signal: streamSignal } : undefined);

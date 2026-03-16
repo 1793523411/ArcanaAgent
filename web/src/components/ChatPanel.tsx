@@ -302,42 +302,46 @@ export default function ChatPanel({
               compressing={compressing}
             />
           </div>
-          {mode === "team" && onToggleTeamPanel && (
-            <button
-              onClick={onToggleTeamPanel}
-              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
-                showTeamPanel
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              }`}
-              title="Team Panel"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              Team
-            </button>
-          )}
-          {artifactCount > 0 && onToggleArtifacts && (
-            <button
-              onClick={onToggleArtifacts}
-              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
-                artifactsPanelOpen
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              }`}
-              title="查看产物文件"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-              {artifactCount}
-            </button>
-          )}
+          {(mode === "team" && onToggleTeamPanel) || (artifactCount > 0 && onToggleArtifacts) ? (
+            <div className="shrink-0 mb-1 flex flex-col gap-2">
+              {mode === "team" && onToggleTeamPanel && (
+                <button
+                  onClick={onToggleTeamPanel}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
+                    showTeamPanel
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  }`}
+                  title="Team Panel"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                  Team
+                </button>
+              )}
+              {artifactCount > 0 && onToggleArtifacts && (
+                <button
+                  onClick={onToggleArtifacts}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
+                    artifactsPanelOpen
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  }`}
+                  title="查看产物文件"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  {artifactCount}
+                </button>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

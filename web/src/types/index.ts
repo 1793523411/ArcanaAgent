@@ -1,5 +1,25 @@
 export type ConversationMode = "default" | "team";
-export type AgentRole = "planner" | "coder" | "reviewer" | "tester";
+export type AgentRole = string;
+
+export interface AgentDef {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  systemPrompt: string;
+  deniedTools: string[];
+  builtIn: boolean;
+}
+
+export interface TeamDef {
+  id: string;
+  name: string;
+  description: string;
+  agents: string[];
+  coordinatorPrompt?: string;
+  builtIn: boolean;
+}
 
 export interface ConversationMeta {
   id: string;
@@ -7,6 +27,7 @@ export interface ConversationMeta {
   createdAt: string;
   updatedAt: string;
   mode?: ConversationMode;
+  teamId?: string;
 }
 
 export interface StoredAttachment {
@@ -47,8 +68,8 @@ export interface SubagentLog {
   subagentId: string;
   /** 语义化展示名（由任务 prompt 派生） */
   subagentName?: string;
-  /** 角色类型（team 模式） */
-  role?: AgentRole;
+  /** 角色类型（team 模式，对应 AgentDef ID） */
+  role?: string;
   /** 依赖的已完成子 agent ID（team 模式多轮协作） */
   dependsOn?: string[];
   depth: number;

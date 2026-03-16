@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { z } from "zod";
-import { HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import {
   listConversations,
   createConversation,
@@ -18,6 +18,20 @@ import {
   type ConversationMeta,
   type ConversationMode,
 } from "../storage/index.js";
+import {
+  listAgentDefs,
+  getAgentDef,
+  createAgentDef,
+  updateAgentDef,
+  deleteAgentDef,
+} from "../storage/agentDefs.js";
+import {
+  listTeamDefs,
+  getTeamDef,
+  createTeamDef,
+  updateTeamDef,
+  deleteTeamDef,
+} from "../storage/teamDefs.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
 import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
@@ -25,6 +39,7 @@ import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
 import { approvalManager } from "../agent/approvalManager.js";
+import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
@@ -65,7 +80,7 @@ function buildSkillContext(convId: string): string {
 type PersistedSubagentLog = {
   subagentId: string;
   subagentName?: string;
-  role?: "planner" | "coder" | "reviewer" | "tester";
+  role?: string;
   dependsOn?: string[];
   depth: number;
   prompt: string;
@@ -210,6 +225,7 @@ const conversationModeSchema = z.enum(["default", "team"]);
 const createConversationBodySchema = {
   title: z.string().max(500).optional(),
   mode: conversationModeSchema.optional(),
+  teamId: z.string().max(100).optional(),
 };
 const createConversationBody = z.object(createConversationBodySchema);
 
@@ -235,8 +251,14 @@ export function postConversations(req: Request, res: Response): void {
     }
     const title = parsed.data.title?.trim();
     const mode: ConversationMode = parsed.data.mode ?? "default";
+    const teamId = parsed.data.teamId;
+    // Validate teamId exists when creating a team-mode conversation
+    if (mode === "team" && teamId && !getTeamDef(teamId)) {
+      res.status(400).json({ error: `Team '${teamId}' not found` });
+      return;
+    }
     const config = loadUserConfig();
-    const { id, meta } = createConversation(config.context, title || undefined, mode);
+    const { id, meta } = createConversation(config.context, title || undefined, mode, teamId);
     logConversation("create", id, meta.title);
     res.status(201).json(meta);
   } catch (e) {
@@ -486,6 +508,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let firstPromptTokensForContext: number | null = null;
+  let lastPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
 
@@ -499,6 +522,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       {
         conversationMode,
         conversationId: id,
+        teamId: meta.teamId,
         planningEnabled: config.planning?.enabled ?? true,
         workspacePath,
         abortSignal: abortController.signal,
@@ -519,6 +543,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         const u = part as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         const prompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
         if (firstPromptTokensForContext === null && prompt > 0) firstPromptTokensForContext = prompt;
+        if (prompt > 0) lastPromptTokensForContext = prompt;
         totalPromptTokens += prompt;
         totalCompletionTokens += typeof u.completion_tokens === "number" ? u.completion_tokens : 0;
       }
@@ -631,9 +656,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     const promptTokens = hasRealUsage ? totalPromptTokens : estimateBaseMessageTokens(lcMessages);
     const completionTokens = hasRealUsage ? totalCompletionTokens : estimateTextTokens(streamedContent || "");
     const totalTokens = promptTokens + completionTokens;
-    // contextPromptTokens: 上下文体积（仅第一次 LLM 调用的 prompt），用于展示压缩策略效果
-    // 优先级：真实值（API 返回）> 估算值（本地算法）> 回退到总 promptTokens
-    const contextPromptTokens = firstPromptTokensForContext
+    // contextPromptTokens: 上下文峰值体积（最后一次 LLM 调用的 prompt），反映 agent 运行时的真实上下文占用
+    // 优先级：最后一次真实值 > 第一次真实值 > 估算值 > 回退到总 promptTokens
+    const contextPromptTokens = lastPromptTokensForContext
+      ?? firstPromptTokensForContext
       ?? (typeof contextMeta.estimatedTokens === "number" ? contextMeta.estimatedTokens : undefined)
       ?? promptTokens;
     const usagePayload = { promptTokens, completionTokens, totalTokens };
@@ -720,6 +746,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
     const resultMessages = await runAgent(lcMessages, config.modelId, skillContext, {
       conversationMode,
       conversationId: id,
+      teamId: meta.teamId,
       planningEnabled: config.planning?.enabled ?? true,
       workspacePath,
     });
@@ -730,7 +757,10 @@ export async function postConversationMessageSync(req: Request, res: Response): 
     });
     const lastAi = newStored.filter((m) => m.type === "ai").pop();
     if (lastAi && lastAi.type === "ai") {
-      lastAi.contextUsage = contextUsageBase;
+      lastAi.contextUsage = {
+        ...contextUsageBase,
+        promptTokens: contextMeta.estimatedTokens,
+      };
     }
     appendMessages(id, newStored);
     const lastAiMsg = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -1141,4 +1171,266 @@ export function postApprovalDecision(req: Request, res: Response): void {
     return;
   }
   res.json({ ok: true, requestId, approved: body.approved });
+}
+
+// ─── Agent Defs CRUD ─────────────────────────────────────
+
+export function getAgents(_req: Request, res: Response): void {
+  try {
+    res.json(listAgentDefs());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const agentDefBody = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).default(""),
+  icon: z.string().max(10).default("🤖"),
+  color: z.string().max(20).default("#6B7280"),
+  systemPrompt: z.string().max(5000).default(""),
+  deniedTools: z.array(z.string()).default([]),
+});
+
+export function postAgents(req: Request, res: Response): void {
+  try {
+    const parsed = agentDefBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+      return;
+    }
+    const def = createAgentDef(parsed.data);
+    res.status(201).json(def);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会给你一句话描述，你需要生成一个完整的 Agent 定义。
+
+请严格按照以下 JSON 格式返回（不要包含任何其他文字，只返回 JSON）：
+{
+  "name": "Agent 名称（简短，2-4个字）",
+  "description": "一句话描述该 Agent 的核心职责",
+  "icon": "一个合适的 emoji 图标",
+  "color": "一个十六进制颜色值，如 #3B82F6",
+  "systemPrompt": "详细的系统提示词，定义角色、能力、行为规范（200-500字）",
+  "deniedTools": ["不适合该角色使用的工具列表"]
+}
+
+可选的工具列表（deniedTools 从中选择要禁用的）：
+- run_command: 执行系统命令
+- write_file: 写入文件
+- read_file: 读取文件
+- web_search: 网络搜索
+- calculator: 计算器
+- get_time: 获取时间
+
+注意：
+- systemPrompt 要详细、专业，清晰定义角色边界
+- 根据角色合理禁用不需要的工具（如研究员不需要 write_file）
+- 颜色要有辨识度，不同角色用不同色系`;
+
+export async function generateAgentFromDescription(req: Request, res: Response): Promise<void> {
+  const body = req.body as { description?: string };
+  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  if (!description) {
+    res.status(400).json({ error: "Missing or empty description" });
+    return;
+  }
+
+  try {
+    const config = loadUserConfig();
+    const llm = getLLM(config.modelId);
+    const response = await llm.invoke([
+      new SystemMessage(AGENT_GENERATE_PROMPT),
+      new HumanMessage(description),
+    ]);
+
+    const content = typeof response.content === "string"
+      ? response.content
+      : Array.isArray(response.content)
+        ? response.content.map((c) => ("type" in c && c.type === "text" && typeof c.text === "string") ? c.text : "").join("")
+        : String(response.content);
+
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/(\{[\s\S]*\})/);
+    if (!jsonMatch?.[1]) {
+      res.status(500).json({ error: "Failed to parse LLM response", raw: content });
+      return;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonMatch[1].trim());
+    } catch {
+      res.status(500).json({ error: "LLM 返回的 JSON 格式无效", raw: content });
+      return;
+    }
+    const result = {
+      name: String(parsed.name ?? ""),
+      description: String(parsed.description ?? ""),
+      icon: String(parsed.icon ?? "🤖"),
+      color: String(parsed.color ?? "#6B7280"),
+      systemPrompt: String(parsed.systemPrompt ?? ""),
+      deniedTools: Array.isArray(parsed.deniedTools) ? parsed.deniedTools.map(String) : [],
+    };
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const def = getAgentDef(id);
+  if (!def) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  res.json(def);
+}
+
+export function putAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getAgentDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot edit built-in agent" });
+    return;
+  }
+  const parsed = agentDefBody.partial().safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+    return;
+  }
+  const updated = updateAgentDef(id, parsed.data);
+  if (!updated) {
+    res.status(500).json({ error: "Update failed" });
+    return;
+  }
+  res.json(updated);
+}
+
+export function deleteAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getAgentDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot delete built-in agent" });
+    return;
+  }
+  // Prevent deletion if agent is referenced by any team
+  const teams = listTeamDefs();
+  const referencingTeams = teams.filter((t) => t.agents.includes(id));
+  if (referencingTeams.length > 0) {
+    const names = referencingTeams.map((t) => t.name).join(", ");
+    res.status(400).json({ error: `Cannot delete agent: referenced by team(s) ${names}` });
+    return;
+  }
+  deleteAgentDef(id);
+  res.json({ ok: true });
+}
+
+// ─── Team Defs CRUD ──────────────────────────────────────
+
+export function getTeams(_req: Request, res: Response): void {
+  try {
+    res.json(listTeamDefs());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const teamDefBody = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).default(""),
+  agents: z.array(z.string()).min(1),
+  coordinatorPrompt: z.string().max(5000).optional(),
+});
+
+export function postTeams(req: Request, res: Response): void {
+  try {
+    const parsed = teamDefBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+      return;
+    }
+    // Validate all agent IDs exist
+    for (const agentId of parsed.data.agents) {
+      if (!getAgentDef(agentId)) {
+        res.status(400).json({ error: `Agent '${agentId}' not found` });
+        return;
+      }
+    }
+    const def = createTeamDef(parsed.data);
+    res.status(201).json(def);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const def = getTeamDef(id);
+  if (!def) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  res.json(def);
+}
+
+export function putTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getTeamDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot edit built-in team" });
+    return;
+  }
+  const parsed = teamDefBody.partial().safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+    return;
+  }
+  // Validate agent IDs if provided
+  if (parsed.data.agents) {
+    for (const agentId of parsed.data.agents) {
+      if (!getAgentDef(agentId)) {
+        res.status(400).json({ error: `Agent '${agentId}' not found` });
+        return;
+      }
+    }
+  }
+  const updated = updateTeamDef(id, parsed.data);
+  if (!updated) {
+    res.status(500).json({ error: "Update failed" });
+    return;
+  }
+  res.json(updated);
+}
+
+export function deleteTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getTeamDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot delete built-in team" });
+    return;
+  }
+  deleteTeamDef(id);
+  res.json({ ok: true });
 }

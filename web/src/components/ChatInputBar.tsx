@@ -24,6 +24,9 @@ interface Props {
   onModeChange: (mode: ConversationMode) => void;
   modeLocked?: boolean;
   disabled?: boolean;
+  teams?: Array<{ id: string; name: string }>;
+  teamId?: string;
+  onTeamChange?: (teamId: string) => void;
   contextUsage?: {
     strategy?: "full" | "trim" | "compress";
     percentByWindow?: number;
@@ -64,6 +67,9 @@ export default function ChatInputBar({
   onModeChange,
   modeLocked = false,
   disabled = false,
+  teams = [],
+  teamId,
+  onTeamChange,
   contextUsage = null,
   onCompress,
   compressing = false,
@@ -117,6 +123,7 @@ export default function ChatInputBar({
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
   const modeLabel = mode === "team" ? "Team Mode" : "默认模式";
+  const currentTeam = teams.find((t) => t.id === teamId);
   const supportsImage = currentModel?.supportsImage !== false;
   const strategyLabel = {
     full: "全量上下文",
@@ -337,6 +344,44 @@ export default function ChatInputBar({
               <span className="text-[13px] text-[var(--color-text-muted)] px-2 py-1">
                 {modeLabel}
               </span>
+            )}
+            {mode === "team" && teams.length > 0 && !modeLocked && onTeamChange && (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={loading || disabled}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                  >
+                    <span>👥 {currentTeam?.name ?? "选择 Team"}</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                      <path d="M18 15l-6-6-6 6" />
+                    </svg>
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    side="top"
+                    sideOffset={4}
+                    align="end"
+                    className="min-w-[160px] max-h-[200px] overflow-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-50"
+                  >
+                    {teams.map((t) => (
+                      <DropdownMenu.Item
+                        key={t.id}
+                        onSelect={() => onTeamChange(t.id)}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${t.id === teamId ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        {t.name}
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
             )}
             {models.length > 1 && !loading && !disabled ? (
               <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
