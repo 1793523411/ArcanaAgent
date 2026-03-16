@@ -511,6 +511,60 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let lastPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
+  let resultsSaved = false;
+
+  // 将收集到的消息持久化（正常完成和中途报错都会调用）
+  const saveCollectedResults = (errorMsg?: string) => {
+    if (resultsSaved) return;
+    resultsSaved = true;
+
+    if (pendingToolLogs.length > 0) {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+      if (target) {
+        target.toolLogs = pendingToolLogs;
+        if (!target.content || !target.content.trim()) {
+          target.content = streamedContent.trim() || "(工具已执行)";
+        }
+      }
+    }
+    if (latestPlan?.steps?.length) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") target.plan = latestPlan;
+    }
+    const subagentLogs = buildSubagentLogs(subagentEvents);
+    if (subagentLogs.length > 0) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") target.subagents = subagentLogs;
+    }
+    const toStore = collectedStored.filter((m) => {
+      if (m.type !== "ai") return true;
+      if (m.toolLogs && m.toolLogs.length > 0) return true;
+      if (m.plan && m.plan.steps.length > 0) return true;
+      if (m.subagents && m.subagents.length > 0) return true;
+      return typeof m.content === "string" && m.content.trim().length > 0;
+    });
+    const hasContent = streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0;
+    if (toStore.filter((m) => m.type === "ai").length === 0 && hasContent) {
+      const content = errorMsg
+        ? `${streamedContent.trim() || "(执行中断)"}\n\n> ⚠️ 执行出错: ${errorMsg}`
+        : (streamedContent.trim() || "(工具已执行)");
+      toStore.push({
+        type: "ai",
+        content,
+        ...(config.modelId ? { modelId: config.modelId } : {}),
+        ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
+        ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
+        ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
+        ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+      });
+    } else if (errorMsg) {
+      const lastAi = toStore.filter((m) => m.type === "ai").pop();
+      if (lastAi) lastAi.content = (lastAi.content || "").trimEnd() + `\n\n> ⚠️ 执行出错: ${errorMsg}`;
+    }
+    if (toStore.length > 0) appendMessages(id, toStore);
+    return subagentLogs;
+  };
 
   try {
     for await (const chunk of streamAgentWithTokens(
@@ -674,6 +728,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     if (toStore.length > 0) {
       appendMessages(id, toStore);
     }
+    resultsSaved = true;
     writeImmediate(
       "data: " + JSON.stringify({ type: "usage", ...usagePayload, context: { ...contextUsageBase, promptTokens: contextPromptTokens } }) + "\n\n",
     );
@@ -687,7 +742,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     });
   } catch (e) {
     flushNow();
+    const errMsg = e instanceof Error ? e.message : String(e);
     logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
+    // 保存已完成的部分结果，避免刷新后消息丢失
+    try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
     res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
   } finally {
     if (flushTimer !== null) clearTimeout(flushTimer);

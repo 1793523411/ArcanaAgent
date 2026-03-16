@@ -17,6 +17,7 @@ import { z } from "zod";
 import { getAgentConfig, isValidTeamAgent, getTeamAgents, type AgentRole } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
+import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 export type ConversationMode = "default" | "team";
@@ -382,10 +383,12 @@ const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展�
 const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
 
 /* ── Context-window safeguards ── */
-/** Max characters per single tool result (≈2k tokens). Longer results get truncated. */
-const MAX_SINGLE_TOOL_RESULT_CHARS = 8000;
-/** Soft cap on total character length of all messages before we start pruning old tool results (≈30k tokens). */
-const MAX_CONVERSATION_CHARS = 120_000;
+/** Max characters per single tool result. Longer results get truncated. */
+const MAX_SINGLE_TOOL_RESULT_CHARS = 5000;
+/** Soft cap on total tokens of all messages before we start pruning old tool results.
+ *  Kept well below the model's context window to leave room for tool definitions and output tokens.
+ *  Uses proper token estimation (handles CJK text correctly). */
+const MAX_CONVERSATION_TOKENS = 60_000;
 
 /** Truncate a single tool result string to stay within MAX_SINGLE_TOOL_RESULT_CHARS. */
 function truncateToolResult(result: string): string {
@@ -402,37 +405,17 @@ function truncateToolResult(result: string): string {
 }
 
 /**
- * Estimate total character length of a message array (rough proxy for token count).
- */
-function estimateMessagesChars(messages: BaseMessage[]): number {
-  let total = 0;
-  for (const m of messages) {
-    const c = m.content;
-    if (typeof c === "string") {
-      total += c.length;
-    } else if (Array.isArray(c)) {
-      for (const part of c as unknown[]) {
-        if (typeof part === "string") total += part.length;
-        else if (part && typeof part === "object") {
-          const text = (part as { text?: string }).text;
-          if (typeof text === "string") total += text.length;
-        }
-      }
-    }
-  }
-  return total;
-}
-
-/**
- * Prune conversation messages when total size exceeds MAX_CONVERSATION_CHARS.
- * Strategy: compress old ToolMessage contents (keep the most recent ones intact).
- * We never remove messages — just shorten older tool results to a brief summary.
+ * Prune conversation messages when total token count exceeds MAX_CONVERSATION_TOKENS.
+ * Strategy:
+ *   1. Compress old ToolMessage contents (keep the most recent ones intact).
+ *   2. If still over limit, truncate tool_call args inside old AIMessages.
+ * We never remove messages entirely.
  */
 function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
-  const total = estimateMessagesChars(messages);
-  if (total <= MAX_CONVERSATION_CHARS) return messages;
+  const total = estimateBaseMessageTokens(messages);
+  if (total <= MAX_CONVERSATION_TOKENS) return messages;
 
-  // Find all ToolMessage indices, newest last
+  // --- Pass 1: compress old ToolMessage contents ---
   const toolIndices: number[] = [];
   for (let i = 0; i < messages.length; i++) {
     if (messages[i]._getType() === "tool") toolIndices.push(i);
@@ -441,20 +424,17 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
   // Keep the last 4 tool results intact; compress the rest
   const protectedCount = 4;
   const compressible = toolIndices.slice(0, Math.max(0, toolIndices.length - protectedCount));
-  if (compressible.length === 0) return messages;
-
   const cloned = [...messages];
   let currentTotal = total;
+
   for (const idx of compressible) {
-    if (currentTotal <= MAX_CONVERSATION_CHARS) break;
+    if (currentTotal <= MAX_CONVERSATION_TOKENS) break;
     const msg = cloned[idx];
     const content = typeof msg.content === "string" ? msg.content : "";
-    // Build summary and check it's actually shorter before replacing
     const headLen = Math.min(100, content.length);
     const tailLen = Math.min(100, Math.max(0, content.length - headLen));
     const marker = ` ... [pruned ${content.length - headLen - tailLen} chars] ... `;
-    const summaryLen = headLen + marker.length + tailLen;
-    if (content.length <= summaryLen) continue; // pruning wouldn't shrink it
+    if (content.length <= headLen + marker.length + tailLen) continue;
     const summary = content.slice(0, headLen) + marker + (tailLen > 0 ? content.slice(-tailLen) : "");
     const toolMsg = msg as ToolMessage;
     cloned[idx] = new ToolMessage({
@@ -462,8 +442,36 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
       tool_call_id: toolMsg.tool_call_id,
       name: (toolMsg as unknown as { name?: string }).name,
     });
-    currentTotal -= (content.length - summary.length);
+    currentTotal = estimateBaseMessageTokens(cloned);
   }
+
+  if (currentTotal <= MAX_CONVERSATION_TOKENS) return cloned;
+
+  // --- Pass 2: truncate tool_call args inside old AIMessages ---
+  // Keep the last 4 AI messages intact; truncate args in earlier ones.
+  const aiIndices: number[] = [];
+  for (let i = 0; i < cloned.length; i++) {
+    if (cloned[i]._getType() === "ai") aiIndices.push(i);
+  }
+  const compressibleAi = aiIndices.slice(0, Math.max(0, aiIndices.length - 4));
+  for (const idx of compressibleAi) {
+    if (currentTotal <= MAX_CONVERSATION_TOKENS) break;
+    const msg = cloned[idx] as AIMessage;
+    const toolCalls = (msg as unknown as { tool_calls?: Array<{ id: string; name: string; args: unknown }> }).tool_calls;
+    if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
+    type RawToolCall = { id: string; name: string; args: Record<string, unknown>; type?: "tool_call" };
+    const truncatedCalls = (toolCalls as RawToolCall[]).map((tc) => {
+      const argStr = JSON.stringify(tc.args ?? {});
+      if (argStr.length <= 200) return tc;
+      return { ...tc, args: { _truncated: argStr.slice(0, 200) + "... [truncated]" } };
+    });
+    cloned[idx] = new AIMessage({
+      content: typeof msg.content === "string" ? msg.content : "",
+      tool_calls: truncatedCalls,
+    });
+    currentTotal = estimateBaseMessageTokens(cloned);
+  }
+
   return cloned;
 }
 
