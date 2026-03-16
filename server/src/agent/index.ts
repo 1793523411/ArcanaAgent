@@ -218,10 +218,10 @@ You are operating in **team orchestration mode** as the Coordinator. You delegat
 - **Parallel work**: spawn multiple coders for independent subtasks, then a tester (\`dependsOn: [coder1_id, coder2_id]\`) to validate all.
 
 ### Context Passing with \`dependsOn\`
-- After each sub-agent completes, note its **subagentId** from the result.
-- When a subsequent sub-agent needs context from a prior one, pass the prior agent's ID in the \`dependsOn\` array.
+- Each completed sub-agent's result starts with \`[subagentId: xxx] [name: xxx]\`. **Use the exact subagentId or name** in subsequent \`dependsOn\` arrays.
+- Example: if coder returns \`[subagentId: sub_123] [name: 实现解析器]\`, then call reviewer with \`dependsOn: ["sub_123"]\` or \`dependsOn: ["实现解析器"]\`.
 - The system will automatically inject the prior agent's summary into the new agent's context.
-- This creates an explicit dependency chain, enabling multi-round collaboration.
+- **You MUST call dependent tasks in separate rounds** (not in the same turn), so you have the subagentId from the prior task's result.
 
 ### Progress Reporting
 - After each sub-agent completes, briefly summarize their output and decide the next delegation.
@@ -620,12 +620,23 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       if (dependsOn.length > 0) {
         const contextParts: string[] = [];
         const missingDeps: string[] = [];
-        for (const depId of dependsOn) {
-          const result = subagentResults.get(depId);
+        for (const depRef of dependsOn) {
+          // Support lookup by subagentId OR by subagentName
+          let result = subagentResults.get(depRef);
+          if (!result) {
+            // Try matching by name (case-insensitive)
+            const depRefLower = depRef.toLowerCase();
+            for (const [id, r] of subagentResults.entries()) {
+              if (r.name.toLowerCase() === depRefLower || id.startsWith(depRef)) {
+                result = r;
+                break;
+              }
+            }
+          }
           if (result) {
-            contextParts.push(`### Context from: ${result.name} (${depId})\n${result.summary}`);
+            contextParts.push(`### Context from: ${result.name}\n${result.summary}`);
           } else {
-            missingDeps.push(depId);
+            missingDeps.push(depRef);
           }
         }
         if (missingDeps.length > 0) {
@@ -761,7 +772,8 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           prompt,
           summary,
         });
-        return summary;
+        // Return structured result so coordinator knows the subagentId for dependsOn references
+        return `[subagentId: ${subagentId}] [name: ${subagentName}] [role: ${role ?? "general"}]\n\n${summary}`;
       } catch (error) {
         if (timeoutTimer) clearTimeout(timeoutTimer);
         const errText = error instanceof Error ? error.message : String(error);
@@ -781,13 +793,13 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
     },
     {
       name: "task",
-      description: "Spawn a subagent with isolated context and return only its final summary. In team mode, specify a role to assign specialized capabilities. Use dependsOn to pass context from completed sub-agents.",
+      description: "Spawn a subagent to perform a subtask. Returns the result prefixed with [subagentId: xxx] [name: xxx] — use these identifiers in dependsOn of subsequent tasks to pass context. In team mode, always specify a role.",
       schema: z.object({
         prompt: z.string().describe("Subtask instruction for the subagent"),
-        role: z.enum(["planner", "coder", "reviewer", "tester"]).optional()
-          .describe("Role specialization for the subagent (team mode). Determines system prompt and available tools."),
+        role: z.string().optional()
+          .describe("Role specialization for the subagent. In team mode, use one of: planner, coder, reviewer, tester. In default mode this is ignored."),
         dependsOn: z.array(z.string()).optional()
-          .describe("IDs of previously completed sub-agents whose results should be injected as context for this task."),
+          .describe("subagentId or name of previously completed sub-agents whose results should be injected as context."),
       }),
     }
   );
