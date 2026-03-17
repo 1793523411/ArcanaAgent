@@ -521,6 +521,8 @@ export function useSendMessage(options: {
         },
         () => {
           delete abortControllersRef.current[convId];
+          // Don't clear streaming state yet — keep StreamingBubble visible
+          // until persisted messages are fetched, to avoid a flash of empty content.
           setConversationState(convId, (prev) => ({
             ...prev,
             loading: false,
@@ -535,6 +537,9 @@ export function useSendMessage(options: {
           getMessages(convId)
             .then((list) => {
               const arr = Array.isArray(list) ? list : [];
+              // Update messages first, then clear streaming state in the same
+              // React batch so the UI transitions directly from streaming to
+              // persisted messages without a blank frame.
               setMessages((prev) => (arr.length > 0 ? arr : prev));
               clearConversationState(convId);
             })

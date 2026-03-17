@@ -509,8 +509,8 @@ export default function AgentTeamPanel({ onClose }: Props) {
                 </div>
               )}
 
-              {/* Agent list */}
-              {agents.map((agent) => (
+              {/* Agent list — hidden when editing/creating */}
+              {!creatingAgent && !editingAgentId && agents.map((agent) => (
                 <div
                   key={agent.id}
                   className="rounded-xl p-3 flex items-start gap-3"
@@ -587,8 +587,8 @@ export default function AgentTeamPanel({ onClose }: Props) {
                 </button>
               )}
 
-              {/* Team list */}
-              {teams.map((team) => {
+              {/* Team list — hidden when editing/creating */}
+              {!creatingTeam && !editingTeamId && teams.map((team) => {
                 const teamAgents = team.agents.map((id) => agents.find((a) => a.id === id)).filter(Boolean) as AgentDef[];
                 return (
                   <div

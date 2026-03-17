@@ -61,6 +61,29 @@ function convId(req: Request): string {
   return Array.isArray(id) ? id[0] ?? "" : id;
 }
 
+function isTokenLimitErrorMessage(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes("max message tokens") ||
+    text.includes("context length") ||
+    text.includes("context_length_exceeded") ||
+    text.includes("maximum context length") ||
+    text.includes("too many tokens") ||
+    text.includes("total tokens")
+  );
+}
+
+function buildStreamErrorPayload(message: string): Record<string, unknown> {
+  if (isTokenLimitErrorMessage(message)) {
+    return {
+      error: "上下文过长导致模型拒绝请求。系统已自动裁剪子任务结果与对话上下文，请重试一次；若仍失败，请减少单次子任务产出。",
+      code: "TOKEN_LIMIT_EXCEEDED",
+      details: message,
+    };
+  }
+  return { error: message };
+}
+
 function buildSkillContext(convId: string): string {
   const workspace = ensureWorkspace(convId);
   const existingArtifacts = listArtifacts(convId);
@@ -542,6 +565,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      // Keep AI messages that carry tool_calls — dropping them would orphan
+      // the corresponding ToolMessages and break the message sequence.
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
     const hasContent = streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0;
@@ -692,6 +718,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
     if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0)) {
@@ -746,7 +773,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
     // 保存已完成的部分结果，避免刷新后消息丢失
     try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
-    res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
+    res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
   } finally {
     if (flushTimer !== null) clearTimeout(flushTimer);
     res.write("data: [DONE]\n\n");

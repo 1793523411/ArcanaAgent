@@ -18,6 +18,7 @@ import { getAgentConfig, isValidTeamAgent, getTeamAgents, type AgentRole } from 
 import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
+import { getModelContextWindow } from "../config/models.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 export type ConversationMode = "default" | "team";
@@ -382,38 +383,48 @@ const MAX_TOOL_CALL_ROUNDS_MESSAGE = "(已达到最大工具调用轮次)";
 const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展示文本)";
 const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
 
-/* ── Context-window safeguards ── */
-/** Max characters per single tool result. Longer results get truncated. */
 const MAX_SINGLE_TOOL_RESULT_CHARS = 5000;
-/** Soft cap on total tokens of all messages before we start pruning old tool results.
- *  Kept well below the model's context window to leave room for tool definitions and output tokens.
- *  Uses proper token estimation (handles CJK text correctly). */
+/** Per-task result cap: 3500 chars ≈ 900 tokens — enough for a meaningful summary */
+const MAX_TASK_TOOL_RESULT_CHARS = 3500;
+/** DependsOn context cap per dependency */
+const MAX_DEPENDS_ON_SUMMARY_CHARS = 2000;
+const MIN_CONVERSATION_TOKENS_CAP = 8000;
+const CONVERSATION_TOKEN_CAP_RATIO = 0.55;
 const MAX_CONVERSATION_TOKENS = 60_000;
 
-/** Truncate a single tool result string to stay within MAX_SINGLE_TOOL_RESULT_CHARS. */
-function truncateToolResult(result: string): string {
-  if (result.length <= MAX_SINGLE_TOOL_RESULT_CHARS) return result;
-  const omitted = result.length - MAX_SINGLE_TOOL_RESULT_CHARS;
-  // For JSON-like output, keep only the head to avoid breaking structure
+function truncateToolResult(result: string, maxChars = MAX_SINGLE_TOOL_RESULT_CHARS): string {
+  if (result.length <= maxChars) return result;
+  const omitted = result.length - maxChars;
   const looksLikeJson = result.trimStart().startsWith("{") || result.trimStart().startsWith("[");
   if (looksLikeJson) {
-    return result.slice(0, MAX_SINGLE_TOOL_RESULT_CHARS) + `\n... [truncated ${omitted} chars, output too long]`;
+    return result.slice(0, maxChars) + `\n... [truncated ${omitted} chars, output too long]`;
   }
-  // For plain text, keep head + tail for more context
-  const half = Math.floor(MAX_SINGLE_TOOL_RESULT_CHARS / 2);
+  const half = Math.floor(maxChars / 2);
   return `${result.slice(0, half)}\n\n... [truncated ${omitted} chars] ...\n\n${result.slice(-half)}`;
 }
 
+function resolveConversationTokenCap(modelId?: string): number {
+  let contextWindow: number;
+  try {
+    contextWindow = getModelContextWindow(modelId);
+  } catch {
+    // Config file read/parse failure — fall back to a safe default
+    contextWindow = 128000;
+  }
+  const dynamicCap = Math.floor(contextWindow * CONVERSATION_TOKEN_CAP_RATIO);
+  return Math.max(MIN_CONVERSATION_TOKENS_CAP, Math.min(MAX_CONVERSATION_TOKENS, dynamicCap));
+}
+
 /**
- * Prune conversation messages when total token count exceeds MAX_CONVERSATION_TOKENS.
+ * Prune conversation messages when total token count exceeds the cap.
  * Strategy:
  *   1. Compress old ToolMessage contents (keep the most recent ones intact).
  *   2. If still over limit, truncate tool_call args inside old AIMessages.
- * We never remove messages entirely.
+ *   3. If still over limit, drop oldest non-system message pairs as last resort.
  */
-function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
+function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MAX_CONVERSATION_TOKENS): BaseMessage[] {
   const total = estimateBaseMessageTokens(messages);
-  if (total <= MAX_CONVERSATION_TOKENS) return messages;
+  if (total <= tokenCap) return messages;
 
   // --- Pass 1: compress old ToolMessage contents ---
   const toolIndices: number[] = [];
@@ -428,7 +439,7 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
   let currentTotal = total;
 
   for (const idx of compressible) {
-    if (currentTotal <= MAX_CONVERSATION_TOKENS) break;
+    if (currentTotal <= tokenCap) break;
     const msg = cloned[idx];
     const content = typeof msg.content === "string" ? msg.content : "";
     const headLen = Math.min(100, content.length);
@@ -445,7 +456,7 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
     currentTotal = estimateBaseMessageTokens(cloned);
   }
 
-  if (currentTotal <= MAX_CONVERSATION_TOKENS) return cloned;
+  if (currentTotal <= tokenCap) return cloned;
 
   // --- Pass 2: truncate tool_call args inside old AIMessages ---
   // Keep the last 4 AI messages intact; truncate args in earlier ones.
@@ -455,7 +466,7 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
   }
   const compressibleAi = aiIndices.slice(0, Math.max(0, aiIndices.length - 4));
   for (const idx of compressibleAi) {
-    if (currentTotal <= MAX_CONVERSATION_TOKENS) break;
+    if (currentTotal <= tokenCap) break;
     const msg = cloned[idx] as AIMessage;
     const toolCalls = (msg as unknown as { tool_calls?: Array<{ id: string; name: string; args: unknown }> }).tool_calls;
     if (!Array.isArray(toolCalls) || toolCalls.length === 0) continue;
@@ -470,6 +481,57 @@ function pruneConversationIfNeeded(messages: BaseMessage[]): BaseMessage[] {
       tool_calls: truncatedCalls,
     });
     currentTotal = estimateBaseMessageTokens(cloned);
+  }
+
+  if (currentTotal <= tokenCap) return cloned;
+
+  // --- Pass 3: drop oldest non-system message groups as last resort ---
+  // We must drop messages in coherent groups to preserve the AI↔Tool pairing
+  // that LLM APIs require (every tool_call must have a matching ToolMessage).
+  // A "group" is: consecutive run of [Human?, AI(with tool_calls), Tool, Tool, ...].
+  serverLogger.warn(
+    `[prune] Pass 1+2 insufficient (${currentTotal} tokens > ${tokenCap} cap). Dropping oldest messages.`
+  );
+  while (currentTotal > tokenCap) {
+    // Find the first non-system message
+    const startIdx = cloned.findIndex((m) => m._getType() !== "system");
+    if (startIdx < 0) break; // only system messages left
+
+    // Determine the group to drop starting at startIdx
+    let endIdx = startIdx; // inclusive
+    const startType = cloned[startIdx]._getType();
+
+    if (startType === "human") {
+      // Drop human + any immediately following AI + its tool messages
+      endIdx = startIdx;
+      if (endIdx + 1 < cloned.length && cloned[endIdx + 1]._getType() === "ai") {
+        endIdx++;
+        // Also drop trailing tool messages that belong to this AI's tool_calls
+        while (endIdx + 1 < cloned.length && cloned[endIdx + 1]._getType() === "tool") {
+          endIdx++;
+        }
+      }
+    } else if (startType === "ai") {
+      // Drop AI + its trailing tool messages
+      endIdx = startIdx;
+      while (endIdx + 1 < cloned.length && cloned[endIdx + 1]._getType() === "tool") {
+        endIdx++;
+      }
+    } else if (startType === "tool") {
+      // Orphaned tool message(s) — drop consecutive tools
+      endIdx = startIdx;
+      while (endIdx + 1 < cloned.length && cloned[endIdx + 1]._getType() === "tool") {
+        endIdx++;
+      }
+    } else {
+      // Unknown type — drop single message
+      endIdx = startIdx;
+    }
+
+    const dropCount = endIdx - startIdx + 1;
+    const droppedTokens = estimateBaseMessageTokens(cloned.slice(startIdx, endIdx + 1));
+    cloned.splice(startIdx, dropCount);
+    currentTotal -= droppedTokens;
   }
 
   return cloned;
@@ -730,6 +792,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
   }
   const conversationMode = context.options?.conversationMode ?? "default";
   const subagentResults = context.subagentResults ?? new Map<string, { name: string; summary: string }>();
+  const MAX_SUBAGENT_RESULTS = 30; // Keep last N results to bound memory
   const taskTool = tool(
     async (input: { prompt: string; role?: string; dependsOn?: string[] }) => {
       const prompt = typeof input?.prompt === "string" ? input.prompt.trim() : "";
@@ -742,14 +805,22 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       const role = (conversationMode === "team" && input.role && isValidTeamAgent(input.role, teamId))
         ? (input.role as AgentRole)
         : undefined;
-      const dependsOn = Array.isArray(input.dependsOn) ? input.dependsOn.filter((id) => typeof id === "string") : [];
+      const dependsOn = Array.isArray(input.dependsOn)
+        ? [...new Set(input.dependsOn.filter((id) => typeof id === "string"))] // deduplicate
+        : [];
 
       // Build context injection from dependsOn references
       let contextInjection = "";
+      const MAX_CONTEXT_INJECTION_CHARS = 12000; // total cap for all dependsOn context
       if (dependsOn.length > 0) {
         const contextParts: string[] = [];
         const missingDeps: string[] = [];
+        let contextChars = 0;
         for (const depRef of dependsOn) {
+          if (contextChars >= MAX_CONTEXT_INJECTION_CHARS) {
+            serverLogger.warn(`[task] dependsOn context injection capped at ${MAX_CONTEXT_INJECTION_CHARS} chars, skipping remaining deps`);
+            break;
+          }
           // Support lookup by subagentId OR by subagentName
           let result = subagentResults.get(depRef);
           if (!result) {
@@ -763,7 +834,11 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
             }
           }
           if (result) {
-            contextParts.push(`### Context from: ${result.name}\n${result.summary}`);
+            const remaining = MAX_CONTEXT_INJECTION_CHARS - contextChars;
+            const perDepCap = Math.min(MAX_DEPENDS_ON_SUMMARY_CHARS, remaining);
+            const part = `### Context from: ${result.name}\n${truncateToolResult(result.summary, perDepCap)}`;
+            contextParts.push(part);
+            contextChars += part.length;
           } else {
             missingDeps.push(depRef);
           }
@@ -799,6 +874,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
       try {
         let summaryText = "";
+        let summaryTruncated = false;
         const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per subagent
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
@@ -825,7 +901,15 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           for await (const chunk of streamAgentWithTokens(
             [new HumanMessage(enrichedPrompt)],
             (token) => {
-              summaryText += token;
+              if (!summaryTruncated) {
+                const next = summaryText + token;
+                if (next.length > MAX_TASK_TOOL_RESULT_CHARS) {
+                  summaryText = next.slice(0, MAX_TASK_TOOL_RESULT_CHARS);
+                  summaryTruncated = true;
+                } else {
+                  summaryText = next;
+                }
+              }
               context.options?.onSubagentEvent?.({
                 kind: "token",
                 subagentId,
@@ -887,9 +971,15 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
         };
         await Promise.race([runSubagent(), timeoutPromise]);
         if (timeoutTimer) clearTimeout(timeoutTimer);
-        const summary = summaryText.trim() || NO_VISIBLE_OUTPUT_MESSAGE;
+        const rawSummary = summaryText.trim() || NO_VISIBLE_OUTPUT_MESSAGE;
+        const summary = truncateToolResult(rawSummary, MAX_TASK_TOOL_RESULT_CHARS);
         // Store result for dependsOn references by future tasks
         subagentResults.set(subagentId, { name: subagentName, summary });
+        // Evict oldest entries if over capacity
+        if (subagentResults.size > MAX_SUBAGENT_RESULTS) {
+          const keysToDelete = [...subagentResults.keys()].slice(0, subagentResults.size - MAX_SUBAGENT_RESULTS);
+          for (const k of keysToDelete) subagentResults.delete(k);
+        }
         context.options?.onSubagentEvent?.({
           kind: "lifecycle",
           phase: "completed",
@@ -906,6 +996,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       } catch (error) {
         if (timeoutTimer) clearTimeout(timeoutTimer);
         const errText = error instanceof Error ? error.message : String(error);
+        const truncatedErr = errText.length > 500 ? errText.slice(0, 500) + "... [truncated]" : errText;
         context.options?.onSubagentEvent?.({
           kind: "lifecycle",
           phase: "failed",
@@ -915,9 +1006,9 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           dependsOn: dependsOn.length > 0 ? dependsOn : undefined,
           depth: depth + 1,
           prompt,
-          error: errText,
+          error: truncatedErr,
         });
-        return `[error] Subagent failed: ${errText}`;
+        return `[error] Subagent failed: ${truncatedErr}`;
       }
     },
     {
@@ -1145,6 +1236,12 @@ export async function* streamAgentWithTokens(
     ...messages,
     ...(planningPrelude.executionConstraint ? [planningPrelude.executionConstraint] : []),
   ];
+  const depth = options?.subagentDepth ?? 0;
+  const baseCap = resolveConversationTokenCap(modelId);
+  // Sub-agents get a reduced cap: 60% per depth level (depth 0 = 100%, depth 1 = 60%, depth 2 = 36%)
+  const conversationTokenCap = depth > 0
+    ? Math.max(MIN_CONVERSATION_TOKENS_CAP, Math.floor(baseCap * Math.pow(0.6, depth)))
+    : baseCap;
   if (runtimePlanSteps.length > 0) {
     emitCurrentPlan("created");
   }
@@ -1154,7 +1251,7 @@ export async function* streamAgentWithTokens(
     baseMessages: BaseMessage[],
     reasoningCb: (token: string) => void
   ): Promise<{ content: string; reasoningContent: string; usage?: import("../llm/streamWithReasoning.js").TokenUsage }> => {
-    const pruned = pruneConversationIfNeeded(baseMessages);
+    const pruned = pruneConversationIfNeeded(baseMessages, conversationTokenCap);
     const first = await adapter.streamSingleTurn(pruned, onToken, reasoningCb, [], options?.abortSignal);
     const firstContent = first.content?.trim() ?? "";
     if (firstContent) {
@@ -1194,7 +1291,7 @@ export async function* streamAgentWithTokens(
     baseMessages: BaseMessage[]
   ): Promise<string> => {
     const modelNoTools = adapter.getLLM();
-    const pruned = pruneConversationIfNeeded(baseMessages);
+    const pruned = pruneConversationIfNeeded(baseMessages, conversationTokenCap);
     const streamOnce = async (msgs: BaseMessage[]) => {
       const stream = await modelNoTools.stream(msgs);
       let content = "";
@@ -1250,7 +1347,12 @@ export async function* streamAgentWithTokens(
     } else {
       result = `[error] Unknown tool: ${tc.name}`;
     }
-    return { id: tc.id, name: tc.name, result: truncateToolResult(result) };
+    // Task tool results are already truncated internally (with metadata prefix).
+    // Only apply outer truncation for non-task tools.
+    if (tc.name === "task") {
+      return { id: tc.id, name: tc.name, result };
+    }
+    return { id: tc.id, name: tc.name, result: truncateToolResult(result, MAX_SINGLE_TOOL_RESULT_CHARS) };
   };
 
   const executeToolCalls = async (
@@ -1316,7 +1418,6 @@ export async function* streamAgentWithTokens(
       const tools = buildRuntimeTools(options, { modelId, skillContext, options });
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
-
       let conversationMessages: BaseMessage[] = [systemMessage, ...stateMessages];
       const maxRounds = 50;
 
@@ -1331,7 +1432,7 @@ export async function* streamAgentWithTokens(
         const bgMessage = buildBackgroundResultMessage();
         if (bgMessage) conversationMessages = [...conversationMessages, bgMessage];
         // Prune old tool results to stay within context window
-        conversationMessages = pruneConversationIfNeeded(conversationMessages);
+        conversationMessages = pruneConversationIfNeeded(conversationMessages, conversationTokenCap);
         const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
           conversationMessages, onToken, onReasoningToken!, openAITools, options?.abortSignal
         );
@@ -1438,7 +1539,7 @@ export async function* streamAgentWithTokens(
     const bgMessage = buildBackgroundResultMessage();
     if (bgMessage) state = [...state, bgMessage];
     // Prune old tool results to stay within context window
-    state = pruneConversationIfNeeded(state);
+    state = pruneConversationIfNeeded(state, conversationTokenCap);
     // Wrap LangChain stream with abort signal and per-chunk timeout
     const streamSignal = options?.abortSignal;
     const stream = await model.stream([systemMessage, ...state], streamSignal ? { signal: streamSignal } : undefined);
