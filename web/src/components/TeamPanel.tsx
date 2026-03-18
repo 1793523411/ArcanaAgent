@@ -1,6 +1,8 @@
-import { useState, useRef, useLayoutEffect, useEffect, useCallback, useMemo } from "react";
+import { useState, useMemo } from "react";
 import type { SubagentLog, ApprovalLog } from "../types";
 import { getRoleConfig } from "../constants/roles";
+import PipelineFlow from "./PipelineFlow";
+import type { FullAgent, DagEdge } from "./PipelineFlow";
 
 interface SubagentInfo {
   subagentId: string;
@@ -34,203 +36,10 @@ interface Props {
   onClose: () => void;
 }
 
-/* ── Pipeline DAG types ── */
-type FullAgent = SubagentInfo & { dependsOn?: string[] };
-interface DagEdge { fromId: string; toId: string }
-interface NodeRect { x: number; y: number; w: number; h: number }
-
 function getPhaseColor(agent: SubagentInfo): string {
   if (agent.phase === "completed") return "#10B981";
   if (agent.phase === "failed") return "#EF4444";
   return getRoleConfig(agent.role)?.color ?? "var(--color-accent)";
-}
-
-/* ── PipelineDag component ── */
-function PipelineDag({ layers, edges, agentMap }: {
-  layers: FullAgent[][];
-  edges: DagEdge[];
-  agentMap: Map<string, FullAgent>;
-}) {
-  const wrapperRef = useRef<HTMLDivElement>(null);
-  const nodeRefs = useRef<Map<string, HTMLDivElement>>(new Map());
-  const [rects, setRects] = useState<Map<string, NodeRect>>(new Map());
-  const [wrapperH, setWrapperH] = useState(0);
-
-  const measure = useCallback(() => {
-    const w = wrapperRef.current;
-    if (!w) return;
-    const wRect = w.getBoundingClientRect();
-    const next = new Map<string, NodeRect>();
-    for (const [id, el] of nodeRefs.current) {
-      const r = el.getBoundingClientRect();
-      next.set(id, {
-        x: r.left - wRect.left,
-        y: r.top - wRect.top,
-        w: r.width,
-        h: r.height,
-      });
-    }
-    setRects(next);
-    setWrapperH(w.scrollHeight);
-  }, []);
-
-  // Measure after every render that changes layers
-  useLayoutEffect(() => {
-    measure();
-  }, [layers, measure]);
-
-  // Re-measure on resize
-  useEffect(() => {
-    const w = wrapperRef.current;
-    if (!w) return;
-    const ro = new ResizeObserver(() => measure());
-    ro.observe(w);
-    return () => ro.disconnect();
-  }, [measure]);
-
-  // Build SVG paths
-  const paths = useMemo(() => {
-    if (rects.size === 0) return [];
-    return edges.map((e) => {
-      const from = rects.get(e.fromId);
-      const to = rects.get(e.toId);
-      if (!from || !to) return null;
-      const px = from.x + from.w / 2;
-      const py = from.y + from.h;
-      const cx = to.x + to.w / 2;
-      const cy = to.y;
-      const midY = (py + cy) / 2;
-      const d = `M ${px} ${py} C ${px} ${midY}, ${cx} ${midY}, ${cx} ${cy}`;
-      // Color: both completed → green, otherwise border color
-      const fromAgent = agentMap.get(e.fromId);
-      const toAgent = agentMap.get(e.toId);
-      const bothDone = fromAgent?.phase === "completed" && toAgent?.phase === "completed";
-      return { key: `${e.fromId}-${e.toId}`, d, done: bothDone };
-    }).filter(Boolean) as { key: string; d: string; done: boolean }[];
-  }, [rects, edges, agentMap]);
-
-  const LAYER_GAP = 28;
-
-  return (
-    <div ref={wrapperRef} className="relative">
-      {/* SVG edge overlay */}
-      <svg
-        style={{
-          position: "absolute",
-          top: 0,
-          left: 0,
-          width: "100%",
-          height: wrapperH || "100%",
-          pointerEvents: "none",
-          overflow: "visible",
-        }}
-      >
-        <defs>
-          <marker
-            id="dag-arrow"
-            viewBox="0 0 6 6"
-            refX="6"
-            refY="3"
-            markerWidth="5"
-            markerHeight="5"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 6 3 L 0 6 Z" fill="var(--color-border)" />
-          </marker>
-          <marker
-            id="dag-arrow-done"
-            viewBox="0 0 6 6"
-            refX="6"
-            refY="3"
-            markerWidth="5"
-            markerHeight="5"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 6 3 L 0 6 Z" fill="#10B981" opacity="0.5" />
-          </marker>
-        </defs>
-        {paths.map((p) => (
-          <path
-            key={p.key}
-            d={p.d}
-            fill="none"
-            stroke={p.done ? "#10B981" : "var(--color-border)"}
-            strokeWidth="1.5"
-            strokeLinecap="round"
-            opacity={p.done ? 0.45 : 0.6}
-            markerEnd={p.done ? "url(#dag-arrow-done)" : "url(#dag-arrow)"}
-            style={{ transition: "opacity 0.3s, stroke 0.3s" }}
-          />
-        ))}
-      </svg>
-
-      {/* Layer rows */}
-      {layers.map((layer, layerIdx) => (
-        <div
-          key={layerIdx}
-          className="flex flex-wrap gap-2 justify-center"
-          style={{
-            marginTop: layerIdx > 0 ? LAYER_GAP : 0,
-            position: "relative",
-            zIndex: 1,
-          }}
-        >
-          {layer.map((agent) => {
-            const rc = getRoleConfig(agent.role);
-            const phaseColor = getPhaseColor(agent);
-            const displayName = agent.subagentName ?? agent.subagentId.slice(0, 8);
-            return (
-              <div
-                key={agent.subagentId}
-                ref={(el) => {
-                  if (el) nodeRefs.current.set(agent.subagentId, el);
-                  else nodeRefs.current.delete(agent.subagentId);
-                }}
-                className="flex items-center gap-1.5 pl-0 pr-2 py-1 rounded-md text-[10px]"
-                style={{
-                  minWidth: 72,
-                  maxWidth: 120,
-                  border: "1px solid var(--color-border)",
-                  borderLeft: `3px solid ${phaseColor}`,
-                  backgroundColor: `${phaseColor}0F`,
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
-                  opacity: 1,
-                  transform: "translateY(0)",
-                  transition: "opacity 0.3s ease-out, transform 0.3s ease-out, background-color 0.3s",
-                  transitionDelay: `${layerIdx * 80}ms`,
-                }}
-                title={`${displayName}\n${agent.dependsOn?.length ? `Depends on: ${agent.dependsOn.join(", ")}` : "No dependencies"}`}
-              >
-                <span className="pl-1.5 shrink-0" style={{ color: rc?.color }}>{rc?.icon ?? "\u{1F916}"}</span>
-                <span
-                  className="truncate font-medium leading-tight"
-                  style={{ color: phaseColor, maxWidth: 72 }}
-                >
-                  {displayName}
-                </span>
-                <span
-                  className="w-1.5 h-1.5 rounded-full shrink-0 ml-auto"
-                  style={{
-                    backgroundColor: phaseColor,
-                    boxShadow: agent.phase === "started" ? `0 0 5px ${phaseColor}` : "none",
-                    animation: agent.phase === "started" ? "dag-pulse 1.5s ease-in-out infinite" : "none",
-                  }}
-                />
-              </div>
-            );
-          })}
-        </div>
-      ))}
-
-      {/* Pulse animation for active nodes */}
-      <style>{`
-        @keyframes dag-pulse {
-          0%, 100% { opacity: 1; box-shadow: 0 0 4px currentColor; }
-          50% { opacity: 0.5; box-shadow: 0 0 8px currentColor; }
-        }
-      `}</style>
-    </div>
-  );
 }
 
 /* ── Main TeamPanel ── */
@@ -395,7 +204,7 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
         {pipelineData && (
           <div className="space-y-1.5">
             <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">Pipeline</h4>
-            <PipelineDag
+            <PipelineFlow
               layers={pipelineData.layers}
               edges={pipelineData.edges}
               agentMap={pipelineData.agentMap}
