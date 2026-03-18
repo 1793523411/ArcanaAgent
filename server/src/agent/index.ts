@@ -12,7 +12,8 @@ import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { backgroundManager } from "./backgroundManager.js";
-import { resolve } from "path";
+import { resolve, join } from "path";
+import { mkdirSync, writeFileSync } from "fs";
 import { z } from "zod";
 import { getAgentConfig, isValidTeamAgent, getTeamAgents, type AgentRole } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
@@ -255,7 +256,9 @@ function buildSystemPrompt(skillContext?: string, conversationMode: Conversation
   const workspaceSection = workspacePath
     ? `\n\n## Current Workspace\nYour workspace absolute path is: \`${workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${workspacePath}/filename.ext\`. Never write files to any other location.`
     : "";
-  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + buildMcpToolsSection() + (skillContext || getSkillCatalogForAgent());
+  const mcpSection = buildMcpToolsSection();
+  const skillSection = skillContext || getSkillCatalogForAgent();
+  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + mcpSection + skillSection;
 }
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
@@ -426,17 +429,53 @@ function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MAX_CONVE
   const total = estimateBaseMessageTokens(messages);
   if (total <= tokenCap) return messages;
 
+  const cloned = [...messages];
+  let currentTotal = total;
+
+  // --- Pass 0: compress old task ToolMessage results ---
+  // Task tool results are large (~3500 chars each). Compress all but the last 2
+  // to a short summary so the coordinator retains key info at much lower cost.
+  const taskToolIndices: number[] = [];
+  for (let i = 0; i < cloned.length; i++) {
+    const msg = cloned[i];
+    if (msg._getType() === "tool" && (msg as unknown as { name?: string }).name === "task") {
+      taskToolIndices.push(i);
+    }
+  }
+  const protectedTaskCount = 2;
+  const compressibleTasks = taskToolIndices.slice(0, Math.max(0, taskToolIndices.length - protectedTaskCount));
+  for (const idx of compressibleTasks) {
+    if (currentTotal <= tokenCap) break;
+    const msg = cloned[idx];
+    const content = typeof msg.content === "string" ? msg.content : "";
+    if (content.length <= 250) continue; // already short enough
+    // Extract metadata header if present: [subagentId: xxx] [name: yyy] [role: zzz]
+    const headerMatch = content.match(/^(\[subagentId:.*?\]\s*\[name:.*?\]\s*\[role:.*?\])/);
+    const header = headerMatch ? headerMatch[1] : "";
+    const body = header ? content.slice(header.length).trim() : content;
+    const compressed = header
+      ? `${header}\n${body.slice(0, 200)}... [compressed — use dependsOn to access full result]`
+      : `${body.slice(0, 200)}... [compressed — use dependsOn to access full result]`;
+    const toolMsg = msg as ToolMessage;
+    cloned[idx] = new ToolMessage({
+      content: compressed,
+      tool_call_id: toolMsg.tool_call_id,
+      name: (toolMsg as unknown as { name?: string }).name,
+    });
+    currentTotal = estimateBaseMessageTokens(cloned);
+  }
+
+  if (currentTotal <= tokenCap) return cloned;
+
   // --- Pass 1: compress old ToolMessage contents ---
   const toolIndices: number[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    if (messages[i]._getType() === "tool") toolIndices.push(i);
+  for (let i = 0; i < cloned.length; i++) {
+    if (cloned[i]._getType() === "tool") toolIndices.push(i);
   }
 
   // Keep the last 4 tool results intact; compress the rest
   const protectedCount = 4;
   const compressible = toolIndices.slice(0, Math.max(0, toolIndices.length - protectedCount));
-  const cloned = [...messages];
-  let currentTotal = total;
 
   for (const idx of compressible) {
     if (currentTotal <= tokenCap) break;
@@ -975,6 +1014,18 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
         const summary = truncateToolResult(rawSummary, MAX_TASK_TOOL_RESULT_CHARS);
         // Store result for dependsOn references by future tasks
         subagentResults.set(subagentId, { name: subagentName, summary });
+        // Persist full result to workspace file for history recovery
+        const wpPath = context.options?.workspacePath;
+        if (wpPath) {
+          try {
+            const resultsDir = join(wpPath, ".agents", "results");
+            mkdirSync(resultsDir, { recursive: true });
+            const fileContent = `# ${subagentName} (${role ?? "general"})\nPrompt: ${prompt.slice(0, 200)}${prompt.length > 200 ? "..." : ""}\n---\n${summary}`;
+            writeFileSync(join(resultsDir, `${subagentId}.md`), fileContent, "utf-8");
+          } catch {
+            // Non-critical — don't fail the task if file write fails
+          }
+        }
         // Evict oldest entries if over capacity
         if (subagentResults.size > MAX_SUBAGENT_RESULTS) {
           const keysToDelete = [...subagentResults.keys()].slice(0, subagentResults.size - MAX_SUBAGENT_RESULTS);

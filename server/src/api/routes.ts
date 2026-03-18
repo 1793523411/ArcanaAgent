@@ -33,7 +33,7 @@ import {
   deleteTeamDef,
 } from "../storage/teamDefs.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
-import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
+import { storedToLangChain, langChainToStored, getTextContent, sanitizeMessageSequence } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
@@ -84,15 +84,23 @@ function buildStreamErrorPayload(message: string): Record<string, unknown> {
   return { error: message };
 }
 
+const MAX_ARTIFACT_LIST = 100;
+
 function buildSkillContext(convId: string): string {
   const workspace = ensureWorkspace(convId);
   const existingArtifacts = listArtifacts(convId);
-  const artifactListText = existingArtifacts.length > 0
-    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
+  const displayArtifacts = existingArtifacts.slice(0, MAX_ARTIFACT_LIST);
+  const omitted = existingArtifacts.length - displayArtifacts.length;
+  let artifactListText = "";
+  if (displayArtifacts.length > 0) {
+    artifactListText = "\n\nFiles currently in workspace:\n" + displayArtifacts.map(a =>
         `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
-      ).join("\n") +
-      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
-    : "";
+      ).join("\n");
+    if (omitted > 0) {
+      artifactListText += `\n... and ${omitted} more files (use read_file or run_command to explore)`;
+    }
+    artifactListText += "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>";
+  }
   return getSkillCatalogForAgent() +
     `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
     "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
@@ -251,6 +259,41 @@ const createConversationBodySchema = {
   teamId: z.string().max(100).optional(),
 };
 const createConversationBody = z.object(createConversationBodySchema);
+
+/**
+ * Compress task tool messages in-place before persisting to history.
+ * Reduces token footprint for reloaded conversations while preserving
+ * a short preview and a file reference to the full result.
+ */
+function compressTaskToolMessagesForStorage(messages: StoredMessage[]) {
+  for (const msg of messages) {
+    if (msg.type === "tool" && msg.name === "task" && typeof msg.content === "string" && msg.content.length > 200) {
+      const idMatch = msg.content.match(/\[subagentId:\s*([^\]]+)\]/);
+      const nameMatch = msg.content.match(/\[name:\s*([^\]]+)\]/);
+      const subagentId = idMatch?.[1]?.trim() ?? "unknown";
+      const agentName = nameMatch?.[1]?.trim() ?? "unknown";
+      const headerEnd = msg.content.indexOf("\n\n");
+      const body = headerEnd >= 0 ? msg.content.slice(headerEnd + 2) : msg.content;
+      msg.content = `[Agent: ${agentName}] Result saved to .agents/results/${subagentId}.md\n${body.slice(0, 100)}...`;
+    }
+  }
+  for (const msg of messages) {
+    if (msg.type === "ai" && Array.isArray(msg.tool_calls)) {
+      msg.tool_calls = msg.tool_calls.map((tc) => {
+        if (tc.name !== "task") return tc;
+        try {
+          const args = JSON.parse(tc.args);
+          if (typeof args.prompt === "string" && args.prompt.length > 100) {
+            args.prompt = args.prompt.slice(0, 100) + "... [truncated]";
+          }
+          return { ...tc, args: JSON.stringify(args) };
+        } catch {
+          return tc;
+        }
+      });
+    }
+  }
+}
 
 export function getConversations(req: Request, res: Response): void {
   try {
@@ -438,7 +481,8 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
   };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
-  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
+  const sanitized = sanitizeMessageSequence(contextMessages);
+  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -588,7 +632,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       const lastAi = toStore.filter((m) => m.type === "ai").pop();
       if (lastAi) lastAi.content = (lastAi.content || "").trimEnd() + `\n\n> ⚠️ 执行出错: ${errorMsg}`;
     }
-    if (toStore.length > 0) appendMessages(id, toStore);
+    if (toStore.length > 0) {
+      compressTaskToolMessagesForStorage(toStore);
+      appendMessages(id, toStore);
+    }
     return subagentLogs;
   };
 
@@ -753,6 +800,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       };
     }
     if (toStore.length > 0) {
+      compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
     }
     resultsSaved = true;
@@ -803,7 +851,8 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const config = loadUserConfig();
   const humanMsg: StoredMessage = { type: "human", content: text };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
-  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
+  const sanitized = sanitizeMessageSequence(contextMessages);
+  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage(text));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -840,6 +889,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
       if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
       return s;
     });
+    compressTaskToolMessagesForStorage(newStored);
     const lastAi = newStored.filter((m) => m.type === "ai").pop();
     if (lastAi && lastAi.type === "ai") {
       lastAi.contextUsage = {

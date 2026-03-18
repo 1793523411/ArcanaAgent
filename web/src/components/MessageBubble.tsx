@@ -56,9 +56,10 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
+  const isToolDispatchOnly = message.type === "ai" && !hasContent && Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
   const text = hasContent
     ? message.content
-    : (message.type === "ai" && toolLogs.length === 0 ? "(该条回复内容未保存)" : "");
+    : (message.type === "ai" && toolLogs.length === 0 && !isToolDispatchOnly ? "(该条回复内容未保存)" : "");
 
   const copyableText = text || (message.content && String(message.content).trim()) || "";
   const modelName = message.type === "ai" && message.modelId

@@ -11,6 +11,11 @@ interface OpenAIMessage {
   content: OpenAIContent;
   tool_call_id?: string;
   name?: string;
+  tool_calls?: Array<{
+    id: string;
+    type: "function";
+    function: { name: string; arguments: string };
+  }>;
 }
 
 function messageToOpenAI(m: BaseMessage): OpenAIMessage {
@@ -24,6 +29,21 @@ function messageToOpenAI(m: BaseMessage): OpenAIMessage {
     const toolMsg = m as { tool_call_id?: string; name?: string };
     msg.tool_call_id = toolMsg.tool_call_id ?? "";
     msg.name = toolMsg.name;
+  }
+
+  // assistant 消息序列化 tool_calls
+  if (type === "ai") {
+    const aiMsg = m as { tool_calls?: Array<{ id?: string; name: string; args: unknown }> };
+    if (aiMsg.tool_calls && aiMsg.tool_calls.length > 0) {
+      msg.tool_calls = aiMsg.tool_calls.map((tc, idx) => ({
+        id: tc.id || `call_${idx}`,
+        type: "function" as const,
+        function: {
+          name: tc.name,
+          arguments: typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {}),
+        },
+      }));
+    }
   }
 
   if (typeof c === "string") {

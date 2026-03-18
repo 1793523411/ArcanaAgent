@@ -71,7 +71,7 @@ export interface StoredMessage {
   modelId?: string;
   /** 推理/思考过程（仅 ai，支持思考的模型） */
   reasoningContent?: string;
-  tool_calls?: Array<{ name: string; args: string }>;
+  tool_calls?: Array<{ id?: string; name: string; args: string }>;
   /** 工具消息的 ID（仅 tool 类型） */
   tool_call_id?: string;
   /** 工具名称（仅 tool 类型） */
@@ -305,6 +305,8 @@ export function getConversation(id: string): ConversationMeta | null {
 function filterEmptyAiMessages(messages: StoredMessage[]): StoredMessage[] {
   return messages.filter((m) => {
     if (m.type !== "ai") return true;
+    // 保留含 tool_calls 的 AI 消息（即使 content 为空）
+    if (m.tool_calls && m.tool_calls.length > 0) return true;
     const c = m.content;
     return typeof c === "string" && c.trim().length > 0;
   });
@@ -493,12 +495,20 @@ export function listArtifacts(convId: string): ArtifactMeta[] {
   return scanDir(dir, dir);
 }
 
+/** 递归扫描时跳过的大目录 */
+const SCAN_SKIP_DIRS = new Set([
+  "node_modules", ".git", ".next", "dist", "build", "__pycache__",
+  ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
+  "vendor", "target", ".gradle", ".idea",
+]);
+
 function scanDir(base: string, current: string): ArtifactMeta[] {
   const result: ArtifactMeta[] = [];
   const entries = readdirSync(current, { withFileTypes: true });
   for (const entry of entries) {
     const full = join(current, entry.name);
     if (entry.isDirectory()) {
+      if (SCAN_SKIP_DIRS.has(entry.name)) continue;
       result.push(...scanDir(base, full));
     } else if (entry.isFile()) {
       const rel = full.slice(base.length + 1);
