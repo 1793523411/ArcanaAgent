@@ -1470,7 +1470,7 @@ export async function* streamAgentWithTokens(
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
       let conversationMessages: BaseMessage[] = [systemMessage, ...stateMessages];
-      const maxRounds = 50;
+      const maxRounds = 500;
 
       let lastHadContent = false;
       let reachedMaxRounds = false;
@@ -1568,7 +1568,7 @@ export async function* streamAgentWithTokens(
   const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
   const model = adapter.getLLM().bindTools(tools);
   let state: BaseMessage[] = [...stateMessages];
-  const maxRounds = 50;
+  const maxRounds = 500;
 
   const shouldContinue = (last: BaseMessage): boolean => {
     return !!(
