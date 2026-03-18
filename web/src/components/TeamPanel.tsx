@@ -21,8 +21,8 @@ interface PendingApproval {
 interface Props {
   /** Currently streaming sub-agents */
   streamingSubagents: SubagentInfo[];
-  /** Historical sub-agents from the last AI message */
-  historicalSubagents: SubagentLog[];
+  /** Historical sub-agents grouped by round (each round = one user turn) */
+  historicalRounds: Array<{ label: string; subagents: SubagentLog[] }>;
   /** Pending approval requests */
   pendingApprovals: PendingApproval[];
   /** Shared approval handler from parent */
@@ -234,9 +234,12 @@ function PipelineDag({ layers, edges, agentMap }: {
 }
 
 /* ── Main TeamPanel ── */
-export default function TeamPanel({ streamingSubagents, historicalSubagents, pendingApprovals, onApproval, processingApprovals: externalProcessing, conversationId, onClose }: Props) {
+export default function TeamPanel({ streamingSubagents, historicalRounds, pendingApprovals, onApproval, processingApprovals: externalProcessing, conversationId, onClose }: Props) {
   const [localProcessing, setLocalProcessing] = useState<Set<string>>(new Set());
   const processingApprovals = externalProcessing ?? localProcessing;
+  const [collapsedRounds, setCollapsedRounds] = useState<Set<number>>(new Set());
+
+  const historicalSubagents = useMemo(() => historicalRounds.flatMap((r) => r.subagents), [historicalRounds]);
 
   // Merge streaming and historical into a unified view; streaming takes priority
   const streamingIds = new Set(streamingSubagents.map((s) => s.subagentId));
@@ -257,8 +260,6 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
   const completedCount = allAgents.filter((a) => a.phase === "completed").length;
   const totalCount = allAgents.length;
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
-
-  const roles: string[] = [...new Set(allAgents.map((a) => a.role ?? "unknown"))];
 
   // Extract historical approval records from stored subagent logs
   const historicalApprovals = useMemo(() => {
@@ -402,19 +403,41 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
           </div>
         )}
 
-        {/* Team Roster */}
+        {/* Team Roster — grouped by round */}
         <div className="space-y-1.5">
           <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">Roster</h4>
           {totalCount === 0 && (
             <p className="text-xs text-[var(--color-text-muted)] italic py-2">No agents active yet</p>
           )}
-          {roles.map((roleKey) => {
-            const agents = roleGroups.get(roleKey);
-            if (!agents?.length) return null;
-            const config = roleKey !== "unknown" ? getRoleConfig(roleKey) : null;
+          {historicalRounds.map((round, roundIdx) => {
+            if (!round.subagents.length) return null;
+            const collapsed = collapsedRounds.has(roundIdx);
+            const roundCompleted = round.subagents.every((a) => a.phase === "completed");
+            const roundFailed = round.subagents.some((a) => a.phase === "failed");
             return (
-              <div key={roleKey} className="space-y-1">
-                {agents.map((agent) => {
+              <div key={roundIdx} className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => setCollapsedRounds((prev) => {
+                    const next = new Set(prev);
+                    collapsed ? next.delete(roundIdx) : next.add(roundIdx);
+                    return next;
+                  })}
+                  className="flex items-center gap-1.5 w-full text-left text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors py-0.5"
+                >
+                  <span className="select-none">{collapsed ? "▶" : "▼"}</span>
+                  <span className="font-medium truncate">{round.label}</span>
+                  <span className="text-[10px] shrink-0">({round.subagents.length} agents)</span>
+                  <span
+                    className="w-2 h-2 rounded-full ml-auto shrink-0"
+                    style={{
+                      backgroundColor: roundFailed ? "#EF4444" : roundCompleted ? "#10B981" : "var(--color-accent)",
+                      boxShadow: !roundCompleted && !roundFailed ? `0 0 6px var(--color-accent)` : "none",
+                    }}
+                  />
+                </button>
+                {!collapsed && round.subagents.map((agent) => {
+                  const rc = getRoleConfig(agent.role);
                   const phaseColor = getPhaseColor(agent);
                   const phaseLabel =
                     agent.phase === "completed" ? "completed"
@@ -426,14 +449,14 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
                       key={agent.subagentId}
                       className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
                     >
-                      <span className="text-sm shrink-0" style={{ color: config?.color }}>
-                        {config?.icon ?? "\u{1F916}"}
+                      <span className="text-sm shrink-0" style={{ color: rc?.color }}>
+                        {rc?.icon ?? "\u{1F916}"}
                       </span>
                       <div className="min-w-0 flex-1">
                         <div className="text-xs font-medium text-[var(--color-text)] truncate">{displayName}</div>
-                        {config && (
-                          <div className="text-[10px] font-medium" style={{ color: config.color }}>
-                            {config.displayName}
+                        {rc && (
+                          <div className="text-[10px] font-medium" style={{ color: rc.color }}>
+                            {rc.displayName}
                           </div>
                         )}
                       </div>
@@ -453,6 +476,50 @@ export default function TeamPanel({ streamingSubagents, historicalSubagents, pen
               </div>
             );
           })}
+          {/* Streaming agents (current round, not yet in history) */}
+          {streamingSubagents.filter((s) => !historicalSubagents.some((h) => h.subagentId === s.subagentId)).length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[11px] text-[var(--color-text-muted)] font-medium py-0.5 flex items-center gap-1.5">
+                <span className="w-2 h-2 rounded-full bg-[var(--color-accent)] animate-pulse" />
+                <span>Current</span>
+              </div>
+              {streamingSubagents.filter((s) => !historicalSubagents.some((h) => h.subagentId === s.subagentId)).map((agent) => {
+                const rc = getRoleConfig(agent.role);
+                const phaseColor = getPhaseColor(agent);
+                const displayName = agent.subagentName ?? agent.subagentId;
+                return (
+                  <div
+                    key={agent.subagentId}
+                    className="flex items-center gap-2 px-2.5 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                  >
+                    <span className="text-sm shrink-0" style={{ color: rc?.color }}>
+                      {rc?.icon ?? "\u{1F916}"}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <div className="text-xs font-medium text-[var(--color-text)] truncate">{displayName}</div>
+                      {rc && (
+                        <div className="text-[10px] font-medium" style={{ color: rc.color }}>
+                          {rc.displayName}
+                        </div>
+                      )}
+                    </div>
+                    <span className="shrink-0 flex items-center gap-1">
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{
+                          backgroundColor: phaseColor,
+                          boxShadow: agent.phase === "started" ? `0 0 6px ${phaseColor}` : "none",
+                        }}
+                      />
+                      <span className="text-[10px] text-[var(--color-text-muted)]">
+                        {agent.phase === "completed" ? "completed" : agent.phase === "failed" ? "failed" : "working"}
+                      </span>
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {/* Approvals */}

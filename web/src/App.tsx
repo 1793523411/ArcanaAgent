@@ -8,7 +8,7 @@ import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
-import type { ConversationMode } from "./types";
+import type { ConversationMode, SubagentLog } from "./types";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -501,9 +501,20 @@ export default function App() {
             <div className="min-w-0 min-h-0 overflow-hidden shrink-0" style={{ width: `${teamPaneWidth}px` }}>
               <TeamPanel
                 streamingSubagents={streamingSubagents}
-                historicalSubagents={(() => {
-                  const lastAi = [...messages].reverse().find((m) => m.type === "ai");
-                  return lastAi?.subagents ?? [];
+                historicalRounds={(() => {
+                  const rounds: Array<{ label: string; subagents: SubagentLog[] }> = [];
+                  let lastHumanContent = "";
+                  for (const m of messages) {
+                    if (m.type === "human") {
+                      lastHumanContent = (m.content || "").trim();
+                    } else if (m.type === "ai" && m.subagents?.length) {
+                      const label = lastHumanContent.length > 30
+                        ? lastHumanContent.slice(0, 30) + "…"
+                        : lastHumanContent || `Round ${rounds.length + 1}`;
+                      rounds.push({ label, subagents: m.subagents });
+                    }
+                  }
+                  return rounds;
                 })()}
                 pendingApprovals={pendingApprovals}
                 onApproval={handleApproval}
