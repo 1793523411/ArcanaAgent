@@ -1,13 +1,15 @@
-import { useMemo, useCallback } from "react";
+import { useMemo, useCallback, useState } from "react";
 import {
   ReactFlow,
   Controls,
+  ControlButton,
   type Node,
   type Edge,
   type NodeProps,
   Handle,
   Position,
   useReactFlow,
+  useNodesState,
   ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -105,53 +107,63 @@ function AgentNode({ data }: NodeProps<Node<AgentNodeData>>) {
 
 const nodeTypes = { agent: AgentNode };
 
+/* ── Build initial nodes from layers ── */
+
+function buildNodes(layers: FullAgent[][]): Node<AgentNodeData>[] {
+  const ns: Node<AgentNodeData>[] = [];
+  const maxLayerWidth = Math.max(
+    ...layers.map((l) => l.length * NODE_W + (l.length - 1) * NODE_GAP_X),
+  );
+
+  layers.forEach((layer, layerIdx) => {
+    const layerWidth = layer.length * NODE_W + (layer.length - 1) * NODE_GAP_X;
+    const offsetX = (maxLayerWidth - layerWidth) / 2;
+
+    layer.forEach((agent, nodeIdx) => {
+      const rc = getRoleConfig(agent.role);
+      const phaseColor = getPhaseColor(agent);
+      const displayName = agent.subagentName ?? agent.subagentId.slice(0, 8);
+
+      ns.push({
+        id: agent.subagentId,
+        type: "agent",
+        position: {
+          x: offsetX + nodeIdx * (NODE_W + NODE_GAP_X),
+          y: layerIdx * (NODE_H + LAYER_GAP_Y),
+        },
+        data: {
+          label: displayName,
+          icon: rc?.icon ?? "\u{1F916}",
+          iconColor: rc?.color ?? "var(--color-accent)",
+          phaseColor,
+          phase: agent.phase,
+        },
+      });
+    });
+  });
+  return ns;
+}
+
 /* ── Main component ── */
 
 function PipelineFlowInner({ layers, edges, agentMap }: PipelineFlowProps) {
-  const { nodes, flowEdges, height } = useMemo(() => {
-    const ns: Node<AgentNodeData>[] = [];
+  const initialNodes = useMemo(() => buildNodes(layers), [layers]);
 
-    // Compute total width needed per layer for centering
-    const maxLayerWidth = Math.max(
-      ...layers.map((l) => l.length * NODE_W + (l.length - 1) * NODE_GAP_X),
-    );
+  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
 
-    layers.forEach((layer, layerIdx) => {
-      const layerWidth = layer.length * NODE_W + (layer.length - 1) * NODE_GAP_X;
-      const offsetX = (maxLayerWidth - layerWidth) / 2;
+  // Sync when layers data changes (new agents / phase updates)
+  const [prevInitial, setPrevInitial] = useState(initialNodes);
+  if (initialNodes !== prevInitial) {
+    setPrevInitial(initialNodes);
+    setNodes(initialNodes);
+  }
 
-      layer.forEach((agent, nodeIdx) => {
-        const rc = getRoleConfig(agent.role);
-        const phaseColor = getPhaseColor(agent);
-        const displayName = agent.subagentName ?? agent.subagentId.slice(0, 8);
-
-        ns.push({
-          id: agent.subagentId,
-          type: "agent",
-          position: {
-            x: offsetX + nodeIdx * (NODE_W + NODE_GAP_X),
-            y: layerIdx * (NODE_H + LAYER_GAP_Y),
-          },
-          data: {
-            label: displayName,
-            icon: rc?.icon ?? "\u{1F916}",
-            iconColor: rc?.color ?? "var(--color-accent)",
-            phaseColor,
-            phase: agent.phase,
-          },
-          draggable: false,
-          selectable: false,
-          focusable: false,
-        });
-      });
-    });
-
-    const es: Edge[] = edges.map((e) => {
+  const flowEdges = useMemo<Edge[]>(() => {
+    return edges.map((e) => {
       const fromAgent = agentMap.get(e.fromId);
       const toAgent = agentMap.get(e.toId);
       const bothDone = fromAgent?.phase === "completed" && toAgent?.phase === "completed";
       const anyFailed = fromAgent?.phase === "failed" || toAgent?.phase === "failed";
-
       const color = anyFailed ? "#EF4444" : bothDone ? "#10B981" : "var(--color-border)";
 
       return {
@@ -167,20 +179,24 @@ function PipelineFlowInner({ layers, edges, agentMap }: PipelineFlowProps) {
         animated: anyFailed,
       };
     });
+  }, [edges, agentMap]);
 
-    const h = layers.length * (NODE_H + LAYER_GAP_Y) - LAYER_GAP_Y + 32;
-
-    return { nodes: ns, flowEdges: es, height: h };
-  }, [layers, edges, agentMap]);
+  const height = layers.length * (NODE_H + LAYER_GAP_Y) - LAYER_GAP_Y + 32;
 
   const { fitView } = useReactFlow();
-  const handleFitView = useCallback(() => { fitView({ padding: 0.1 }); }, [fitView]);
+
+  const handleReset = useCallback(() => {
+    setNodes(buildNodes(layers));
+    // wait a tick for React to flush, then fitView
+    requestAnimationFrame(() => { fitView({ padding: 0.1 }); });
+  }, [layers, setNodes, fitView]);
 
   return (
     <div style={{ width: "100%", height: Math.max(height, 120) }} className="pipeline-flow">
       <ReactFlow
         nodes={nodes}
         edges={flowEdges}
+        onNodesChange={onNodesChange}
         nodeTypes={nodeTypes}
         fitView
         fitViewOptions={{ padding: 0.1 }}
@@ -190,7 +206,7 @@ function PipelineFlowInner({ layers, edges, agentMap }: PipelineFlowProps) {
         zoomOnDoubleClick={false}
         minZoom={0.3}
         maxZoom={2}
-        nodesDraggable={false}
+        nodesDraggable
         nodesConnectable={false}
         nodesFocusable={false}
         edgesFocusable={false}
@@ -200,9 +216,15 @@ function PipelineFlowInner({ layers, edges, agentMap }: PipelineFlowProps) {
         <Controls
           showInteractive={false}
           showFitView
-          onFitView={handleFitView}
           position="bottom-right"
-        />
+        >
+          <ControlButton onClick={handleReset} title="Reset layout">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="1 4 1 10 7 10" />
+              <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
+            </svg>
+          </ControlButton>
+        </Controls>
       </ReactFlow>
     </div>
   );
