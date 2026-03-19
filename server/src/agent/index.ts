@@ -13,13 +13,14 @@ import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude, type PlanStep } from "./planning.js";
 import { backgroundManager } from "./backgroundManager.js";
 import { resolve, join } from "path";
-import { mkdirSync, writeFileSync } from "fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync } from "fs";
 import { z } from "zod";
 import { getAgentConfig, isValidTeamAgent, getTeamAgents, isAllToolsAllowed, type AgentRole } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
 import { getModelContextWindow } from "../config/models.js";
+import { detectDiagnosticCommand, runDiagnostic } from "./diagnostics.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 export type ConversationMode = "default" | "team";
@@ -166,6 +167,18 @@ You have access to built-in tools (run_command, read_file, calculator, get_time,
 - Common fixes: install missing dependencies, correct file paths, adjust permissions, fix syntax
 - If repeated failures occur, explain the issue to the user and suggest alternatives
 - Never silently ignore errors — always report what happened
+
+## Auto-Verification Protocol
+After editing or writing code files, the system automatically runs diagnostics (typecheck/lint).
+- If errors appear in the tool result, try to fix them in the next step before proceeding to other tasks
+- Continue the edit → verify → fix cycle, up to a maximum of 5 attempts
+- For complex errors, read the relevant source files first to understand context before fixing
+- **Escape conditions** — stop the fix loop and report to the user if ANY of these apply:
+  - You have already attempted 5 fix iterations for the same diagnostic errors
+  - The errors appear to be pre-existing (not caused by your edits) — e.g. errors in files you did not touch, or third-party type definition issues
+  - The errors are environmental (missing dependencies, wrong tool version, config issues) rather than code errors
+  - The same error persists after 2 consecutive identical fix attempts (you are going in circles)
+- When stopping, briefly summarize the unresolved errors and suggest what the user can do
 
 ## Skills
 Skills are specialized capabilities defined in SKILL.md files. When a user's request matches a listed skill:
@@ -397,10 +410,10 @@ const NO_VISIBLE_OUTPUT_MESSAGE = "(工具调用已结束，但未生成可展�
 const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具。请直接输出给用户的最终答复正文。";
 
 const MAX_SINGLE_TOOL_RESULT_CHARS = 5000;
-/** Per-task result cap: 3500 chars ≈ 900 tokens — enough for a meaningful summary */
-const MAX_TASK_TOOL_RESULT_CHARS = 8000;
+/** Per-task result cap: expanded for richer context passing */
+const MAX_TASK_TOOL_RESULT_CHARS = 16000;
 /** DependsOn context cap per dependency */
-const MAX_DEPENDS_ON_SUMMARY_CHARS = 8000;
+const MAX_DEPENDS_ON_SUMMARY_CHARS = 16000;
 const MIN_CONVERSATION_TOKENS_CAP = 16000;
 const CONVERSATION_TOKEN_CAP_RATIO = 0.55;
 /** Maximum review-fix iterations before reporting unresolved issues */
@@ -762,7 +775,25 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: 输出路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
           }
-          return String(await t.invoke({ ...input, path: resolvedPath }));
+          const originalResult = String(await t.invoke({ ...input, path: resolvedPath }));
+          // Auto-diagnostic only after successful writes
+          if (originalResult.startsWith("OK:")) {
+            const diagInfo = detectDiagnosticCommand(resolvedPath, workspacePath);
+            if (diagInfo) {
+              try {
+                let diagResult = await runDiagnostic(diagInfo.command, workspacePath);
+                // For project-wide checks, filter to only errors in the edited file
+                if (diagResult && diagInfo.filterRelPath) {
+                  const filtered = diagResult.split("\n").filter(l => l.includes(diagInfo.filterRelPath!)).join("\n").trim();
+                  diagResult = filtered || null;
+                }
+                if (diagResult) {
+                  return originalResult + `\n\n⚠️ Diagnostic errors detected (${diagInfo.projectType}):\n${diagResult}\n\nPlease fix the errors above.`;
+                }
+              } catch { /* diagnostic failure should not block the tool */ }
+            }
+          }
+          return originalResult;
         },
         {
           name: "write_file",
@@ -780,7 +811,25 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: 编辑路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
           }
-          return String(await t.invoke({ ...input, path: resolvedPath }));
+          const originalResult = String(await t.invoke({ ...input, path: resolvedPath }));
+          // Auto-diagnostic only after successful edits
+          if (originalResult.startsWith("OK:")) {
+            const diagInfo = detectDiagnosticCommand(resolvedPath, workspacePath);
+            if (diagInfo) {
+              try {
+                let diagResult = await runDiagnostic(diagInfo.command, workspacePath);
+                // For project-wide checks, filter to only errors in the edited file
+                if (diagResult && diagInfo.filterRelPath) {
+                  const filtered = diagResult.split("\n").filter(l => l.includes(diagInfo.filterRelPath!)).join("\n").trim();
+                  diagResult = filtered || null;
+                }
+                if (diagResult) {
+                  return originalResult + `\n\n⚠️ Diagnostic errors detected (${diagInfo.projectType}):\n${diagResult}\n\nPlease fix the errors above.`;
+                }
+              } catch { /* diagnostic failure should not block the tool */ }
+            }
+          }
+          return originalResult;
         },
         {
           name: "edit_file",
@@ -969,7 +1018,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
 
       // Build context injection from dependsOn references
       let contextInjection = "";
-      const MAX_CONTEXT_INJECTION_CHARS = 32000; // total cap for all dependsOn context
+      const MAX_CONTEXT_INJECTION_CHARS = 64000; // total cap for all dependsOn context
       if (dependsOn.length > 0) {
         const contextParts: string[] = [];
         const missingDeps: string[] = [];
@@ -991,6 +1040,31 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
               }
             }
           }
+          // File read-back: try .agents/results/ when in-memory lookup fails
+          if (!result && context.options?.workspacePath) {
+            const resultsDir = join(context.options.workspacePath, ".agents", "results");
+            try {
+              // 1. Exact match by subagentId (with path traversal guard)
+              const exactPath = join(resultsDir, `${depRef}.md`);
+              if (resolve(exactPath).startsWith(resolve(resultsDir) + "/") && existsSync(exactPath)) {
+                const content = readFileSync(exactPath, "utf-8");
+                const nameMatch = content.match(/^# (.+?) \(/);
+                result = { name: nameMatch?.[1] ?? depRef, summary: content };
+              }
+              // 2. Fuzzy match by name
+              if (!result) {
+                const files = readdirSync(resultsDir).filter(f => f.endsWith(".md"));
+                for (const f of files) {
+                  const content = readFileSync(join(resultsDir, f), "utf-8");
+                  const nameMatch = content.match(/^# (.+?) \(/);
+                  if (nameMatch && nameMatch[1].toLowerCase() === depRef.toLowerCase()) {
+                    result = { name: nameMatch[1], summary: content };
+                    break;
+                  }
+                }
+              }
+            } catch { /* directory may not exist */ }
+          }
           if (result) {
             const remaining = MAX_CONTEXT_INJECTION_CHARS - contextChars;
             const perDepCap = Math.min(MAX_DEPENDS_ON_SUMMARY_CHARS, remaining);
@@ -1008,6 +1082,16 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
         if (contextParts.length > 0) {
           contextInjection = `\n\n## Prior Agent Results\nThe following results from previous agents are provided as context for your task:\n\n${contextParts.join("\n\n")}\n\n---\n\n`;
         }
+      }
+      // Inject available context file list so sub-agents can read_file for full content
+      if (context.options?.workspacePath) {
+        const resultsDir = join(context.options.workspacePath, ".agents", "results");
+        try {
+          const files = readdirSync(resultsDir).filter(f => f.endsWith(".md"));
+          if (files.length > 0) {
+            contextInjection += `\n\n## Available Context Files\nPrevious agent results are saved in \`${resultsDir}/\`. You can use \`read_file\` to access full content if the injected summary is insufficient:\n${files.map(f => `- ${f}`).join("\n")}\n`;
+          }
+        } catch { /* dir may not exist */ }
       }
       const enrichedPrompt = contextInjection ? contextInjection + prompt : prompt;
       const subagentId = createSubagentId();
@@ -1033,6 +1117,8 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       try {
         let summaryText = "";
         let summaryTruncated = false;
+        let fullText = "";           // Uncapped buffer for file persistence
+        const MAX_FULL_TEXT = 64000; // Cap full text to prevent memory issues
         const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes per subagent
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
@@ -1067,6 +1153,10 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
                 } else {
                   summaryText = next;
                 }
+              }
+              if (fullText.length < MAX_FULL_TEXT) {
+                fullText += token;
+                if (fullText.length > MAX_FULL_TEXT) fullText = fullText.slice(0, MAX_FULL_TEXT);
               }
               context.options?.onSubagentEvent?.({
                 kind: "token",
@@ -1139,7 +1229,8 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
           try {
             const resultsDir = join(wpPath, ".agents", "results");
             mkdirSync(resultsDir, { recursive: true });
-            const fileContent = `# ${subagentName} (${role ?? "general"})\nPrompt: ${prompt.slice(0, 200)}${prompt.length > 200 ? "..." : ""}\n---\n${summary}`;
+            const fullResult = fullText.trim() || rawSummary;
+            const fileContent = `# ${subagentName} (${role ?? "general"})\nPrompt: ${prompt.slice(0, 500)}${prompt.length > 500 ? "..." : ""}\nDependsOn: ${dependsOn.join(", ") || "none"}\n---\n${fullResult}`;
             writeFileSync(join(resultsDir, `${subagentId}.md`), fileContent, "utf-8");
           } catch {
             // Non-critical — don't fail the task if file write fails

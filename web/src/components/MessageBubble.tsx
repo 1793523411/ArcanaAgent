@@ -1,5 +1,5 @@
-import { useState } from "react";
-import type { StoredMessage } from "../types";
+import { useState, useMemo, useRef } from "react";
+import type { StoredMessage, TeamDef, AgentDef } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
@@ -11,6 +11,8 @@ interface Props {
   message: StoredMessage;
   conversationId?: string;
   models?: Array<{ id: string; name: string }>;
+  team?: TeamDef | null;
+  agents?: AgentDef[];
 }
 
 function CopyIcon() {
@@ -22,7 +24,7 @@ function CopyIcon() {
   );
 }
 
-export default function MessageBubble({ message, conversationId, models = [] }: Props) {
+export default function MessageBubble({ message, conversationId, models = [], team = null, agents = [] }: Props) {
   const isHuman = message.type === "human";
   const attachments = message.attachments ?? [];
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
@@ -47,6 +49,16 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
     }
     return map;
   });
+  // 获取team成员信息
+  const teamMemberDisplay = useMemo(() => {
+    if (!team || team.agents.length === 0)
+      return [];
+    return team.agents
+      .map((agentId) => agents.find((a) => a.id === agentId))
+      .filter(Boolean) as AgentDef[];
+  }, [team, agents]);
+  const [showTeamMembers, setShowTeamMembers] = useState(false);
+  const teamMemberRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const toolLogs = message.toolLogs ?? [];
   const subagents = message.subagents ?? [];
@@ -123,6 +135,34 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             <span className="text-xs text-[var(--color-text-muted)] shrink-0">
               {isHuman ? "你" : "Agent"}
             </span>
+            {!isHuman && team && (<div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowTeamMembers(!showTeamMembers)}
+                onMouseEnter={() => setShowTeamMembers(true)}
+                onMouseLeave={() => setShowTeamMembers(false)}
+                className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0 hover:text-[var(--color-text)] transition-colors flex items-center gap-1"
+                title={team.name}
+              >
+                <span>👥</span>
+                <span className="truncate max-w-[100px]">{team.name}</span>
+              </button>
+              {showTeamMembers && (<div
+                ref={teamMemberRef}
+                className="absolute left-0 top-full mt-1 z-50 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-lg p-3 min-w-[200px] shadow-xl"
+                style={{ minWidth: "200px" }}
+              >
+                <div className="text-xs font-medium mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  团队成员
+                </div>
+                <div className="space-y-1">
+                  {teamMemberDisplay.map((agent) => (<div key={agent.id} className="flex items-center gap-2 text-xs">
+                    <span style={{ color: agent.color }}>{agent.icon}</span>
+                    <span style={{ color: "var(--color-text)" }}>{agent.name}</span>
+                  </div>))}
+                </div>
+              </div>)}
+            </div>)}
             {modelName && (
               <span
                 className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0"

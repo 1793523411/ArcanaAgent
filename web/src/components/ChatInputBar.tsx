@@ -341,7 +341,10 @@ export default function ChatInputBar({
                 )}
               </DropdownMenu.Root>
             ) : (
-              <span className="text-[13px] text-[var(--color-text-muted)] px-2 py-1">
+              <span 
+                className="text-[13px] text-[var(--color-text-muted)] px-2 py-1 truncate max-w-[100px]"
+                title={modeLabel}
+              >
                 {modeLabel}
               </span>
             )}
@@ -352,8 +355,10 @@ export default function ChatInputBar({
                     type="button"
                     disabled={loading || disabled}
                     className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                    title={currentTeam?.name}
                   >
-                    <span>👥 {currentTeam?.name ?? "选择 Team"}</span>
+                    <span>👥</span>
+                    <span className="truncate max-w-[120px]">{currentTeam?.name ?? "选择 Team"}</span>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
                       <path d="M18 15l-6-6-6 6" />
                     </svg>
@@ -421,7 +426,10 @@ export default function ChatInputBar({
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>
             ) : (
-              <span className="text-[13px] text-[var(--color-text-muted)] px-2 py-1">
+              <span 
+                className="text-[13px] text-[var(--color-text-muted)] px-2 py-1 truncate max-w-[140px]"
+                title={currentModel?.name}
+              >
                 {currentModel?.name ?? "模型"}
               </span>
             )}

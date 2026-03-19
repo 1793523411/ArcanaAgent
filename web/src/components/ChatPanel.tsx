@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { AgentRole, ConversationMode, StoredMessage, StreamingStatus } from "../types";
+import type { AgentRole, ConversationMode, StoredMessage, StreamingStatus, TeamDef, AgentDef } from "../types";
 import MessageBubble from "./MessageBubble";
 import StreamingBubble from "./StreamingBubble";
 import ChatInputBar, { type FileWithData } from "./ChatInputBar";
@@ -95,6 +95,8 @@ interface Props {
   } | null;
   onCompress?: () => void;
   compressing?: boolean;
+  team?: TeamDef | null;
+  agents?: AgentDef[];
 }
 
 export default function ChatPanel({
@@ -132,6 +134,8 @@ export default function ChatPanel({
   contextUsage = null,
   onCompress,
   compressing = false,
+  team = null,
+  agents = [],
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -263,7 +267,7 @@ export default function ChatPanel({
           }
 
           return merged.map((m, i) => (
-            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
+            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} team={team} agents={agents} />
           ));
         })()}
         {isTaskExecuting && !loading && (
@@ -288,6 +292,8 @@ export default function ChatPanel({
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
           usageTokens={usageTokens || undefined}
+          team={team}
+          agents={agents}
         />
         )}
         {error && (

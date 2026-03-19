@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef, useCallback } from "react";
-import type { AgentRole, StreamingStatus, ToolLog } from "../types";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import type { AgentRole, StreamingStatus, ToolLog, TeamDef, AgentDef } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
@@ -68,6 +68,8 @@ interface Props {
     completionTokens: number;
     totalTokens: number;
   };
+  team?: TeamDef | null;
+  agents?: AgentDef[];
 }
 
 function CopyIcon() {
@@ -94,6 +96,8 @@ export default function StreamingBubble({
   supportsReasoning = false,
   modelName,
   usageTokens,
+  team = null,
+  agents = [],
 }: Props) {
   const [reasoningCollapsed, setReasoningCollapsed] = useState(false);
   const [planCollapsed, setPlanCollapsed] = useState(false);
@@ -228,11 +232,51 @@ export default function StreamingBubble({
     return getArtifactUrl(conversationId, cleaned);
   };
 
+  // 获取team成员信息
+  const teamMemberDisplay = useMemo(() => {
+    if (!team || team.agents.length === 0)
+      return [];
+    return team.agents
+      .map((agentId) => agents.find((a) => a.id === agentId))
+      .filter(Boolean) as AgentDef[];
+  }, [team, agents]);
+
+  const [showTeamMembers, setShowTeamMembers] = useState(false);
+  const teamMemberRef = useRef<HTMLDivElement>(null);
+
   return (
     <div className="self-start max-w-[85%] py-3 px-4 rounded-xl bg-[var(--color-surface)] border border-[var(--color-border)]">
       <div className="flex items-center justify-between gap-2 mb-1">
         <div className="flex items-center gap-1.5 min-w-0 flex-1">
           <span className="text-xs text-[var(--color-text-muted)] shrink-0">Agent</span>
+          {team && (<div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowTeamMembers(!showTeamMembers)}
+              onMouseEnter={() => setShowTeamMembers(true)}
+              onMouseLeave={() => setShowTeamMembers(false)}
+              className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0 hover:text-[var(--color-text)] transition-colors flex items-center gap-1"
+              title={team.name}
+            >
+              <span>👥</span>
+              <span className="truncate max-w-[100px]">{team.name}</span>
+            </button>
+            {showTeamMembers && (<div
+              ref={teamMemberRef}
+              className="absolute left-0 top-full mt-1 z-50 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-lg p-3 min-w-[200px] shadow-xl"
+              style={{ minWidth: "200px" }}
+            >
+              <div className="text-xs font-medium mb-2" style={{ color: "var(--color-text-muted)" }}>
+                团队成员
+              </div>
+              <div className="space-y-1">
+                {teamMemberDisplay.map((agent) => (<div key={agent.id} className="flex items-center gap-2 text-xs">
+                  <span style={{ color: agent.color }}>{agent.icon}</span>
+                  <span style={{ color: "var(--color-text)" }}>{agent.name}</span>
+                </div>))}
+              </div>
+            </div>)}
+          </div>)}
           {modelName && (
             <span
               className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] truncate max-w-[140px] cursor-default shrink-0"

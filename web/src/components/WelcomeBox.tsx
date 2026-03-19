@@ -36,7 +36,7 @@ export default function WelcomeBox({
 }: Props) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 min-h-0 overflow-auto">
-      <div className="max-w-[640px] w-full flex flex-col items-center gap-6">
+      <div className="max-w-[800px] w-full flex flex-col items-center gap-6">
         <div className="text-center">
           <h1 className="m-0 mb-3 text-[28px] font-semibold text-[var(--color-accent)]">
             🚀 你好，欢迎使用！

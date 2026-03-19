@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval, listTeamDefs } from "./api";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval, listTeamDefs, listAgentDefs } from "./api";
+import type { TeamDef, AgentDef } from "./types";
 import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
 import TeamPanel from "./components/TeamPanel";
 import AgentTeamPanel from "./components/AgentTeamPanel";
@@ -31,7 +32,8 @@ export default function App() {
   const [compressing, setCompressing] = useState(false);
   const [draftMode, setDraftMode] = useState<ConversationMode>("default");
   const [draftTeamId, setDraftTeamId] = useState("default");
-  const [teams, setTeams] = useState<{ id: string; name: string }[]>([]);
+  const [teams, setTeams] = useState<TeamDef[]>([]);
+  const [agents, setAgents] = useState<AgentDef[]>([]);
   const mainRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
@@ -58,6 +60,17 @@ export default function App() {
     if (!q) return conversations;
     return conversations.filter((c) => c.title.toLowerCase().includes(q));
   }, [conversations, sidebarSearch]);
+
+  // Simplified teams for WelcomeBox selector
+  const simplifiedTeams = useMemo(() => {
+    return teams.map((t) => ({ id: t.id, name: t.name }));
+  }, [teams]);
+
+  // Current team info for the active conversation
+  const currentTeam = useMemo(() => {
+    if (!current?.teamId) return null;
+    return teams.find((t) => t.id === current.teamId) ?? null;
+  }, [current?.teamId, teams]);
 
   const {
     input,
@@ -107,9 +120,14 @@ export default function App() {
     setArtifactCount(0);
   }, [current?.id]);
 
-  // Load teams list for team selector
+  // Load teams list and agents list for team selector and member display
   useEffect(() => {
-    listTeamDefs().then((list) => setTeams(list.map((t) => ({ id: t.id, name: t.name })))).catch(() => {});
+    Promise.all([listTeamDefs(), listAgentDefs()])
+      .then(([teamsList, agentsList]) => {
+        setTeams(teamsList);
+        setAgents(agentsList);
+      })
+      .catch(() => {});
   }, [showAgentTeam]);
 
   useEffect(() => {
@@ -415,7 +433,7 @@ export default function App() {
               onModelChange={setModelId}
               mode={draftMode}
               onModeChange={setDraftMode}
-              teams={teams}
+              teams={simplifiedTeams}
               teamId={draftTeamId}
               onTeamChange={setDraftTeamId}
             />
@@ -467,6 +485,8 @@ export default function App() {
               contextUsage={contextUsage}
               onCompress={handleCompress}
               compressing={compressing}
+              team={currentTeam}
+              agents={agents}
             />
           )}
         </div>
