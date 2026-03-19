@@ -15,7 +15,7 @@ import { backgroundManager } from "./backgroundManager.js";
 import { resolve, join } from "path";
 import { mkdirSync, writeFileSync } from "fs";
 import { z } from "zod";
-import { getAgentConfig, isValidTeamAgent, getTeamAgents, type AgentRole } from "./roles.js";
+import { getAgentConfig, isValidTeamAgent, getTeamAgents, isAllToolsAllowed, type AgentRole } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
@@ -235,7 +235,17 @@ ${agentList}
 - Do NOT interleave your own tool calls between sub-agent delegations.
 
 ### Safety
-- Do not execute high-risk refactors directly. First delegate a plan draft, then review and explicitly approve before implementation.`;
+- Do not execute high-risk refactors directly. First delegate a plan draft, then review and explicitly approve before implementation.
+
+### Review-Fix Iteration Pattern
+For coding tasks, always follow this cycle:
+1. Delegate implementation to **coder**
+2. Delegate review to **reviewer** (dependsOn: [coder_id])
+3. If reviewer says \`VERDICT: NEEDS_FIX\`:
+   - Delegate fix to **coder** (dependsOn: [reviewer_id]) with instruction to address each issue
+   - Re-delegate review to **reviewer** (dependsOn: [fix_coder_id])
+4. Maximum **3 iterations**. After 3 rounds, report unresolved issues to user.
+5. If reviewer says \`VERDICT: PASS\`, proceed to next task or report success.`;
 
   if (team?.coordinatorPrompt) {
     prompt += `\n\n### Additional Instructions\n${team.coordinatorPrompt}`;
@@ -388,11 +398,13 @@ const FINAL_ONLY_PROMPT = "请不要继续思考，也不要调用任何工具�
 
 const MAX_SINGLE_TOOL_RESULT_CHARS = 5000;
 /** Per-task result cap: 3500 chars ≈ 900 tokens — enough for a meaningful summary */
-const MAX_TASK_TOOL_RESULT_CHARS = 3500;
+const MAX_TASK_TOOL_RESULT_CHARS = 8000;
 /** DependsOn context cap per dependency */
-const MAX_DEPENDS_ON_SUMMARY_CHARS = 2000;
-const MIN_CONVERSATION_TOKENS_CAP = 8000;
+const MAX_DEPENDS_ON_SUMMARY_CHARS = 8000;
+const MIN_CONVERSATION_TOKENS_CAP = 16000;
 const CONVERSATION_TOKEN_CAP_RATIO = 0.55;
+/** Maximum review-fix iterations before reporting unresolved issues */
+const MAX_REVIEW_ITERATIONS = 3;
 const MAX_CONVERSATION_TOKENS = 60_000;
 
 function truncateToolResult(result: string, maxChars = MAX_SINGLE_TOOL_RESULT_CHARS): string {
@@ -578,8 +590,9 @@ function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MAX_CONVE
 
 function filterToolsByRole(tools: StructuredToolInterface[], agentId: string): StructuredToolInterface[] {
   const config = getAgentConfig(agentId);
-  if (!config || config.deniedTools.length === 0) return tools;
-  return tools.filter((t) => !config.deniedTools.includes(t.name));
+  if (!config || isAllToolsAllowed(config.allowedTools)) return tools;
+  const allowed = new Set(config.allowedTools);
+  return tools.filter((t) => allowed.has(t.name));
 }
 
 function buildSubagentSystemPrompt(agentId: string, skillContext?: string, workspacePath?: string): string {
@@ -759,6 +772,101 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
       );
       return wrapped as unknown as StructuredToolInterface;
     }
+    if (t.name === "edit_file" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: 编辑路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "edit_file",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    // Workspace path resolution for search_code, list_files, git_operations, test_runner
+    if (t.name === "search_code" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath
+            ? (rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath))
+            : workspacePath;
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[search_code]\nstatus: blocked\npath: ${rawPath}\nnote: 搜索路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "search_code",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    if (t.name === "list_files" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[list_files]\nstatus: blocked\npath: ${rawPath}\nnote: 列出路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "list_files",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    if (t.name === "git_operations" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawDir = typeof input.working_directory === "string" ? input.working_directory : "";
+          const resolvedDir = rawDir
+            ? (rawDir.startsWith("/") ? rawDir : resolve(workspacePath, rawDir))
+            : workspacePath;
+          const safeDir = isPathInWorkspace(resolvedDir, workspacePath) ? resolvedDir : workspacePath;
+          return String(await t.invoke({ ...input, working_directory: safeDir }));
+        },
+        {
+          name: "git_operations",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    if (t.name === "test_runner" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath
+            ? (rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath))
+            : workspacePath;
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[test_runner]\nstatus: blocked\npath: ${rawPath}\nnote: 测试路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "test_runner",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
     if (t.name !== "run_command") return t;
     const wrapped = tool(
       async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
@@ -821,6 +929,17 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
             onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
           });
         }
+        if (t.name === "edit_file") {
+          return wrapToolWithApproval(t, "edit_file", (input) => {
+            const path = typeof input.path === "string" ? input.path : "";
+            return isHighRiskWrite(path, workspacePath);
+          }, {
+            conversationId: convId,
+            subagentId: subId,
+            role: subagentRole,
+            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
+          });
+        }
         return t;
       });
     }
@@ -850,7 +969,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
 
       // Build context injection from dependsOn references
       let contextInjection = "";
-      const MAX_CONTEXT_INJECTION_CHARS = 12000; // total cap for all dependsOn context
+      const MAX_CONTEXT_INJECTION_CHARS = 32000; // total cap for all dependsOn context
       if (dependsOn.length > 0) {
         const contextParts: string[] = [];
         const missingDeps: string[] = [];
@@ -1289,9 +1408,9 @@ export async function* streamAgentWithTokens(
   ];
   const depth = options?.subagentDepth ?? 0;
   const baseCap = resolveConversationTokenCap(modelId);
-  // Sub-agents get a reduced cap: 60% per depth level (depth 0 = 100%, depth 1 = 60%, depth 2 = 36%)
+  // Sub-agents get a reduced cap: 75% per depth level (depth 0 = 100%, depth 1 = 75%, depth 2 = 56%)
   const conversationTokenCap = depth > 0
-    ? Math.max(MIN_CONVERSATION_TOKENS_CAP, Math.floor(baseCap * Math.pow(0.6, depth)))
+    ? Math.max(MIN_CONVERSATION_TOKENS_CAP, Math.floor(baseCap * Math.pow(0.75, depth)))
     : baseCap;
   if (runtimePlanSteps.length > 0) {
     emitCurrentPlan("created");
@@ -1396,7 +1515,7 @@ export async function* streamAgentWithTokens(
         }
       }
     } else {
-      result = `[error] Unknown tool: ${tc.name}`;
+      result = `[error] Unknown tool: ${tc.name}. You do NOT have this tool. In team mode, delegate work via the \`task\` tool instead of calling execution tools directly.`;
     }
     // Task tool results are already truncated internally (with metadata prefix).
     // Only apply outer truncation for non-task tools.

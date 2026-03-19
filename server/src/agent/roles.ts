@@ -1,4 +1,4 @@
-import { getAgentDef, type AgentDef } from "../storage/agentDefs.js";
+import { getAgentDef, ALL_TOOLS_WILDCARD, type AgentDef } from "../storage/agentDefs.js";
 import { getTeamDef, type TeamDef } from "../storage/teamDefs.js";
 
 export type { AgentDef } from "../storage/agentDefs.js";
@@ -10,7 +10,8 @@ export type AgentRole = string;
 export interface RoleConfig {
   displayName: string;
   systemPromptAddendum: string;
-  deniedTools: string[];
+  /** Allowed tool IDs. ["*"] = all tools allowed. */
+  allowedTools: string[];
   color: string;
   icon: string;
 }
@@ -22,10 +23,15 @@ export function getAgentConfig(agentId: string): RoleConfig | null {
   return {
     displayName: def.name,
     systemPromptAddendum: def.systemPrompt,
-    deniedTools: def.deniedTools,
+    allowedTools: def.allowedTools,
     color: def.color,
     icon: def.icon,
   };
+}
+
+/** Check if allowedTools means "all tools" */
+export function isAllToolsAllowed(allowedTools: string[]): boolean {
+  return allowedTools.includes(ALL_TOOLS_WILDCARD);
 }
 
 /** 检查 agentId 是否在指定 Team 的成员列表中 */

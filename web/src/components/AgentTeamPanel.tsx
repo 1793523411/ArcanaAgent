@@ -10,9 +10,11 @@ import {
   createTeamDef,
   updateTeamDef,
   deleteTeamDef as apiDeleteTeam,
+  getConfig,
 } from "../api";
 import { useToast } from "./Toast";
 import { refreshRoleCache } from "../constants/roles";
+import DeleteConfirmModal from "./DeleteConfirmModal";
 
 interface Props {
   onClose: () => void;
@@ -28,17 +30,8 @@ interface AgentFormData {
   icon: string;
   color: string;
   systemPrompt: string;
-  deniedTools: string[];
+  allowedTools: string[];
 }
-
-const COMMON_TOOLS = [
-  "run_command",
-  "write_file",
-  "read_file",
-  "web_search",
-  "calculator",
-  "get_time",
-];
 
 const emptyAgentForm: AgentFormData = {
   name: "",
@@ -46,15 +39,17 @@ const emptyAgentForm: AgentFormData = {
   icon: "🤖",
   color: "#6B7280",
   systemPrompt: "",
-  deniedTools: [],
+  allowedTools: ["*"],
 };
 
 function AgentForm({
   initial,
+  availableTools,
   onSave,
   onCancel,
 }: {
   initial?: AgentFormData;
+  availableTools: string[];
   onSave: (data: AgentFormData) => void;
   onCancel: () => void;
 }) {
@@ -119,18 +114,47 @@ function AgentForm({
       </div>
 
       <div>
-        <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>禁用的工具</label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs" style={{ color: "var(--color-text-muted)" }}>可使用的工具</label>
+          <div className="flex gap-2">
+            <button
+              className="text-xs px-2 py-0.5 rounded hover:opacity-80"
+              style={{ color: "var(--color-accent)" }}
+              onClick={(e) => {
+                e.preventDefault();
+                setForm({ ...form, allowedTools: ["*"] });
+              }}
+            >
+              全选
+            </button>
+            <button
+              className="text-xs px-2 py-0.5 rounded hover:opacity-80"
+              style={{ color: "var(--color-text-muted)" }}
+              onClick={(e) => {
+                e.preventDefault();
+                setForm({ ...form, allowedTools: [] });
+              }}
+            >
+              取消全选
+            </button>
+          </div>
+        </div>
         <div className="flex flex-wrap gap-2">
-          {COMMON_TOOLS.map((t) => (
+          {availableTools.map((t) => (
             <label key={t} className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--color-text)" }}>
               <input
                 type="checkbox"
-                checked={form.deniedTools.includes(t)}
+                checked={form.allowedTools.includes("*") || form.allowedTools.includes(t)}
                 onChange={(e) => {
                   if (e.target.checked) {
-                    setForm({ ...form, deniedTools: [...form.deniedTools, t] });
+                    const next = form.allowedTools.filter((x) => x !== "*");
+                    next.push(t);
+                    // If all tools are now selected, collapse to wildcard
+                    setForm({ ...form, allowedTools: next.length >= availableTools.length ? ["*"] : next });
                   } else {
-                    setForm({ ...form, deniedTools: form.deniedTools.filter((x) => x !== t) });
+                    // If was wildcard, expand to all tools minus this one
+                    const base = form.allowedTools.includes("*") ? [...availableTools] : [...form.allowedTools];
+                    setForm({ ...form, allowedTools: base.filter((x) => x !== t && x !== "*") });
                   }
                 }}
               />
@@ -215,7 +239,31 @@ function TeamForm({
       </div>
 
       <div>
-        <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>选择团队成员</label>
+        <div className="flex items-center justify-between mb-1">
+          <label className="block text-xs" style={{ color: "var(--color-text-muted)" }}>选择团队成员</label>
+          <div className="flex gap-2">
+            <button
+              className="text-xs px-2 py-0.5 rounded hover:opacity-80"
+              style={{ color: "var(--color-accent)" }}
+              onClick={(e) => {
+                e.preventDefault();
+                setForm({ ...form, agents: allAgents.map((a) => a.id) });
+              }}
+            >
+              全选
+            </button>
+            <button
+              className="text-xs px-2 py-0.5 rounded hover:opacity-80"
+              style={{ color: "var(--color-text-muted)" }}
+              onClick={(e) => {
+                e.preventDefault();
+                setForm({ ...form, agents: [] });
+              }}
+            >
+              取消全选
+            </button>
+          </div>
+        </div>
         <div className="space-y-1.5 max-h-48 overflow-y-auto rounded-lg p-2" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
           {allAgents.map((agent) => (
             <label
@@ -284,6 +332,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
   const [tab, setTab] = useState<Tab>("agents");
   const [agents, setAgents] = useState<AgentDef[]>([]);
   const [teams, setTeams] = useState<TeamDef[]>([]);
+  const [availableTools, setAvailableTools] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Agent editing
@@ -294,6 +343,11 @@ export default function AgentTeamPanel({ onClose }: Props) {
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [creatingTeam, setCreatingTeam] = useState(false);
 
+  // Delete confirmation
+  const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
+  const [deletingTeamId, setDeletingTeamId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
   // AI generation
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
@@ -301,9 +355,12 @@ export default function AgentTeamPanel({ onClose }: Props) {
 
   const loadData = useCallback(async () => {
     try {
-      const [a, t] = await Promise.all([listAgentDefs(), listTeamDefs()]);
+      const [a, t, cfg] = await Promise.all([listAgentDefs(), listTeamDefs(), getConfig()]);
       setAgents(a);
       setTeams(t);
+      if (cfg.availableToolIds) {
+        setAvailableTools(cfg.availableToolIds);
+      }
       // Refresh the role display cache so TeamPanel/StreamingBubble/MessageBubble
       // pick up newly created or updated agents
       refreshRoleCache();
@@ -338,12 +395,16 @@ export default function AgentTeamPanel({ onClose }: Props) {
   };
 
   const handleDeleteAgent = async (id: string) => {
+    setDeleting(true);
     try {
       await apiDeleteAgent(id);
       toast("Agent 已删除", "success");
       loadData();
     } catch (e) {
       toast(String(e), "error");
+    } finally {
+      setDeleting(false);
+      setDeletingAgentId(null);
     }
   };
 
@@ -370,12 +431,16 @@ export default function AgentTeamPanel({ onClose }: Props) {
   };
 
   const handleDeleteTeam = async (id: string) => {
+    setDeleting(true);
     try {
       await apiDeleteTeam(id);
       toast("Team 已删除", "success");
       loadData();
     } catch (e) {
       toast(String(e), "error");
+    } finally {
+      setDeleting(false);
+      setDeletingTeamId(null);
     }
   };
 
@@ -453,13 +518,14 @@ export default function AgentTeamPanel({ onClose }: Props) {
                   </h3>
                   <AgentForm
                     key={editingAgentId ?? (aiGeneratedData ? "ai" : "manual")}
+                    availableTools={availableTools}
                     initial={editingAgent ? {
                       name: editingAgent.name,
                       description: editingAgent.description,
                       icon: editingAgent.icon,
                       color: editingAgent.color,
                       systemPrompt: editingAgent.systemPrompt,
-                      deniedTools: editingAgent.deniedTools,
+                      allowedTools: editingAgent.allowedTools,
                     } : aiGeneratedData ?? undefined}
                     onSave={handleSaveAgent}
                     onCancel={() => { setEditingAgentId(null); setCreatingAgent(false); setAiGeneratedData(null); }}
@@ -527,9 +593,14 @@ export default function AgentTeamPanel({ onClose }: Props) {
                       )}
                     </div>
                     <div className="text-xs mt-0.5" style={{ color: "var(--color-text-muted)" }}>{agent.description}</div>
-                    {agent.deniedTools.length > 0 && (
+                    {!agent.allowedTools.includes("*") && agent.allowedTools.length > 0 && (
                       <div className="text-[10px] mt-1" style={{ color: "var(--color-text-muted)" }}>
-                        禁用: {agent.deniedTools.join(", ")}
+                        可用工具: {agent.allowedTools.join(", ")}
+                      </div>
+                    )}
+                    {!agent.allowedTools.includes("*") && agent.allowedTools.length === 0 && (
+                      <div className="text-[10px] mt-1" style={{ color: "var(--color-error-text)" }}>
+                        无可用工具
                       </div>
                     )}
                   </div>
@@ -545,7 +616,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                       <button
                         className="text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
                         style={{ color: "var(--color-error-text)" }}
-                        onClick={() => handleDeleteAgent(agent.id)}
+                        onClick={() => setDeletingAgentId(agent.id)}
                       >
                         删除
                       </button>
@@ -620,7 +691,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                           <button
                             className="text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
                             style={{ color: "var(--color-error-text)" }}
-                            onClick={() => handleDeleteTeam(team.id)}
+                            onClick={() => setDeletingTeamId(team.id)}
                           >
                             删除
                           </button>
@@ -646,6 +717,24 @@ export default function AgentTeamPanel({ onClose }: Props) {
           )}
         </div>
       </div>
+
+      {/* Delete Confirmation Modals */}
+      <DeleteConfirmModal
+        open={!!deletingAgentId}
+        onOpenChange={(open) => { if (!open) setDeletingAgentId(null); }}
+        onConfirm={() => deletingAgentId && handleDeleteAgent(deletingAgentId)}
+        title="删除 Agent"
+        description={`确定要删除 Agent「${agents.find((a) => a.id === deletingAgentId)?.name ?? ""}」吗？删除后无法恢复。`}
+        loading={deleting}
+      />
+      <DeleteConfirmModal
+        open={!!deletingTeamId}
+        onOpenChange={(open) => { if (!open) setDeletingTeamId(null); }}
+        onConfirm={() => deletingTeamId && handleDeleteTeam(deletingTeamId)}
+        title="删除 Team"
+        description={`确定要删除 Team「${teams.find((t) => t.id === deletingTeamId)?.name ?? ""}」吗？删除后无法恢复。`}
+        loading={deleting}
+      />
     </div>
   );
 }

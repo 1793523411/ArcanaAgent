@@ -8,7 +8,7 @@ export interface AgentDef {
   icon: string;
   color: string;
   systemPrompt: string;
-  deniedTools: string[];
+  allowedTools: string[];
   builtIn: boolean;
 }
 

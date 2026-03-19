@@ -1324,7 +1324,7 @@ const agentDefBody = z.object({
   icon: z.string().max(10).default("🤖"),
   color: z.string().max(20).default("#6B7280"),
   systemPrompt: z.string().max(5000).default(""),
-  deniedTools: z.array(z.string()).default([]),
+  allowedTools: z.array(z.string()).default(["*"]),
 });
 
 export function postAgents(req: Request, res: Response): void {
@@ -1350,10 +1350,10 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
   "icon": "一个合适的 emoji 图标",
   "color": "一个十六进制颜色值，如 #3B82F6",
   "systemPrompt": "详细的系统提示词，定义角色、能力、行为规范（200-500字）",
-  "deniedTools": ["不适合该角色使用的工具列表"]
+  "allowedTools": ["该角色可以使用的工具列表，用 * 表示全部允许"]
 }
 
-可选的工具列表（deniedTools 从中选择要禁用的）：
+可选的工具列表（allowedTools 从中选择要启用的，或用 ["*"] 表示全部启用）：
 - run_command: 执行系统命令
 - write_file: 写入文件
 - read_file: 读取文件
@@ -1363,7 +1363,7 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 
 注意：
 - systemPrompt 要详细、专业，清晰定义角色边界
-- 根据角色合理禁用不需要的工具（如研究员不需要 write_file）
+- 根据角色合理选择需要的工具（如研究员只需 read_file、web_search）
 - 颜色要有辨识度，不同角色用不同色系`;
 
 export async function generateAgentFromDescription(req: Request, res: Response): Promise<void> {
@@ -1408,7 +1408,7 @@ export async function generateAgentFromDescription(req: Request, res: Response):
       icon: String(parsed.icon ?? "🤖"),
       color: String(parsed.color ?? "#6B7280"),
       systemPrompt: String(parsed.systemPrompt ?? ""),
-      deniedTools: Array.isArray(parsed.deniedTools) ? parsed.deniedTools.map(String) : [],
+      allowedTools: Array.isArray(parsed.allowedTools) ? parsed.allowedTools.map(String) : ["*"],
     };
 
     res.json(result);

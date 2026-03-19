@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import type { SubagentLog, ApprovalLog } from "../types";
 import { getRoleConfig } from "../constants/roles";
 import PipelineFlow from "./PipelineFlow";
@@ -57,17 +57,24 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
     ...historicalSubagents.filter((s) => !streamingIds.has(s.subagentId)),
   ];
 
+  // Cache last non-empty agents list to prevent flash during streaming→historical transition
+  const cachedAllAgentsRef = useRef<SubagentInfo[]>([]);
+  if (allAgents.length > 0) {
+    cachedAllAgentsRef.current = allAgents;
+  }
+  const stableAllAgents = allAgents.length > 0 ? allAgents : cachedAllAgentsRef.current;
+
   // Group by role
   const roleGroups = new Map<string, SubagentInfo[]>();
-  for (const agent of allAgents) {
+  for (const agent of stableAllAgents) {
     const key = agent.role ?? "unknown";
     const list = roleGroups.get(key) ?? [];
     list.push(agent);
     roleGroups.set(key, list);
   }
 
-  const completedCount = allAgents.filter((a) => a.phase === "completed").length;
-  const totalCount = allAgents.length;
+  const completedCount = stableAllAgents.filter((a) => a.phase === "completed").length;
+  const totalCount = stableAllAgents.length;
   const progressPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
 
   // Extract historical approval records from stored subagent logs
@@ -89,7 +96,7 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
   const pipelineData = useMemo(() => {
     if (totalCount === 0) return null;
 
-    const hasDeps = allAgents.some((a) => {
+    const hasDeps = stableAllAgents.some((a) => {
       const full = [...streamingSubagents, ...historicalSubagents];
       const match = full.find((f) => f.subagentId === a.subagentId);
       return match && "dependsOn" in match && Array.isArray((match as { dependsOn?: string[] }).dependsOn) && ((match as { dependsOn?: string[] }).dependsOn!).length > 0;
@@ -97,7 +104,7 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
     if (!hasDeps && totalCount <= 1) return null;
 
     // Merge full info for dependsOn
-    const fullAgents: FullAgent[] = allAgents.map((a) => {
+    const fullAgents: FullAgent[] = stableAllAgents.map((a) => {
       const streaming = streamingSubagents.find((s) => s.subagentId === a.subagentId);
       const historical = historicalSubagents.find((s) => s.subagentId === a.subagentId);
       const deps = streaming?.dependsOn ?? (historical as { dependsOn?: string[] })?.dependsOn;
@@ -143,6 +150,14 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
     return { layers, edges, agentMap };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalCount, streamingSubagents, historicalSubagents]);
+
+  // Cache last non-null pipeline data to prevent flash when data temporarily empties
+  const cachedPipelineRef = useRef(pipelineData);
+  if (pipelineData !== null) {
+    cachedPipelineRef.current = pipelineData;
+  }
+  // Use cached data only while agents are still present (prevents stale display after conversation switch)
+  const stablePipelineData = pipelineData ?? (stableAllAgents.length > 0 ? cachedPipelineRef.current : null);
 
   const handleApproval = async (requestId: string, approved: boolean) => {
     if (onApproval) {
@@ -201,13 +216,13 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
         )}
 
         {/* Pipeline DAG */}
-        {pipelineData && (
+        {stablePipelineData && (
           <div className="space-y-1.5">
             <h4 className="text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wider">Pipeline</h4>
             <PipelineFlow
-              layers={pipelineData.layers}
-              edges={pipelineData.edges}
-              agentMap={pipelineData.agentMap}
+              layers={stablePipelineData.layers}
+              edges={stablePipelineData.edges}
+              agentMap={stablePipelineData.agentMap}
             />
           </div>
         )}
@@ -348,7 +363,7 @@ export default function TeamPanel({ streamingSubagents, historicalRounds, pendin
               {/* Pending approvals – with action buttons */}
               {pendingApprovals.map((approval) => {
                 const isProcessing = processingApprovals.has(approval.requestId);
-                const agentInfo = allAgents.find((a) => a.subagentId === approval.subagentId);
+                const agentInfo = stableAllAgents.find((a) => a.subagentId === approval.subagentId);
                 const rc = getRoleConfig(agentInfo?.role);
                 return (
                   <div

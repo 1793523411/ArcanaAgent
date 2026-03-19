@@ -88,6 +88,54 @@ export interface StreamReasoningResult {
   usage?: TokenUsage;
 }
 
+const FC_MARKER_BEGIN = "<|FunctionCallBegin|>";
+
+/**
+ * Parse text-based tool calls from model output that uses
+ * <|FunctionCallBegin|>...<|FunctionCallEnd|> markers instead of
+ * structured delta.tool_calls in the SSE stream.
+ */
+function parseTextToolCalls(text: string): { toolCalls: ToolCallResult[]; cleanedContent: string } {
+  const toolCalls: ToolCallResult[] = [];
+  const regex = /<\|FunctionCallBegin\|>([\s\S]*?)<\|FunctionCallEnd\|>/g;
+  let match;
+  let callIndex = 0;
+
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      const calls = Array.isArray(parsed) ? parsed : [parsed];
+      for (const call of calls) {
+        if (call && typeof call.name === "string") {
+          const args = call.parameters ?? call.arguments ?? {};
+          toolCalls.push({
+            id: `textcall_${Date.now()}_${callIndex++}`,
+            name: call.name,
+            arguments: typeof args === "string" ? args : JSON.stringify(args),
+          });
+        }
+      }
+    } catch {
+      // ignore malformed JSON inside markers
+    }
+  }
+
+  const cleanedContent = text.replace(/<\|FunctionCallBegin\|>[\s\S]*?<\|FunctionCallEnd\|>/g, "").trim();
+  return { toolCalls, cleanedContent };
+}
+
+/**
+ * Check how many trailing chars of `str` match a prefix of `marker`.
+ * Used to hold back content that might be the beginning of a marker split across chunks.
+ */
+function markerPrefixOverlap(str: string, marker: string): number {
+  const maxCheck = Math.min(str.length, marker.length - 1);
+  for (let len = maxCheck; len > 0; len--) {
+    if (marker.startsWith(str.slice(-len))) return len;
+  }
+  return 0;
+}
+
 export async function streamChatCompletionsWithReasoning(
   baseUrl: string,
   apiKey: string,
@@ -135,6 +183,13 @@ export async function streamChatCompletionsWithReasoning(
 
   const toolCallAccum = new Map<number, { id: string; name: string; arguments: string }>();
   let lastUsage: TokenUsage | undefined;
+
+  // --- Text-based function call marker detection ---
+  // Some models (e.g. doubao) emit <|FunctionCallBegin|>...<|FunctionCallEnd|>
+  // as plain text instead of structured delta.tool_calls. We buffer content
+  // tokens so we can suppress marker text from the onToken stream.
+  let pendingFlush = "";          // content not yet emitted via onToken
+  let suppressingMarker = false;  // true once marker start detected
 
   // Timeout per chunk read: if no data arrives for 3 minutes, consider the connection dead
   const CHUNK_TIMEOUT_MS = 3 * 60 * 1000;
@@ -184,7 +239,27 @@ export async function streamChatCompletionsWithReasoning(
           }
           if (typeof delta.content === "string" && delta.content) {
             content += delta.content;
-            onToken(delta.content);
+
+            if (!suppressingMarker) {
+              pendingFlush += delta.content;
+              const markerIdx = pendingFlush.indexOf(FC_MARKER_BEGIN);
+              if (markerIdx >= 0) {
+                // Flush content before the marker, then suppress everything after
+                const safe = pendingFlush.slice(0, markerIdx);
+                if (safe) onToken(safe);
+                suppressingMarker = true;
+                pendingFlush = "";
+              } else {
+                // Hold back trailing chars that could be start of a marker split across chunks
+                const holdBack = markerPrefixOverlap(pendingFlush, FC_MARKER_BEGIN);
+                const safeLen = pendingFlush.length - holdBack;
+                if (safeLen > 0) {
+                  onToken(pendingFlush.slice(0, safeLen));
+                  pendingFlush = pendingFlush.slice(safeLen);
+                }
+              }
+            }
+            // If suppressingMarker, content is accumulated but not emitted via onToken
           }
           if (Array.isArray(delta.tool_calls)) {
             for (const tc of delta.tool_calls) {
@@ -201,6 +276,25 @@ export async function streamChatCompletionsWithReasoning(
         } catch {
           // ignore parse errors
         }
+      }
+    }
+  }
+
+  // Flush any remaining buffered content that turned out not to be a marker
+  if (!suppressingMarker && pendingFlush) {
+    onToken(pendingFlush);
+    pendingFlush = "";
+  }
+
+  // --- Fallback: parse text-based tool call markers ---
+  // If the model didn't use structured delta.tool_calls but instead emitted
+  // <|FunctionCallBegin|>...<|FunctionCallEnd|> markers in content, parse them.
+  if (toolCallAccum.size === 0 && content.includes(FC_MARKER_BEGIN)) {
+    const { toolCalls: textCalls, cleanedContent } = parseTextToolCalls(content);
+    if (textCalls.length > 0) {
+      content = cleanedContent;
+      for (let i = 0; i < textCalls.length; i++) {
+        toolCallAccum.set(i, textCalls[i]);
       }
     }
   }

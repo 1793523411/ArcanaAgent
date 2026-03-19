@@ -254,7 +254,29 @@ function TreeNodeItem({
   conversationId: string;
   depth?: number;
 }) {
-  const [expanded, setExpanded] = useState(depth === 0 || depth === 1); // 默认展开根目录和第一层
+  // 生成唯一的 storage key，基于 conversationId 和文件夹路径
+  const storageKey = `artifact_tree_expanded:${conversationId}:${node.path}`;
+  
+  // 从 localStorage 读取初始状态，默认收起
+  const [expanded, setExpanded] = useState(() => {
+    try {
+      const stored = localStorage.getItem(storageKey);
+      return stored !== null ? stored === "true" : false;
+    } catch {
+      return false;
+    }
+  });
+
+  // 当展开状态变化时，保存到 localStorage
+  const handleToggleExpand = () => {
+    const newState = !expanded;
+    setExpanded(newState);
+    try {
+      localStorage.setItem(storageKey, String(newState));
+    } catch {
+      // 忽略 storage 错误
+    }
+  };
 
   if (node.type === "file" && node.artifact) {
     const artifact = node.artifact;
@@ -287,7 +309,7 @@ function TreeNodeItem({
   return (
     <div>
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={handleToggleExpand}
         className="w-full flex items-center gap-2 px-3 py-1.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors text-left"
         style={{ paddingLeft: `${depth * 20 + 12}px` }}
       >

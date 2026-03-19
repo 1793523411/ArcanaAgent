@@ -6,6 +6,11 @@ import { load_skill } from "./load_skill.js";
 import { background_run } from "./background_run.js";
 import { background_check } from "./background_check.js";
 import { background_cancel } from "./background_cancel.js";
+import { edit_file } from "./edit_file.js";
+import { search_code } from "./search_code.js";
+import { list_files } from "./list_files.js";
+import { git_operations } from "./git_operations.js";
+import { test_runner } from "./test_runner.js";
 
 export const tools = {
   run_command,
@@ -15,6 +20,11 @@ export const tools = {
   background_run,
   background_check,
   background_cancel,
+  edit_file,
+  search_code,
+  list_files,
+  git_operations,
+  test_runner,
 } as const;
 
 export type ToolId = keyof typeof tools;

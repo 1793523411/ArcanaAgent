@@ -151,11 +151,29 @@ function PipelineFlowInner({ layers, edges, agentMap }: PipelineFlowProps) {
 
   const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
 
-  // Sync when layers data changes (new agents / phase updates)
+  // Sync when layers data changes (new agents / phase updates).
+  // Merge data into existing nodes to preserve user-dragged positions;
+  // only reset positions when the node set changes.
   const [prevInitial, setPrevInitial] = useState(initialNodes);
   if (initialNodes !== prevInitial) {
     setPrevInitial(initialNodes);
-    setNodes(initialNodes);
+    const prevIds = new Set(prevInitial.map((n) => n.id));
+    const nextIds = new Set(initialNodes.map((n) => n.id));
+    const setChanged = prevIds.size !== nextIds.size || [...nextIds].some((id) => !prevIds.has(id));
+
+    if (setChanged) {
+      // Node set changed (added/removed agents) — full reset
+      setNodes(initialNodes);
+    } else {
+      // Same set of nodes — only update data (phase colors etc), keep positions
+      setNodes((prev) => {
+        const dataMap = new Map(initialNodes.map((n) => [n.id, n.data]));
+        return prev.map((n) => {
+          const newData = dataMap.get(n.id);
+          return newData ? { ...n, data: newData } : n;
+        });
+      });
+    }
   }
 
   const flowEdges = useMemo<Edge[]>(() => {
