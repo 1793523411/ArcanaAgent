@@ -1356,16 +1356,22 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 }
 
 可选的工具列表（allowedTools 从中选择要启用的，或用 ["*"] 表示全部启用）：
-- run_command: 执行系统命令
-- write_file: 写入文件
-- read_file: 读取文件
-- web_search: 网络搜索
-- calculator: 计算器
-- get_time: 获取时间
+- run_command: 执行 shell 命令
+- read_file: 读取文件内容
+- write_file: 写入文件内容
+- edit_file: 搜索替换编辑文件
+- search_code: 正则搜索代码
+- list_files: 列出文件目录树
+- git_operations: Git 操作（status/diff/log/commit 等）
+- test_runner: 运行测试（自动检测框架）
+- load_skill: 加载技能指令
+- background_run: 后台运行命令
+- background_check: 查看后台任务状态
+- background_cancel: 取消后台任务
 
 注意：
 - systemPrompt 要详细、专业，清晰定义角色边界
-- 根据角色合理选择需要的工具（如研究员只需 read_file、web_search）
+- 根据角色合理选择需要的工具（如研究员只需 read_file、search_code、list_files）
 - 颜色要有辨识度，不同角色用不同色系`;
 
 export async function generateAgentFromDescription(req: Request, res: Response): Promise<void> {
