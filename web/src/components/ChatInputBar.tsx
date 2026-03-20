@@ -125,6 +125,32 @@ export default function ChatInputBar({
   const modeLabel = mode === "team" ? "Team Mode" : "默认模式";
   const currentTeam = teams.find((t) => t.id === teamId);
   const supportsImage = currentModel?.supportsImage !== false;
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!supportsImage) return;
+      const items = Array.from(e.clipboardData.items);
+      const imageItems = items.filter((item) => IMAGE_TYPES.includes(item.type));
+      if (imageItems.length === 0) return;
+      e.preventDefault();
+      const imageFiles = imageItems
+        .map((item) => item.getAsFile())
+        .filter((f): f is File => f !== null);
+      if (imageFiles.length === 0) return;
+      const newOnes: FileWithData[] = await Promise.all(
+        imageFiles.slice(0, 4 - files.length).map(async (file) => ({
+          file,
+          mimeType: file.type,
+          data: (await readFileAsDataUrl(file)).split(",")[1] ?? "",
+        }))
+      );
+      if (newOnes.length > 0) {
+        onFilesChange([...files, ...newOnes]);
+      }
+    },
+    [supportsImage, files, onFilesChange]
+  );
+
   const strategyLabel = {
     full: "全量上下文",
     trim: "截断",
@@ -179,6 +205,7 @@ export default function ChatInputBar({
           rows={1}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
