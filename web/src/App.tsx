@@ -504,6 +504,7 @@ export default function App() {
             <ArtifactPanel
               conversationId={current.id}
               onClose={() => setShowArtifacts(false)}
+              theme={theme}
             />
             </div>
           </>
