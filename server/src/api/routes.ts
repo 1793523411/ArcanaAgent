@@ -1,6 +1,6 @@
 import { Request, Response } from "express";
 import { z } from "zod";
-import { HumanMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import {
   listConversations,
   createConversation,
@@ -16,14 +16,31 @@ import {
   ensureWorkspace,
   type StoredMessage,
   type ConversationMeta,
+  type ConversationMode,
 } from "../storage/index.js";
+import {
+  listAgentDefs,
+  getAgentDef,
+  createAgentDef,
+  updateAgentDef,
+  deleteAgentDef,
+} from "../storage/agentDefs.js";
+import {
+  listTeamDefs,
+  getTeamDef,
+  createTeamDef,
+  updateTeamDef,
+  deleteTeamDef,
+} from "../storage/teamDefs.js";
 import { buildContextForAgent, saveFullContext } from "../agent/contextBuilder.js";
-import { storedToLangChain, langChainToStored, getTextContent } from "../lib/messages.js";
+import { storedToLangChain, langChainToStored, getTextContent, sanitizeMessageSequence } from "../lib/messages.js";
 import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
+import { approvalManager } from "../agent/approvalManager.js";
+import { getLLM } from "../llm/index.js";
+import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
@@ -44,15 +61,46 @@ function convId(req: Request): string {
   return Array.isArray(id) ? id[0] ?? "" : id;
 }
 
+function isTokenLimitErrorMessage(message: string): boolean {
+  const text = message.toLowerCase();
+  return (
+    text.includes("max message tokens") ||
+    text.includes("context length") ||
+    text.includes("context_length_exceeded") ||
+    text.includes("maximum context length") ||
+    text.includes("too many tokens") ||
+    text.includes("total tokens")
+  );
+}
+
+function buildStreamErrorPayload(message: string): Record<string, unknown> {
+  if (isTokenLimitErrorMessage(message)) {
+    return {
+      error: "上下文过长导致模型拒绝请求。系统已自动裁剪子任务结果与对话上下文，请重试一次；若仍失败，请减少单次子任务产出。",
+      code: "TOKEN_LIMIT_EXCEEDED",
+      details: message,
+    };
+  }
+  return { error: message };
+}
+
+const MAX_ARTIFACT_LIST = 100;
+
 function buildSkillContext(convId: string): string {
   const workspace = ensureWorkspace(convId);
   const existingArtifacts = listArtifacts(convId);
-  const artifactListText = existingArtifacts.length > 0
-    ? "\n\nFiles currently in workspace:\n" + existingArtifacts.map(a =>
+  const displayArtifacts = existingArtifacts.slice(0, MAX_ARTIFACT_LIST);
+  const omitted = existingArtifacts.length - displayArtifacts.length;
+  let artifactListText = "";
+  if (displayArtifacts.length > 0) {
+    artifactListText = "\n\nFiles currently in workspace:\n" + displayArtifacts.map(a =>
         `- ${a.path} (${a.mimeType}, ${a.size} bytes)`
-      ).join("\n") +
-      "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>"
-    : "";
+      ).join("\n");
+    if (omitted > 0) {
+      artifactListText += `\n... and ${omitted} more files (use read_file or run_command to explore)`;
+    }
+    artifactListText += "\n\nYou can read any of these files with the read_file tool using their full path: " + workspace + "/<relative_path>";
+  }
   return getSkillCatalogForAgent() +
     `\n\n## Workspace\nThe current conversation workspace directory is: ${workspace}\n` +
     "Save ALL output files (search results, generated files, downloads, etc.) to this workspace directory. " +
@@ -63,6 +111,8 @@ function buildSkillContext(convId: string): string {
 type PersistedSubagentLog = {
   subagentId: string;
   subagentName?: string;
+  role?: string;
+  dependsOn?: string[];
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -81,6 +131,13 @@ type PersistedSubagentLog = {
     currentStep: number;
     toolName?: string;
   };
+  approvalLogs?: Array<{
+    requestId: string;
+    operationType: string;
+    operationDescription: string;
+    approved: boolean;
+    createdAt: string;
+  }>;
   summary?: string;
   error?: string;
 };
@@ -106,6 +163,8 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
         prompt: ev.prompt,
         phase: ev.phase,
         subagentName: ev.subagentName ?? existing.subagentName,
+        role: ev.role ?? existing.role,
+        dependsOn: ev.dependsOn ?? existing.dependsOn,
         summary: ev.summary ?? existing.summary,
         error: ev.error ?? existing.error,
         status: ev.phase === "completed" || ev.phase === "failed" ? null : existing.status,
@@ -162,13 +221,79 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
     if (ev.kind === "subagent_name") {
       const cur = map.get(ev.subagentId);
       if (cur) map.set(ev.subagentId, { ...cur, subagentName: ev.subagentName });
+      continue;
+    }
+    if (ev.kind === "approval_request") {
+      const cur = map.get(ev.subagentId) ?? existing;
+      const logs = cur.approvalLogs ?? [];
+      map.set(ev.subagentId, {
+        ...cur,
+        approvalLogs: [...logs, {
+          requestId: ev.requestId,
+          operationType: ev.operationType,
+          operationDescription: ev.operationDescription,
+          approved: false,
+          createdAt: new Date().toISOString(),
+        }],
+      });
+      continue;
+    }
+    if (ev.kind === "approval_response") {
+      const cur = map.get(ev.subagentId);
+      if (cur?.approvalLogs) {
+        const updated = cur.approvalLogs.map((a) =>
+          a.requestId === ev.requestId ? { ...a, approved: ev.approved } : a
+        );
+        map.set(ev.subagentId, { ...cur, approvalLogs: updated });
+      }
+      continue;
     }
   }
   return Array.from(map.values());
 }
 
-const createConversationBodySchema = { title: z.string().max(500).optional() };
+const conversationModeSchema = z.enum(["default", "team"]);
+const createConversationBodySchema = {
+  title: z.string().max(500).optional(),
+  mode: conversationModeSchema.optional(),
+  teamId: z.string().max(100).optional(),
+};
 const createConversationBody = z.object(createConversationBodySchema);
+
+/**
+ * Compress task tool messages in-place before persisting to history.
+ * Reduces token footprint for reloaded conversations while preserving
+ * a short preview and a file reference to the full result.
+ */
+function compressTaskToolMessagesForStorage(messages: StoredMessage[]) {
+  for (const msg of messages) {
+    if (msg.type === "tool" && msg.name === "task" && typeof msg.content === "string" && msg.content.length > 200) {
+      const idMatch = msg.content.match(/\[subagentId:\s*([^\]]+)\]/);
+      const nameMatch = msg.content.match(/\[name:\s*([^\]]+)\]/);
+      const subagentId = idMatch?.[1]?.trim() ?? "unknown";
+      const agentName = nameMatch?.[1]?.trim() ?? "unknown";
+      const headerEnd = msg.content.indexOf("\n\n");
+      const body = headerEnd >= 0 ? msg.content.slice(headerEnd + 2) : msg.content;
+      msg.content = `[Agent: ${agentName}] Result saved to .agents/results/${subagentId}.md\n${body.slice(0, 100)}...`;
+    }
+  }
+  for (const msg of messages) {
+    if (msg.type === "ai" && Array.isArray(msg.tool_calls)) {
+      msg.tool_calls = msg.tool_calls.map((tc) => {
+        if (tc.name !== "task") return tc;
+        try {
+          const args = JSON.parse(tc.args);
+          if (typeof args.prompt === "string" && args.prompt.length > 100) {
+            args.prompt = args.prompt.slice(0, 100) + "... [truncated]";
+          }
+          return { ...tc, args: JSON.stringify(args) };
+        } catch {
+          return tc;
+        }
+      });
+    }
+  }
+}
 
 export function getConversations(req: Request, res: Response): void {
   try {
@@ -191,8 +316,15 @@ export function postConversations(req: Request, res: Response): void {
       return;
     }
     const title = parsed.data.title?.trim();
+    const mode: ConversationMode = parsed.data.mode ?? "default";
+    const teamId = parsed.data.teamId;
+    // Validate teamId exists when creating a team-mode conversation
+    if (mode === "team" && teamId && !getTeamDef(teamId)) {
+      res.status(400).json({ error: `Team '${teamId}' not found` });
+      return;
+    }
     const config = loadUserConfig();
-    const { id, meta } = createConversation(config.context, title || undefined);
+    const { id, meta } = createConversation(config.context, title || undefined, mode, teamId);
     logConversation("create", id, meta.title);
     res.status(201).json(meta);
   } catch (e) {
@@ -294,8 +426,14 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   }
   const body = req.body as {
     text?: string;
+    mode?: ConversationMode;
     attachments?: Array<{ type: string; mimeType?: string; data: string }>;
   };
+  const conversationMode: ConversationMode = meta.mode ?? "default";
+  if (body?.mode && body.mode !== conversationMode) {
+    res.status(400).json({ error: "Conversation mode is immutable" });
+    return;
+  }
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
   if (!text && attachments.length === 0) {
@@ -303,7 +441,27 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     return;
   }
 
-  const textPart = text || (attachments.length ? "请分析图片" : " ");
+  // Save attachments first so we can tell the agent about file paths
+  const config = loadUserConfig();
+  const displayText = text || "[图片]";
+  const storedAttachments: Array<{ type: "image"; file: string; mimeType?: string }> = [];
+  for (const a of attachments) {
+    if ((a.type === "image" || !a.type) && typeof a.data === "string") {
+      const fileRef = saveAttachmentFile(id, a.mimeType || "image/png", a.data);
+      storedAttachments.push({ type: "image", file: fileRef, mimeType: a.mimeType || "image/png" });
+    }
+  }
+
+  // Build text part with attachment file paths so the agent knows where files are
+  let textPart = text || (attachments.length ? "请分析图片" : " ");
+  if (storedAttachments.length > 0) {
+    const pathLines = storedAttachments.map((a, i) => {
+      const absPath = getAttachmentAbsolutePath(id, a.file);
+      return `- Attachment ${i + 1}: ${absPath ?? a.file} (${a.mimeType ?? "image/png"})`;
+    });
+    textPart += `\n\n[Attached files on disk — use these absolute paths if you need to read/process the files]\n${pathLines.join("\n")}`;
+  }
+
   const humanContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }> =
     attachments.length === 0
       ? textPart
@@ -317,22 +475,14 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             })),
         ];
 
-  const config = loadUserConfig();
-  const displayText = text || "[图片]";
-  const storedAttachments: Array<{ type: "image"; file: string; mimeType?: string }> = [];
-  for (const a of attachments) {
-    if ((a.type === "image" || !a.type) && typeof a.data === "string") {
-      const fileRef = saveAttachmentFile(id, a.mimeType || "image/png", a.data);
-      storedAttachments.push({ type: "image", file: fileRef, mimeType: a.mimeType || "image/png" });
-    }
-  }
   const humanMsg: StoredMessage = {
     type: "human",
     content: displayText,
     ...(storedAttachments.length ? { attachments: storedAttachments } : {}),
   };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
-  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
+  const sanitized = sanitizeMessageSequence(contextMessages);
+  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -363,19 +513,31 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     res.socket.setTimeout(0);
   }
 
+  // S6: Handle client disconnect — cancel pending approvals and abort agent execution
+  const abortController = new AbortController();
+  let clientDisconnected = false;
+  req.on("close", () => {
+    clientDisconnected = true;
+    abortController.abort();
+    approvalManager.cancelConversation(id);
+  });
+
   const FLUSH_INTERVAL = 30;
   let writeBuf = "";
   let flushTimer: ReturnType<typeof setTimeout> | null = null;
 
   const flushNow = () => {
     if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
-    if (writeBuf) {
-      res.write(writeBuf);
+    if (writeBuf && !clientDisconnected) {
+      try { res.write(writeBuf); } catch { /* client gone */ }
+      writeBuf = "";
+    } else {
       writeBuf = "";
     }
   };
 
   const write = (data: string) => {
+    if (clientDisconnected) return;
     writeBuf += data;
     if (flushTimer === null) {
       flushTimer = setTimeout(flushNow, FLUSH_INTERVAL);
@@ -383,6 +545,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   const writeImmediate = (data: string) => {
+    if (clientDisconnected) return;
     writeBuf += data;
     flushNow();
   };
@@ -412,8 +575,69 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let totalPromptTokens = 0;
   let totalCompletionTokens = 0;
   let firstPromptTokensForContext: number | null = null;
+  let lastPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
+  let resultsSaved = false;
+
+  // 将收集到的消息持久化（正常完成和中途报错都会调用）
+  const saveCollectedResults = (errorMsg?: string) => {
+    if (resultsSaved) return;
+    resultsSaved = true;
+
+    if (pendingToolLogs.length > 0) {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      const target = withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+      if (target) {
+        target.toolLogs = pendingToolLogs;
+        if (!target.content || !target.content.trim()) {
+          target.content = streamedContent.trim() || "(工具已执行)";
+        }
+      }
+    }
+    if (latestPlan?.steps?.length) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") target.plan = latestPlan;
+    }
+    const subagentLogs = buildSubagentLogs(subagentEvents);
+    if (subagentLogs.length > 0) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") target.subagents = subagentLogs;
+    }
+    const toStore = collectedStored.filter((m) => {
+      if (m.type !== "ai") return true;
+      if (m.toolLogs && m.toolLogs.length > 0) return true;
+      if (m.plan && m.plan.steps.length > 0) return true;
+      if (m.subagents && m.subagents.length > 0) return true;
+      // Keep AI messages that carry tool_calls — dropping them would orphan
+      // the corresponding ToolMessages and break the message sequence.
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
+      return typeof m.content === "string" && m.content.trim().length > 0;
+    });
+    const hasContent = streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0;
+    if (toStore.filter((m) => m.type === "ai").length === 0 && hasContent) {
+      const content = errorMsg
+        ? `${streamedContent.trim() || "(执行中断)"}\n\n> ⚠️ 执行出错: ${errorMsg}`
+        : (streamedContent.trim() || "(工具已执行)");
+      toStore.push({
+        type: "ai",
+        content,
+        ...(config.modelId ? { modelId: config.modelId } : {}),
+        ...(lastReasoning ? { reasoningContent: lastReasoning } : {}),
+        ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
+        ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
+        ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+      });
+    } else if (errorMsg) {
+      const lastAi = toStore.filter((m) => m.type === "ai").pop();
+      if (lastAi) lastAi.content = (lastAi.content || "").trimEnd() + `\n\n> ⚠️ 执行出错: ${errorMsg}`;
+    }
+    if (toStore.length > 0) {
+      compressTaskToolMessagesForStorage(toStore);
+      appendMessages(id, toStore);
+    }
+    return subagentLogs;
+  };
 
   try {
     for await (const chunk of streamAgentWithTokens(
@@ -423,8 +647,12 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       onReasoningToken,
       skillContext,
       {
+        conversationMode,
+        conversationId: id,
+        teamId: meta.teamId,
         planningEnabled: config.planning?.enabled ?? true,
         workspacePath,
+        abortSignal: abortController.signal,
         planProgressEnabled: config.planning?.streamProgress ?? true,
         onPlanEvent: (event) => {
           latestPlan = { ...event };
@@ -442,6 +670,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         const u = part as { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
         const prompt = typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
         if (firstPromptTokensForContext === null && prompt > 0) firstPromptTokensForContext = prompt;
+        if (prompt > 0) lastPromptTokensForContext = prompt;
         totalPromptTokens += prompt;
         totalCompletionTokens += typeof u.completion_tokens === "number" ? u.completion_tokens : 0;
       }
@@ -536,6 +765,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
     if (toStore.filter((m) => m.type === "ai").length === 0 && (streamedContent.trim() || pendingToolLogs.length > 0 || (latestPlan?.steps?.length ?? 0) > 0 || subagentLogs.length > 0)) {
@@ -554,9 +784,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     const promptTokens = hasRealUsage ? totalPromptTokens : estimateBaseMessageTokens(lcMessages);
     const completionTokens = hasRealUsage ? totalCompletionTokens : estimateTextTokens(streamedContent || "");
     const totalTokens = promptTokens + completionTokens;
-    // contextPromptTokens: 上下文体积（仅第一次 LLM 调用的 prompt），用于展示压缩策略效果
-    // 优先级：真实值（API 返回）> 估算值（本地算法）> 回退到总 promptTokens
-    const contextPromptTokens = firstPromptTokensForContext
+    // contextPromptTokens: 上下文峰值体积（最后一次 LLM 调用的 prompt），反映 agent 运行时的真实上下文占用
+    // 优先级：最后一次真实值 > 第一次真实值 > 估算值 > 回退到总 promptTokens
+    const contextPromptTokens = lastPromptTokensForContext
+      ?? firstPromptTokensForContext
       ?? (typeof contextMeta.estimatedTokens === "number" ? contextMeta.estimatedTokens : undefined)
       ?? promptTokens;
     const usagePayload = { promptTokens, completionTokens, totalTokens };
@@ -569,8 +800,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       };
     }
     if (toStore.length > 0) {
+      compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
     }
+    resultsSaved = true;
     writeImmediate(
       "data: " + JSON.stringify({ type: "usage", ...usagePayload, context: { ...contextUsageBase, promptTokens: contextPromptTokens } }) + "\n\n",
     );
@@ -584,8 +817,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     });
   } catch (e) {
     flushNow();
+    const errMsg = e instanceof Error ? e.message : String(e);
     logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
-    res.write("data: " + JSON.stringify({ error: String(e) }) + "\n\n");
+    // 保存已完成的部分结果，避免刷新后消息丢失
+    try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
+    res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
   } finally {
     if (flushTimer !== null) clearTimeout(flushTimer);
     res.write("data: [DONE]\n\n");
@@ -600,7 +836,12 @@ export async function postConversationMessageSync(req: Request, res: Response): 
     res.status(404).json({ error: "Conversation not found" });
     return;
   }
-  const body = req.body as { text?: string };
+  const body = req.body as { text?: string; mode?: ConversationMode };
+  const conversationMode: ConversationMode = meta.mode ?? "default";
+  if (body?.mode && body.mode !== conversationMode) {
+    res.status(400).json({ error: "Conversation mode is immutable" });
+    return;
+  }
   const text = typeof body?.text === "string" ? body.text.trim() : "";
   if (!text) {
     res.status(400).json({ error: "Missing or empty text" });
@@ -610,7 +851,8 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const config = loadUserConfig();
   const humanMsg: StoredMessage = { type: "human", content: text };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
-  const lcMessages = contextMessages.map((m) => storedToLangChain(m, id));
+  const sanitized = sanitizeMessageSequence(contextMessages);
+  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage(text));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -636,6 +878,9 @@ export async function postConversationMessageSync(req: Request, res: Response): 
 
   try {
     const resultMessages = await runAgent(lcMessages, config.modelId, skillContext, {
+      conversationMode,
+      conversationId: id,
+      teamId: meta.teamId,
       planningEnabled: config.planning?.enabled ?? true,
       workspacePath,
     });
@@ -644,9 +889,13 @@ export async function postConversationMessageSync(req: Request, res: Response): 
       if (s.type === "ai" && config.modelId) s.modelId = config.modelId;
       return s;
     });
+    compressTaskToolMessagesForStorage(newStored);
     const lastAi = newStored.filter((m) => m.type === "ai").pop();
     if (lastAi && lastAi.type === "ai") {
-      lastAi.contextUsage = contextUsageBase;
+      lastAi.contextUsage = {
+        ...contextUsageBase,
+        promptTokens: contextMeta.estimatedTokens,
+      };
     }
     appendMessages(id, newStored);
     const lastAiMsg = resultMessages.filter((m) => m._getType() === "ai").pop();
@@ -836,6 +1085,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     context?: Partial<ContextStrategyConfig>;
     planning?: Partial<PlanningConfig>;
     templates?: PromptTemplate[];
+    approvalRules?: ApprovalRule[];
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -859,6 +1109,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.planning.streamProgress === "boolean") config.planning.streamProgress = body.planning.streamProgress;
   }
   if (Array.isArray(body.templates)) config.templates = body.templates;
+  if (Array.isArray(body.approvalRules)) config.approvalRules = body.approvalRules;
   saveUserConfig(config);
 
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
@@ -1010,4 +1261,319 @@ export async function postConversationCompress(req: Request, res: Response): Pro
 
 export function getHealth(_req: Request, res: Response): void {
   res.json({ status: "ok" });
+}
+
+// ─── 审批接口 ─────────────────────────────────────────────
+
+export function getApprovals(req: Request, res: Response): void {
+  const id = convId(req);
+  if (!id) {
+    res.status(400).json({ error: "Missing conversation id" });
+    return;
+  }
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const pending = approvalManager.getPendingRequests(id);
+  res.json(pending);
+}
+
+export function postApprovalDecision(req: Request, res: Response): void {
+  const id = convId(req);
+  const requestId = Array.isArray(req.params.requestId) ? req.params.requestId[0] ?? "" : req.params.requestId;
+  if (!id || !requestId) {
+    res.status(400).json({ error: "Missing conversation id or request id" });
+    return;
+  }
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const body = req.body as { approved?: boolean };
+  if (typeof body?.approved !== "boolean") {
+    res.status(400).json({ error: "Missing or invalid 'approved' boolean field" });
+    return;
+  }
+  // Verify requestId belongs to this conversation (S2: prevent cross-conversation approval)
+  if (!approvalManager.belongsToConversation(requestId, id)) {
+    res.status(404).json({ error: "Approval request not found in this conversation" });
+    return;
+  }
+  const resolved = approvalManager.resolveRequest(requestId, body.approved);
+  if (!resolved) {
+    res.status(404).json({ error: "Approval request not found or already resolved" });
+    return;
+  }
+  res.json({ ok: true, requestId, approved: body.approved });
+}
+
+// ─── Agent Defs CRUD ─────────────────────────────────────
+
+export function getAgents(_req: Request, res: Response): void {
+  try {
+    res.json(listAgentDefs());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const agentDefBody = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).default(""),
+  icon: z.string().max(10).default("🤖"),
+  color: z.string().max(20).default("#6B7280"),
+  systemPrompt: z.string().max(5000).default(""),
+  allowedTools: z.array(z.string()).default(["*"]),
+});
+
+export function postAgents(req: Request, res: Response): void {
+  try {
+    const parsed = agentDefBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+      return;
+    }
+    const def = createAgentDef(parsed.data);
+    res.status(201).json(def);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会给你一句话描述，你需要生成一个完整的 Agent 定义。
+
+请严格按照以下 JSON 格式返回（不要包含任何其他文字，只返回 JSON）：
+{
+  "name": "Agent 名称（简短，2-4个字）",
+  "description": "一句话描述该 Agent 的核心职责",
+  "icon": "一个合适的 emoji 图标",
+  "color": "一个十六进制颜色值，如 #3B82F6",
+  "systemPrompt": "详细的系统提示词，定义角色、能力、行为规范（200-500字）",
+  "allowedTools": ["该角色可以使用的工具列表，用 * 表示全部允许"]
+}
+
+可选的工具列表（allowedTools 从中选择要启用的，或用 ["*"] 表示全部启用）：
+- run_command: 执行 shell 命令
+- read_file: 读取文件内容
+- write_file: 写入文件内容
+- edit_file: 搜索替换编辑文件
+- search_code: 正则搜索代码
+- list_files: 列出文件目录树
+- git_operations: Git 操作（status/diff/log/commit 等）
+- test_runner: 运行测试（自动检测框架）
+- load_skill: 加载技能指令
+- background_run: 后台运行命令
+- background_check: 查看后台任务状态
+- background_cancel: 取消后台任务
+
+注意：
+- systemPrompt 要详细、专业，清晰定义角色边界
+- 根据角色合理选择需要的工具（如研究员只需 read_file、search_code、list_files）
+- 颜色要有辨识度，不同角色用不同色系`;
+
+export async function generateAgentFromDescription(req: Request, res: Response): Promise<void> {
+  const body = req.body as { description?: string };
+  const description = typeof body?.description === "string" ? body.description.trim() : "";
+  if (!description) {
+    res.status(400).json({ error: "Missing or empty description" });
+    return;
+  }
+
+  try {
+    const config = loadUserConfig();
+    const llm = getLLM(config.modelId);
+    const response = await llm.invoke([
+      new SystemMessage(AGENT_GENERATE_PROMPT),
+      new HumanMessage(description),
+    ]);
+
+    const content = typeof response.content === "string"
+      ? response.content
+      : Array.isArray(response.content)
+        ? response.content.map((c) => ("type" in c && c.type === "text" && typeof c.text === "string") ? c.text : "").join("")
+        : String(response.content);
+
+    // Extract JSON from response (handle markdown code blocks)
+    const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/(\{[\s\S]*\})/);
+    if (!jsonMatch?.[1]) {
+      res.status(500).json({ error: "Failed to parse LLM response", raw: content });
+      return;
+    }
+
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = JSON.parse(jsonMatch[1].trim());
+    } catch {
+      res.status(500).json({ error: "LLM 返回的 JSON 格式无效", raw: content });
+      return;
+    }
+    const result = {
+      name: String(parsed.name ?? ""),
+      description: String(parsed.description ?? ""),
+      icon: String(parsed.icon ?? "🤖"),
+      color: String(parsed.color ?? "#6B7280"),
+      systemPrompt: String(parsed.systemPrompt ?? ""),
+      allowedTools: Array.isArray(parsed.allowedTools) ? parsed.allowedTools.map(String) : ["*"],
+    };
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const def = getAgentDef(id);
+  if (!def) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  res.json(def);
+}
+
+export function putAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getAgentDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot edit built-in agent" });
+    return;
+  }
+  const parsed = agentDefBody.partial().safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+    return;
+  }
+  const updated = updateAgentDef(id, parsed.data);
+  if (!updated) {
+    res.status(500).json({ error: "Update failed" });
+    return;
+  }
+  res.json(updated);
+}
+
+export function deleteAgentById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getAgentDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Agent not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot delete built-in agent" });
+    return;
+  }
+  // Prevent deletion if agent is referenced by any team
+  const teams = listTeamDefs();
+  const referencingTeams = teams.filter((t) => t.agents.includes(id));
+  if (referencingTeams.length > 0) {
+    const names = referencingTeams.map((t) => t.name).join(", ");
+    res.status(400).json({ error: `Cannot delete agent: referenced by team(s) ${names}` });
+    return;
+  }
+  deleteAgentDef(id);
+  res.json({ ok: true });
+}
+
+// ─── Team Defs CRUD ──────────────────────────────────────
+
+export function getTeams(_req: Request, res: Response): void {
+  try {
+    res.json(listTeamDefs());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+const teamDefBody = z.object({
+  name: z.string().min(1).max(100),
+  description: z.string().max(500).default(""),
+  agents: z.array(z.string()).min(1),
+  coordinatorPrompt: z.string().max(5000).optional(),
+});
+
+export function postTeams(req: Request, res: Response): void {
+  try {
+    const parsed = teamDefBody.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+      return;
+    }
+    // Validate all agent IDs exist
+    for (const agentId of parsed.data.agents) {
+      if (!getAgentDef(agentId)) {
+        res.status(400).json({ error: `Agent '${agentId}' not found` });
+        return;
+      }
+    }
+    const def = createTeamDef(parsed.data);
+    res.status(201).json(def);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const def = getTeamDef(id);
+  if (!def) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  res.json(def);
+}
+
+export function putTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getTeamDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot edit built-in team" });
+    return;
+  }
+  const parsed = teamDefBody.partial().safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.flatten() });
+    return;
+  }
+  // Validate agent IDs if provided
+  if (parsed.data.agents) {
+    for (const agentId of parsed.data.agents) {
+      if (!getAgentDef(agentId)) {
+        res.status(400).json({ error: `Agent '${agentId}' not found` });
+        return;
+      }
+    }
+  }
+  const updated = updateTeamDef(id, parsed.data);
+  if (!updated) {
+    res.status(500).json({ error: "Update failed" });
+    return;
+  }
+  res.json(updated);
+}
+
+export function deleteTeamById(req: Request, res: Response): void {
+  const id = req.params.id as string;
+  const existing = getTeamDef(id);
+  if (!existing) {
+    res.status(404).json({ error: "Team not found" });
+    return;
+  }
+  if (existing.builtIn) {
+    res.status(403).json({ error: "Cannot delete built-in team" });
+    return;
+  }
+  deleteTeamDef(id);
+  res.json({ ok: true });
 }

@@ -1,11 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
-import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation } from "./api";
+import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval, listTeamDefs, listAgentDefs } from "./api";
+import type { TeamDef, AgentDef } from "./types";
 import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import TeamPanel from "./components/TeamPanel";
+import AgentTeamPanel from "./components/AgentTeamPanel";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
+import type { ConversationMode, SubagentLog } from "./types";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -15,14 +19,21 @@ export default function App() {
   const [showConfig, setShowConfig] = useState(false);
   const [showTemplates, setShowTemplates] = useState(false);
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
+  const [showAgentTeam, setShowAgentTeam] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
+  const [showTeamPanel, setShowTeamPanel] = useState(false);
   const [artifactCount, setArtifactCount] = useState(0);
   const [executingTaskConversations, setExecutingTaskConversations] = useState<Set<string>>(new Set());
   const [sidebarSearch, setSidebarSearch] = useState("");
   const [artifactPaneWidth, setArtifactPaneWidth] = useState(50);
-  const [isResizing, setIsResizing] = useState(false);
+  const [teamPaneWidth, setTeamPaneWidth] = useState(280);
+  const [resizeTarget, setResizeTarget] = useState<"artifact" | "team" | null>(null);
   const [compressing, setCompressing] = useState(false);
+  const [draftMode, setDraftMode] = useState<ConversationMode>("default");
+  const [draftTeamId, setDraftTeamId] = useState("default");
+  const [teams, setTeams] = useState<TeamDef[]>([]);
+  const [agents, setAgents] = useState<AgentDef[]>([]);
   const mainRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
     () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
@@ -50,6 +61,17 @@ export default function App() {
     return conversations.filter((c) => c.title.toLowerCase().includes(q));
   }, [conversations, sidebarSearch]);
 
+  // Simplified teams for WelcomeBox selector
+  const simplifiedTeams = useMemo(() => {
+    return teams.map((t) => ({ id: t.id, name: t.name }));
+  }, [teams]);
+
+  // Current team info for the active conversation
+  const currentTeam = useMemo(() => {
+    if (!current?.teamId) return null;
+    return teams.find((t) => t.id === current.teamId) ?? null;
+  }, [current?.teamId, teams]);
+
   const {
     input,
     setInput,
@@ -63,6 +85,7 @@ export default function App() {
     streamingToolLogs,
     streamingSubagents,
     streamingPlan,
+    pendingApprovals,
     sendError,
     usageTokens,
     contextUsage,
@@ -73,14 +96,47 @@ export default function App() {
     setCurrent,
   });
 
+  // Shared approval state to prevent duplicate submissions from StreamingBubble + TeamPanel
+  const [processingApprovals, setProcessingApprovals] = useState<Set<string>>(new Set());
+  const handleApproval = useCallback(async (requestId: string, approved: boolean) => {
+    if (!current?.id) return;
+    if (processingApprovals.has(requestId)) return; // already processing
+    setProcessingApprovals((prev) => new Set(prev).add(requestId));
+    try {
+      await submitApproval(current.id, requestId, approved);
+    } catch {
+      // approval removed via SSE approval_response event
+    } finally {
+      setProcessingApprovals((prev) => {
+        const next = new Set(prev);
+        next.delete(requestId);
+        return next;
+      });
+    }
+  }, [current?.id, processingApprovals]);
+
   useEffect(() => {
     setShowArtifacts(false);
     setArtifactCount(0);
   }, [current?.id]);
 
+  // Load teams list and agents list for team selector and member display
   useEffect(() => {
-    if (!showArtifacts) setIsResizing(false);
-  }, [showArtifacts]);
+    Promise.all([listTeamDefs(), listAgentDefs()])
+      .then(([teamsList, agentsList]) => {
+        setTeams(teamsList);
+        setAgents(agentsList);
+      })
+      .catch(() => {});
+  }, [showAgentTeam]);
+
+  useEffect(() => {
+    if (!showArtifacts && resizeTarget === "artifact") setResizeTarget(null);
+  }, [showArtifacts, resizeTarget]);
+
+  useEffect(() => {
+    if (!showTeamPanel && resizeTarget === "team") setResizeTarget(null);
+  }, [showTeamPanel, resizeTarget]);
 
   const refreshArtifactCount = useCallback(() => {
     if (!current) return;
@@ -100,11 +156,11 @@ export default function App() {
     if (!text) {
       throw new Error("模板渲染结果为空");
     }
-    const meta = await createConversation();
+    const meta = await createConversation(undefined, draftMode, draftMode === "team" ? draftTeamId : undefined);
     setMessages([]);
     loadList();
     navigate(`/c/${meta.id}`);
-    send(meta.id, text, []);
+    send(meta.id, text, [], meta.mode ?? draftMode);
   };
 
   const handleSelectConversation = (meta: { id: string }) => {
@@ -192,11 +248,11 @@ export default function App() {
 
   const handleStartFromWelcome = async () => {
     try {
-      const meta = await createConversation();
+      const meta = await createConversation(undefined, draftMode, draftMode === "team" ? draftTeamId : undefined);
       setMessages([]);
       loadList();
       navigate(`/c/${meta.id}`);
-      send(meta.id);
+      send(meta.id, undefined, undefined, meta.mode ?? draftMode);
     } catch (e) {
       toast(`创建对话失败: ${e instanceof Error ? e.message : String(e)}`, "error");
     }
@@ -204,7 +260,7 @@ export default function App() {
 
   const handleWelcomeSend = () => {
     if (current) {
-      send(current.id);
+      send(current.id, undefined, undefined, current.mode ?? "default");
     } else {
       handleStartFromWelcome();
     }
@@ -300,28 +356,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isResizing) return;
+    if (!resizeTarget) return;
     const onMove = (e: MouseEvent) => {
       const el = mainRef.current;
       if (!el) return;
       const rect = el.getBoundingClientRect();
-      const leftPx = e.clientX - rect.left;
-      const leftPercent = (leftPx / rect.width) * 100;
-      const rightPercent = 100 - leftPercent;
-      const clampedRight = Math.min(75, Math.max(25, rightPercent));
-      setArtifactPaneWidth(clampedRight);
+      if (resizeTarget === "artifact") {
+        const leftPx = e.clientX - rect.left;
+        const leftPercent = (leftPx / rect.width) * 100;
+        const rightPercent = 100 - leftPercent;
+        const clampedRight = Math.min(75, Math.max(25, rightPercent));
+        setArtifactPaneWidth(clampedRight);
+        return;
+      }
+      const nextTeamWidth = rect.right - e.clientX;
+      const clampedTeamWidth = Math.min(520, Math.max(220, nextTeamWidth));
+      setTeamPaneWidth(clampedTeamWidth);
     };
-    const onUp = () => setIsResizing(false);
+    const onUp = () => setResizeTarget(null);
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [isResizing]);
+  }, [resizeTarget]);
 
   useEffect(() => {
-    if (!isResizing) return;
+    if (!resizeTarget) return;
     const prevUserSelect = document.body.style.userSelect;
     const prevCursor = document.body.style.cursor;
     document.body.style.userSelect = "none";
@@ -330,7 +392,7 @@ export default function App() {
       document.body.style.userSelect = prevUserSelect;
       document.body.style.cursor = prevCursor;
     };
-  }, [isResizing]);
+  }, [resizeTarget]);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -338,6 +400,7 @@ export default function App() {
         onOpenTemplates={() => setShowTemplates(true)}
         onOpenConfig={() => setShowConfig(true)}
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
+        onOpenAgentTeam={() => setShowAgentTeam(true)}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -368,6 +431,11 @@ export default function App() {
               models={models}
               modelId={modelId}
               onModelChange={setModelId}
+              mode={draftMode}
+              onModeChange={setDraftMode}
+              teams={simplifiedTeams}
+              teamId={draftTeamId}
+              onTeamChange={setDraftTeamId}
             />
           ) : (
             <ChatPanel
@@ -375,7 +443,7 @@ export default function App() {
               conversationId={current.id}
               input={input}
               onInputChange={setInput}
-              onSend={() => send(current.id)}
+              onSend={() => send(current.id, undefined, undefined, current.mode ?? "default")}
               loading={loading}
               streamingContent={streamingContent}
               streamingReasoning={streamingReasoning}
@@ -383,20 +451,42 @@ export default function App() {
               streamingToolLogs={streamingToolLogs}
               streamingSubagents={streamingSubagents}
               streamingPlan={streamingPlan}
+              pendingApprovals={pendingApprovals}
+              onApproval={handleApproval}
+              processingApprovals={processingApprovals}
               error={error}
               files={files}
               onFilesChange={setFiles}
               models={models}
               modelId={modelId}
               onModelChange={setModelId}
+              mode={current.mode ?? "default"}
+              onModeChange={() => undefined}
+              modeLocked
               artifactCount={artifactCount}
-              onToggleArtifacts={() => setShowArtifacts((prev) => !prev)}
+              onToggleArtifacts={() => {
+                setShowArtifacts((prev) => {
+                  const next = !prev;
+                  if (next) setShowTeamPanel(false);
+                  return next;
+                });
+              }}
               artifactsPanelOpen={showArtifacts}
+              showTeamPanel={showTeamPanel}
+              onToggleTeamPanel={() => {
+                setShowTeamPanel((prev) => {
+                  const next = !prev;
+                  if (next) setShowArtifacts(false);
+                  return next;
+                });
+              }}
               isTaskExecuting={executingTaskConversations.has(current.id)}
               usageTokens={usageTokens}
               contextUsage={contextUsage}
               onCompress={handleCompress}
               compressing={compressing}
+              team={currentTeam}
+              agents={agents}
             />
           )}
         </div>
@@ -406,7 +496,7 @@ export default function App() {
               className="w-1.5 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] transition-colors shrink-0"
               onMouseDown={(e) => {
                 e.preventDefault();
-                setIsResizing(true);
+                setResizeTarget("artifact");
               }}
               title="拖拽调整宽度"
             />
@@ -414,11 +504,49 @@ export default function App() {
             <ArtifactPanel
               conversationId={current.id}
               onClose={() => setShowArtifacts(false)}
+              theme={theme}
             />
             </div>
           </>
         )}
-        {isResizing && <div className="absolute inset-0 z-20 cursor-col-resize" />}
+        {showTeamPanel && current && (current.mode ?? "default") === "team" && (
+          <>
+            <div
+              className="w-1.5 cursor-col-resize bg-[var(--color-border)] hover:bg-[var(--color-accent)] transition-colors shrink-0"
+              onMouseDown={(e) => {
+                e.preventDefault();
+                setResizeTarget("team");
+              }}
+              title="拖拽调整宽度"
+            />
+            <div className="min-w-0 min-h-0 overflow-hidden shrink-0" style={{ width: `${teamPaneWidth}px` }}>
+              <TeamPanel
+                streamingSubagents={streamingSubagents}
+                historicalRounds={(() => {
+                  const rounds: Array<{ label: string; subagents: SubagentLog[] }> = [];
+                  let lastHumanContent = "";
+                  for (const m of messages) {
+                    if (m.type === "human") {
+                      lastHumanContent = (m.content || "").trim();
+                    } else if (m.type === "ai" && m.subagents?.length) {
+                      const label = lastHumanContent.length > 30
+                        ? lastHumanContent.slice(0, 30) + "…"
+                        : lastHumanContent || `Round ${rounds.length + 1}`;
+                      rounds.push({ label, subagents: m.subagents });
+                    }
+                  }
+                  return rounds;
+                })()}
+                pendingApprovals={pendingApprovals}
+                onApproval={handleApproval}
+                processingApprovals={processingApprovals}
+                conversationId={current.id}
+                onClose={() => setShowTeamPanel(false)}
+              />
+            </div>
+          </>
+        )}
+        {resizeTarget && <div className="absolute inset-0 z-20 cursor-col-resize" />}
       </main>
       {showConfig && (
         <SettingsPanel
@@ -448,6 +576,9 @@ export default function App() {
             />
           </div>
         </div>
+      )}
+      {showAgentTeam && (
+        <AgentTeamPanel onClose={() => setShowAgentTeam(false)} />
       )}
       <DeleteConfirmModal
         open={deleteTargetId !== null}

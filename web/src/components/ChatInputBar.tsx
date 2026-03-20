@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import type { ConversationMode } from "../types";
 
 export interface FileWithData {
   file: File;
@@ -19,7 +20,13 @@ interface Props {
   models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean; contextWindow?: number }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
+  modeLocked?: boolean;
   disabled?: boolean;
+  teams?: Array<{ id: string; name: string }>;
+  teamId?: string;
+  onTeamChange?: (teamId: string) => void;
   contextUsage?: {
     strategy?: "full" | "trim" | "compress";
     percentByWindow?: number;
@@ -56,7 +63,13 @@ export default function ChatInputBar({
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
+  modeLocked = false,
   disabled = false,
+  teams = [],
+  teamId,
+  onTeamChange,
   contextUsage = null,
   onCompress,
   compressing = false,
@@ -64,11 +77,13 @@ export default function ChatInputBar({
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [contextTooltipOpen, setContextTooltipOpen] = useState(false);
 
   useEffect(() => {
     if (loading) {
       setModelMenuOpen(false);
+      setModeMenuOpen(false);
       setContextTooltipOpen(false);
     }
   }, [loading]);
@@ -107,7 +122,35 @@ export default function ChatInputBar({
   };
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
+  const modeLabel = mode === "team" ? "Team Mode" : "默认模式";
+  const currentTeam = teams.find((t) => t.id === teamId);
   const supportsImage = currentModel?.supportsImage !== false;
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      if (!supportsImage) return;
+      const items = Array.from(e.clipboardData.items);
+      const imageItems = items.filter((item) => IMAGE_TYPES.includes(item.type));
+      if (imageItems.length === 0) return;
+      e.preventDefault();
+      const imageFiles = imageItems
+        .map((item) => item.getAsFile())
+        .filter((f): f is File => f !== null);
+      if (imageFiles.length === 0) return;
+      const newOnes: FileWithData[] = await Promise.all(
+        imageFiles.slice(0, 4 - files.length).map(async (file) => ({
+          file,
+          mimeType: file.type,
+          data: (await readFileAsDataUrl(file)).split(",")[1] ?? "",
+        }))
+      );
+      if (newOnes.length > 0) {
+        onFilesChange([...files, ...newOnes]);
+      }
+    },
+    [supportsImage, files, onFilesChange]
+  );
+
   const strategyLabel = {
     full: "全量上下文",
     trim: "截断",
@@ -115,16 +158,6 @@ export default function ChatInputBar({
   } as const;
   const displayPercent = contextUsage ? (contextUsage.percentByThreshold ?? contextUsage.percentByWindow) : undefined;
   const strategyText = contextUsage?.strategy ? strategyLabel[contextUsage.strategy] : "未知";
-
-  // 调试日志
-  if (contextUsage) {
-    console.log('[ChatInputBar] Context Usage:', {
-      strategy: contextUsage.strategy,
-      hasCompress: !!onCompress,
-      showButton: contextUsage.strategy === "compress" && !!onCompress,
-      compressing,
-    });
-  }
 
   return (
     <form
@@ -172,6 +205,7 @@ export default function ChatInputBar({
           rows={1}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -287,6 +321,100 @@ export default function ChatInputBar({
                 )}
               </div>
             )}
+            {!loading && !disabled ? (
+              <DropdownMenu.Root open={modeMenuOpen} onOpenChange={setModeMenuOpen}>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={loading || disabled || modeLocked}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed disabled:opacity-60 hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                  >
+                    <span>{modeLabel}</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                      <path d="M18 15l-6-6-6 6" />
+                    </svg>
+                  </button>
+                </DropdownMenu.Trigger>
+                {!modeLocked && (
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.Content
+                      side="top"
+                      sideOffset={4}
+                      align="end"
+                      className="min-w-[160px] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-50"
+                    >
+                      <DropdownMenu.Item
+                        onSelect={() => onModeChange("default")}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${mode === "default" ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        默认模式
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        onSelect={() => onModeChange("team")}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${mode === "team" ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        Team Mode
+                      </DropdownMenu.Item>
+                    </DropdownMenu.Content>
+                  </DropdownMenu.Portal>
+                )}
+              </DropdownMenu.Root>
+            ) : (
+              <span 
+                className="text-[13px] text-[var(--color-text-muted)] px-2 py-1 truncate max-w-[100px]"
+                title={modeLabel}
+              >
+                {modeLabel}
+              </span>
+            )}
+            {mode === "team" && teams.length > 0 && !modeLocked && onTeamChange && (
+              <DropdownMenu.Root>
+                <DropdownMenu.Trigger asChild>
+                  <button
+                    type="button"
+                    disabled={loading || disabled}
+                    className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[13px] disabled:cursor-not-allowed hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                    title={currentTeam?.name}
+                  >
+                    <span>👥</span>
+                    <span className="truncate max-w-[120px]">{currentTeam?.name ?? "选择 Team"}</span>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="shrink-0">
+                      <path d="M18 15l-6-6-6 6" />
+                    </svg>
+                  </button>
+                </DropdownMenu.Trigger>
+                <DropdownMenu.Portal>
+                  <DropdownMenu.Content
+                    side="top"
+                    sideOffset={4}
+                    align="end"
+                    className="min-w-[160px] max-h-[200px] overflow-auto bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-50"
+                  >
+                    {teams.map((t) => (
+                      <DropdownMenu.Item
+                        key={t.id}
+                        onSelect={() => onTeamChange(t.id)}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${t.id === teamId ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        {t.name}
+                      </DropdownMenu.Item>
+                    ))}
+                  </DropdownMenu.Content>
+                </DropdownMenu.Portal>
+              </DropdownMenu.Root>
+            )}
             {models.length > 1 && !loading && !disabled ? (
               <DropdownMenu.Root open={modelMenuOpen} onOpenChange={setModelMenuOpen}>
                 <DropdownMenu.Trigger asChild>
@@ -325,7 +453,10 @@ export default function ChatInputBar({
                 </DropdownMenu.Portal>
               </DropdownMenu.Root>
             ) : (
-              <span className="text-[13px] text-[var(--color-text-muted)] px-2 py-1">
+              <span 
+                className="text-[13px] text-[var(--color-text-muted)] px-2 py-1 truncate max-w-[140px]"
+                title={currentModel?.name}
+              >
                 {currentModel?.name ?? "模型"}
               </span>
             )}

@@ -6,6 +6,7 @@ interface Props {
   onOpenTemplates: () => void;
   onOpenConfig: () => void;
   onOpenScheduledTasks: () => void;
+  onOpenAgentTeam: () => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
 }
@@ -14,6 +15,7 @@ export default function ToolSidebar({
   onOpenTemplates,
   onOpenConfig,
   onOpenScheduledTasks,
+  onOpenAgentTeam,
   theme,
   onToggleTheme,
 }: Props) {
@@ -85,6 +87,20 @@ export default function ToolSidebar({
         >
           <span>⏰</span>
           {open && <span>定时任务</span>}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenAgentTeam}
+          aria-label="Agent / Team"
+          title="Agent / Team 管理"
+          className={`
+            rounded-lg border border-[var(--color-border)] text-[var(--color-text)] cursor-pointer
+            hover:bg-[var(--color-surface-hover)] transition-colors flex items-center
+            ${open ? "w-full py-2 px-3 gap-2 justify-center text-[13px]" : "w-9 h-9 justify-center p-0 shrink-0 self-center"}
+          `}
+        >
+          <span>👥</span>
+          {open && <span>Agent/Team</span>}
         </button>
         <button
           type="button"

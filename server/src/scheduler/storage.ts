@@ -3,7 +3,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import type {
   ScheduledTask,
   TaskExecution,
@@ -11,7 +11,7 @@ import type {
   TaskHistoryStorage,
 } from "./types.js";
 
-const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const SCHEDULER_DIR = join(DATA_DIR, "scheduler");
 const TASKS_FILE = join(SCHEDULER_DIR, "tasks.json");
 const HISTORY_FILE = join(SCHEDULER_DIR, "history.json");

@@ -21,7 +21,8 @@ export interface ModelAdapter {
     messages: BaseMessage[],
     onToken: (token: string) => void,
     onReasoningToken: (token: string) => void,
-    tools?: Array<Record<string, unknown>>
+    tools?: Array<Record<string, unknown>>,
+    abortSignal?: AbortSignal
   ): Promise<StreamReasoningResult>;
 }
 
@@ -60,12 +61,14 @@ class OpenAICompatibleAdapter implements ModelAdapter {
     messages: BaseMessage[],
     onToken: (token: string) => void,
     onReasoningToken: (token: string) => void,
-    tools?: Array<Record<string, unknown>>
+    tools?: Array<Record<string, unknown>>,
+    abortSignal?: AbortSignal
   ): Promise<StreamReasoningResult> {
     // reasoning 模型要求 temperature=1
     return streamChatCompletionsWithReasoning(
       this.baseUrl, this.apiKey, this.modelId, messages, onToken, onReasoningToken, tools,
-      this._reasoning ? 1 : 0
+      this._reasoning ? 1 : 0,
+      abortSignal
     );
   }
 }

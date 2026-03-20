@@ -24,7 +24,7 @@ import {
   cleanupOldConversations,
   getDataDir,
 } from "../storage/index.js";
-import { storedToLangChain, langChainToStored } from "../lib/messages.js";
+import { storedToLangChain, langChainToStored, sanitizeMessageSequence } from "../lib/messages.js";
 import { cleanupOldHistory } from "./storage.js";
 import { serverLogger } from "../lib/logger.js";
 
@@ -79,7 +79,7 @@ async function executeConversationTask(config: TaskConfigConversation): Promise<
 
   // 获取对话历史
   const storedMessages = getMessages(conversationId);
-  const lcMessages = storedMessages.map((m) => storedToLangChain(m, conversationId));
+  const lcMessages = sanitizeMessageSequence(storedMessages).map((m) => storedToLangChain(m, conversationId));
 
   // 如果对话中还没有这条消息，添加它
   if (lcMessages.length === 0 || String(lcMessages[lcMessages.length - 1]?.content) !== message) {
@@ -174,7 +174,7 @@ async function executeWebhookTask(config: TaskConfigWebhook): Promise<{ output: 
 
     // 获取对话历史
     const storedMessages = getMessages(targetConversationId);
-    const lcMessages = storedMessages.map((m) => storedToLangChain(m, targetConversationId));
+    const lcMessages = sanitizeMessageSequence(storedMessages).map((m) => storedToLangChain(m, targetConversationId));
 
     // 如果对话中还没有这条消息，添加它
     if (lcMessages.length === 0 || String(lcMessages[lcMessages.length - 1]?.content) !== prompt) {
@@ -395,7 +395,7 @@ async function executeSkillTask(config: TaskConfigSkill): Promise<{ output: stri
 
   // 获取对话历史
   const storedMessages = getMessages(conversationId);
-  const lcMessages = storedMessages.map((m) => storedToLangChain(m, conversationId));
+  const lcMessages = sanitizeMessageSequence(storedMessages).map((m) => storedToLangChain(m, conversationId));
 
   // 如果对话中还没有这条消息，添加它
   if (lcMessages.length === 0 || String(lcMessages[lcMessages.length - 1]?.content) !== message) {

@@ -57,6 +57,15 @@ export function estimateBaseMessageTokens(messages: BaseMessage[]): number {
   for (const m of messages) {
     const content = (m as { content?: unknown }).content;
     total += estimatePartTokens(content);
+    // AIMessage 的 tool_calls 也占 token：每个 call 包含 name + JSON args
+    const toolCalls = (m as unknown as { tool_calls?: Array<{ name?: string; args?: unknown }> }).tool_calls;
+    if (Array.isArray(toolCalls)) {
+      for (const tc of toolCalls) {
+        total += estimateTextTokens(tc.name ?? "");
+        const argsStr = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
+        total += estimateTextTokens(argsStr);
+      }
+    }
     total += MESSAGE_OVERHEAD_TOKENS;
   }
   return total;

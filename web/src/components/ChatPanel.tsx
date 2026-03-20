@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { StoredMessage, StreamingStatus } from "../types";
+import type { AgentRole, ConversationMode, StoredMessage, StreamingStatus, TeamDef, AgentDef } from "../types";
 import MessageBubble from "./MessageBubble";
 import StreamingBubble from "./StreamingBubble";
 import ChatInputBar, { type FileWithData } from "./ChatInputBar";
@@ -18,6 +18,8 @@ interface Props {
   streamingSubagents: Array<{
     subagentId: string;
     subagentName?: string;
+    role?: AgentRole;
+    dependsOn?: string[];
     depth: number;
     prompt: string;
     phase: "started" | "completed" | "failed";
@@ -50,15 +52,29 @@ interface Props {
     currentStep: number;
     toolName?: string;
   } | null;
+  pendingApprovals?: Array<{
+    requestId: string;
+    subagentId: string;
+    operationType: string;
+    operationDescription: string;
+    details: Record<string, unknown>;
+  }>;
+  onApproval?: (requestId: string, approved: boolean) => void;
+  processingApprovals?: Set<string>;
   error: string | null;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
   models: Array<{ id: string; name: string; provider?: string; supportsReasoning?: boolean }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
+  modeLocked?: boolean;
   artifactCount?: number;
   onToggleArtifacts?: () => void;
   artifactsPanelOpen?: boolean;
+  showTeamPanel?: boolean;
+  onToggleTeamPanel?: () => void;
   isTaskExecuting?: boolean;
   usageTokens?: {
     promptTokens: number;
@@ -79,6 +95,8 @@ interface Props {
   } | null;
   onCompress?: () => void;
   compressing?: boolean;
+  team?: TeamDef | null;
+  agents?: AgentDef[];
 }
 
 export default function ChatPanel({
@@ -94,20 +112,30 @@ export default function ChatPanel({
   streamingToolLogs,
   streamingSubagents,
   streamingPlan,
+  pendingApprovals = [],
+  onApproval,
+  processingApprovals,
   error,
   files,
   onFilesChange,
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
+  modeLocked = true,
   artifactCount = 0,
   onToggleArtifacts,
   artifactsPanelOpen,
+  showTeamPanel,
+  onToggleTeamPanel,
   isTaskExecuting = false,
   usageTokens = null,
   contextUsage = null,
   onCompress,
   compressing = false,
+  team = null,
+  agents = [],
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -158,14 +186,6 @@ export default function ChatPanel({
       }
     : null;
 
-  // 调试日志
-  console.log('[ChatPanel] Display Context Usage:', {
-    displayContextUsage,
-    hasOnCompress: !!onCompress,
-    compressing,
-    effectiveContextUsage,
-  });
-
   const handleScroll = () => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -215,11 +235,41 @@ export default function ChatPanel({
   return (
     <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
-        {(messages ?? [])
-          .filter((m) => m.type !== "tool") // 过滤掉 tool 消息，它们的内容已在 toolLogs 中展示
-          .map((m, i) => (
-            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} />
-          ))}
+        {(() => {
+          // 合并中间 AI 消息的 reasoning 到后续有内容的 AI 消息，与流式展示保持一致
+          const filtered = (messages ?? []).filter((m) => m.type !== "tool");
+          const merged: typeof filtered = [];
+          let pendingReasoning: string[] = [];
+
+          for (const m of filtered) {
+            const isDispatchOnly = m.type === "ai"
+              && (!m.content || !m.content.trim())
+              && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+
+            if (isDispatchOnly) {
+              // 收集 reasoning，不渲染此消息
+              if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
+              continue;
+            }
+
+            if (m.type === "ai" && pendingReasoning.length > 0) {
+              // 将收集的 reasoning 合并到这条 AI 消息
+              const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
+              merged.push({ ...m, reasoningContent: combined });
+              pendingReasoning = [];
+            } else {
+              merged.push(m);
+            }
+          }
+          // 如果末尾还有未合并的 reasoning（没有后续 AI 消息），单独渲染
+          if (pendingReasoning.length > 0) {
+            merged.push({ type: "ai", content: "", reasoningContent: pendingReasoning.join("\n\n---\n\n") } as typeof filtered[0]);
+          }
+
+          return merged.map((m, i) => (
+            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} team={team} agents={agents} />
+          ));
+        })()}
         {isTaskExecuting && !loading && (
           <div className="p-4 rounded-lg bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] text-sm flex items-center gap-3">
             <div className="animate-spin h-5 w-5 border-2 border-[var(--color-accent)] border-t-transparent rounded-full"></div>
@@ -234,12 +284,16 @@ export default function ChatPanel({
           toolLogs={streamingToolLogs}
           subagents={streamingSubagents}
           plan={streamingPlan ?? undefined}
+          pendingApprovals={pendingApprovals}
+          onApproval={onApproval}
+          processingApprovals={processingApprovals}
+          conversationId={conversationId}
           isStreaming={loading}
           supportsReasoning={(models.find((m) => m.id === modelId) ?? models[0])?.supportsReasoning === true}
           modelName={modelId ? (models.find((m) => m.id === modelId)?.name ?? modelId) : undefined}
-          modelId={modelId}
-          conversationId={conversationId}
           usageTokens={usageTokens || undefined}
+          team={team}
+          agents={agents}
         />
         )}
         {error && (
@@ -275,29 +329,55 @@ export default function ChatPanel({
               models={models}
               modelId={modelId}
               onModelChange={onModelChange}
+              mode={mode}
+              onModeChange={onModeChange}
+              modeLocked={modeLocked}
               disabled={isTaskExecuting}
               contextUsage={displayContextUsage}
               onCompress={onCompress}
               compressing={compressing}
             />
           </div>
-          {artifactCount > 0 && onToggleArtifacts && (
-            <button
-              onClick={onToggleArtifacts}
-              className={`shrink-0 mb-1 flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
-                artifactsPanelOpen
-                  ? "bg-[var(--color-accent)] text-white"
-                  : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
-              }`}
-              title="查看产物文件"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                <polyline points="14 2 14 8 20 8" />
-              </svg>
-              {artifactCount}
-            </button>
-          )}
+          {(mode === "team" && onToggleTeamPanel) || (artifactCount > 0 && onToggleArtifacts) ? (
+            <div className="shrink-0 mb-1 flex flex-col gap-2">
+              {mode === "team" && onToggleTeamPanel && (
+                <button
+                  onClick={onToggleTeamPanel}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
+                    showTeamPanel
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  }`}
+                  title="Team Panel"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                    <circle cx="9" cy="7" r="4" />
+                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  </svg>
+                  Team
+                </button>
+              )}
+              {artifactCount > 0 && onToggleArtifacts && (
+                <button
+                  onClick={onToggleArtifacts}
+                  className={`flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium transition-colors ${
+                    artifactsPanelOpen
+                      ? "bg-[var(--color-accent)] text-white"
+                      : "bg-[var(--color-surface)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  }`}
+                  title="查看产物文件"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                    <polyline points="14 2 14 8 20 8" />
+                  </svg>
+                  {artifactCount}
+                </button>
+              )}
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

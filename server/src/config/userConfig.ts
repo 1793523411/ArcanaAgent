@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
 
@@ -7,9 +7,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // 开发模式使用项目 data/ 目录，生产模式使用用户主目录
 const isDev = process.env.IS_DEV === 'true';
-const DATA_DIR = process.env.DATA_DIR ?? (isDev
+const DATA_DIR = resolve(process.env.DATA_DIR ?? (isDev
   ? join(__dirname, "../../../data")
-  : join(homedir(), ".rule-agent"));
+  : join(homedir(), ".rule-agent")));
 
 const CONFIG_PATH = join(DATA_DIR, "user-config.json");
 
@@ -56,6 +56,24 @@ export interface PlanningConfig {
   streamProgress: boolean;
 }
 
+export interface ApprovalRule {
+  id: string;
+  name: string;
+  pattern: string;
+  operationType: "run_command" | "write_file" | "edit_file";
+  enabled: boolean;
+}
+
+export const defaultApprovalRules: ApprovalRule[] = [
+  {
+    id: "builtin_kill_port",
+    name: "禁止 kill 3000/3001 端口",
+    pattern: "(kill.*30(00|01))|(30(00|01).*kill)|(fuser\\s+-k\\s+30(00|01))",
+    operationType: "run_command",
+    enabled: true,
+  },
+];
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -63,6 +81,7 @@ export interface UserConfig {
   context?: ContextStrategyConfig;
   planning?: PlanningConfig;
   templates?: PromptTemplate[];
+  approvalRules?: ApprovalRule[];
 }
 
 const defaultContext: ContextStrategyConfig = {
@@ -82,6 +101,7 @@ const defaultConfig: UserConfig = {
     streamProgress: true,
   },
   templates: [],
+  approvalRules: [...defaultApprovalRules],
 };
 
 function ensureDataDir(): void {
@@ -101,6 +121,7 @@ export function loadUserConfig(): UserConfig {
     const ctx = parsed.context && typeof parsed.context === "object" ? parsed.context : defaultContext;
     const planningRaw = parsed.planning && typeof parsed.planning === "object" ? parsed.planning : undefined;
     const templates = Array.isArray(parsed.templates) ? parsed.templates : [];
+    const approvalRulesRaw = Array.isArray(parsed.approvalRules) ? parsed.approvalRules : undefined;
     return {
       enabledToolIds: Array.isArray(parsed.enabledToolIds) ? parsed.enabledToolIds : (Array.isArray((parsed as { enabledSkillIds?: string[] }).enabledSkillIds) ? (parsed as { enabledSkillIds: string[] }).enabledSkillIds : defaultConfig.enabledToolIds),
       mcpServers: Array.isArray(parsed.mcpServers) ? parsed.mcpServers : defaultConfig.mcpServers,
@@ -129,6 +150,23 @@ export function loadUserConfig(): UserConfig {
         });
         return acc;
       }, []),
+      approvalRules: approvalRulesRaw
+        ? approvalRulesRaw.reduce<ApprovalRule[]>((acc, item) => {
+            if (!item || typeof item !== "object") return acc;
+            const rule = item as Partial<ApprovalRule>;
+            if (typeof rule.id !== "string" || typeof rule.name !== "string" || typeof rule.pattern !== "string") return acc;
+            const opType = rule.operationType;
+            if (opType !== "run_command" && opType !== "write_file" && opType !== "edit_file") return acc;
+            acc.push({
+              id: rule.id,
+              name: rule.name,
+              pattern: rule.pattern,
+              operationType: opType,
+              enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
+            });
+            return acc;
+          }, [])
+        : [...defaultApprovalRules],
     };
   } catch {
     return { ...defaultConfig };

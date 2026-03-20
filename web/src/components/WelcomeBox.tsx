@@ -1,4 +1,5 @@
 import ChatInputBar, { type FileWithData } from "./ChatInputBar";
+import type { ConversationMode } from "../types";
 
 interface Props {
   input: string;
@@ -7,9 +8,14 @@ interface Props {
   loading: boolean;
   files: FileWithData[];
   onFilesChange: (files: FileWithData[]) => void;
-  models: Array<{ id: string; name: string; provider?: string }>;
+  models: Array<{ id: string; name: string; provider?: string; supportsImage?: boolean; contextWindow?: number }>;
   modelId: string | undefined;
   onModelChange: (modelId: string) => void;
+  mode: ConversationMode;
+  onModeChange: (mode: ConversationMode) => void;
+  teams?: Array<{ id: string; name: string }>;
+  teamId?: string;
+  onTeamChange?: (teamId: string) => void;
 }
 
 export default function WelcomeBox({
@@ -22,10 +28,15 @@ export default function WelcomeBox({
   models,
   modelId,
   onModelChange,
+  mode,
+  onModeChange,
+  teams,
+  teamId,
+  onTeamChange,
 }: Props) {
   return (
     <div className="flex-1 flex flex-col items-center justify-center p-6 min-h-0 overflow-auto">
-      <div className="max-w-[640px] w-full flex flex-col items-center gap-6">
+      <div className="max-w-[800px] w-full flex flex-col items-center gap-6">
         <div className="text-center">
           <h1 className="m-0 mb-3 text-[28px] font-semibold text-[var(--color-accent)]">
             🚀 你好，欢迎使用！
@@ -44,6 +55,11 @@ export default function WelcomeBox({
           models={models}
           modelId={modelId}
           onModelChange={onModelChange}
+          mode={mode}
+          onModeChange={onModeChange}
+          teams={teams}
+          teamId={teamId}
+          onTeamChange={onTeamChange}
           placeholder="今天我能为你做些什么？"
         />
       </div>

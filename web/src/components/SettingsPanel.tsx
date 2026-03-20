@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
-import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig } from "../types";
+import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
 import { useToast } from "./Toast";
 
 const DEFAULT_CONTEXT: ContextStrategyConfig = {
@@ -27,7 +27,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
@@ -44,6 +44,15 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [mcpHeaders, setMcpHeaders] = useState("");
   const [mcpAdding, setMcpAdding] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
+
+  // Approval rule form state
+  const [showApprovalForm, setShowApprovalForm] = useState(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [ruleName, setRuleName] = useState("");
+  const [rulePattern, setRulePattern] = useState("");
+  const [ruleOpType, setRuleOpType] = useState<ApprovalRule["operationType"]>("run_command");
+  const [ruleEnabled, setRuleEnabled] = useState(true);
+  const [rulePatternError, setRulePatternError] = useState<string | null>(null);
 
   useEffect(() => {
     getConfig().then((c) => {
@@ -85,6 +94,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         context: config.context ?? DEFAULT_CONTEXT,
         planning: config.planning ?? DEFAULT_PLANNING,
         mcpServers: config.mcpServers,
+        approvalRules: config.approvalRules,
       });
       setMcpStatus(updated.mcpStatus ?? []);
       toast("设置已保存", "success");
@@ -197,6 +207,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     { id: "context" as const, label: "上下文策略" },
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
+    { id: "approval" as const, label: "审批规则" },
   ] as const;
 
   return (
@@ -594,6 +605,217 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     ))
                   )}
                 </ul>
+              </section>
+            )}
+            {activeSection === "approval" && (
+              <section aria-labelledby="approval-heading" className="space-y-4">
+                <h2 id="approval-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  审批规则
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  配置团队模式下需要人工审批的命令或文件操作模式。匹配规则的操作将在执行前弹出审批确认。
+                </p>
+
+                <div className="flex flex-col gap-2">
+                  {(config.approvalRules ?? []).map((rule) => (
+                    <div
+                      key={rule.id}
+                      className="flex items-start justify-between gap-3 p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium text-[var(--color-text)]">{rule.name}</span>
+                          {rule.id.startsWith("builtin_") && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]">内置</span>
+                          )}
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--color-surface-hover)] text-[var(--color-text-muted)]">
+                            {rule.operationType}
+                          </span>
+                        </div>
+                        <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono break-all">
+                          {rule.pattern}
+                        </p>
+                      </div>
+                      <div className="shrink-0 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setConfig((prev) => {
+                              if (!prev) return prev;
+                              const rules = (prev.approvalRules ?? []).map((r) =>
+                                r.id === rule.id ? { ...r, enabled: !r.enabled } : r
+                              );
+                              return { ...prev, approvalRules: rules };
+                            });
+                          }}
+                          className={`px-2 py-1 text-[12px] rounded border transition-colors ${
+                            rule.enabled
+                              ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                              : "bg-transparent text-[var(--color-text-muted)] border-[var(--color-border)]"
+                          }`}
+                        >
+                          {rule.enabled ? "启用" : "禁用"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingRuleId(rule.id);
+                            setRuleName(rule.name);
+                            setRulePattern(rule.pattern);
+                            setRuleOpType(rule.operationType);
+                            setRuleEnabled(rule.enabled);
+                            setRulePatternError(null);
+                            setShowApprovalForm(true);
+                          }}
+                          className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                        >
+                          编辑
+                        </button>
+                        {!rule.id.startsWith("builtin_") && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setConfig((prev) => {
+                                if (!prev) return prev;
+                                return { ...prev, approvalRules: (prev.approvalRules ?? []).filter((r) => r.id !== rule.id) };
+                              });
+                            }}
+                            className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                          >
+                            删除
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {showApprovalForm ? (
+                  <div className="space-y-3 p-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+                    <label className="block text-sm text-[var(--color-text)]">
+                      规则名称
+                      <input
+                        type="text"
+                        value={ruleName}
+                        onChange={(e) => setRuleName(e.target.value)}
+                        placeholder="如: 禁止删除生产数据库"
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                      />
+                    </label>
+                    <label className="block text-sm text-[var(--color-text)]">
+                      正则表达式
+                      <input
+                        type="text"
+                        value={rulePattern}
+                        onChange={(e) => {
+                          setRulePattern(e.target.value);
+                          try {
+                            new RegExp(e.target.value);
+                            setRulePatternError(null);
+                          } catch (err) {
+                            setRulePatternError(err instanceof Error ? err.message : "无效正则");
+                          }
+                        }}
+                        placeholder="如: DROP\s+(TABLE|DATABASE)"
+                        className={`mt-1 w-full px-3 py-2 rounded-lg border bg-[var(--color-surface)] text-[var(--color-text)] text-sm font-mono ${
+                          rulePatternError ? "border-red-500" : "border-[var(--color-border)]"
+                        }`}
+                      />
+                      {rulePatternError && (
+                        <p className="mt-1 text-xs text-red-400">{rulePatternError}</p>
+                      )}
+                    </label>
+                    <label className="block text-sm text-[var(--color-text)]">
+                      操作类型
+                      <select
+                        value={ruleOpType}
+                        onChange={(e) => setRuleOpType(e.target.value as ApprovalRule["operationType"])}
+                        className="mt-1 w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] text-[var(--color-text)] text-sm"
+                      >
+                        <option value="run_command">run_command（执行命令）</option>
+                        <option value="write_file">write_file（写入文件）</option>
+                        <option value="edit_file">edit_file（编辑文件）</option>
+                      </select>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer text-sm text-[var(--color-text)]">
+                      <input
+                        type="checkbox"
+                        checked={ruleEnabled}
+                        onChange={(e) => setRuleEnabled(e.target.checked)}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span>启用</span>
+                    </label>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        disabled={!ruleName.trim() || !rulePattern.trim() || !!rulePatternError}
+                        onClick={() => {
+                          const newRule: ApprovalRule = {
+                            id: editingRuleId ?? `rule_${Date.now()}`,
+                            name: ruleName.trim(),
+                            pattern: rulePattern.trim(),
+                            operationType: ruleOpType,
+                            enabled: ruleEnabled,
+                          };
+                          setConfig((prev) => {
+                            if (!prev) return prev;
+                            const existing = prev.approvalRules ?? [];
+                            if (editingRuleId) {
+                              return { ...prev, approvalRules: existing.map((r) => r.id === editingRuleId ? newRule : r) };
+                            }
+                            return { ...prev, approvalRules: [...existing, newRule] };
+                          });
+                          setShowApprovalForm(false);
+                          setEditingRuleId(null);
+                          setRuleName("");
+                          setRulePattern("");
+                          setRuleOpType("run_command");
+                          setRuleEnabled(true);
+                          setRulePatternError(null);
+                        }}
+                        className="px-4 py-2 rounded-lg bg-[var(--color-accent)] text-white text-sm font-medium border-none cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed hover:bg-[var(--color-accent-hover)] transition-colors"
+                      >
+                        {editingRuleId ? "保存修改" : "添加"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowApprovalForm(false);
+                          setEditingRuleId(null);
+                          setRuleName("");
+                          setRulePattern("");
+                          setRuleOpType("run_command");
+                          setRuleEnabled(true);
+                          setRulePatternError(null);
+                        }}
+                        className="px-4 py-2 rounded-lg bg-transparent border border-[var(--color-border)] text-[var(--color-text)] text-sm cursor-pointer hover:bg-[var(--color-surface-hover)] transition-colors"
+                      >
+                        取消
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingRuleId(null);
+                      setRuleName("");
+                      setRulePattern("");
+                      setRuleOpType("run_command");
+                      setRuleEnabled(true);
+                      setRulePatternError(null);
+                      setShowApprovalForm(true);
+                    }}
+                    className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg border border-dashed border-[var(--color-border)] text-[var(--color-text-muted)] text-sm cursor-pointer hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition-colors"
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="12" y1="5" x2="12" y2="19" />
+                      <line x1="5" y1="12" x2="19" y2="12" />
+                    </svg>
+                    添加审批规则
+                  </button>
+                )}
               </section>
             )}
             </div>

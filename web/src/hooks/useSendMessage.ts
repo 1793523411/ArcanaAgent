@@ -1,11 +1,13 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { sendMessageStream, getMessages, getConversation, type Attachment } from "../api";
-import type { ConversationMeta, StoredMessage, StreamingStatus, ToolLog } from "../types";
+import type { AgentRole, ConversationMeta, ConversationMode, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
 
 type StreamingSubagent = {
   subagentId: string;
   subagentName?: string;
+  role?: AgentRole;
+  dependsOn?: string[];
   depth: number;
   prompt: string;
   phase: "started" | "completed" | "failed";
@@ -46,6 +48,13 @@ type ConversationStreamState = {
     currentStep: number;
     toolName?: string;
   } | null;
+  pendingApprovals: Array<{
+    requestId: string;
+    subagentId: string;
+    operationType: string;
+    operationDescription: string;
+    details: Record<string, unknown>;
+  }>;
   sendError: string | null;
   usage: {
     promptTokens: number;
@@ -74,6 +83,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingToolLogs: [],
   streamingSubagents: [],
   streamingPlan: null,
+  pendingApprovals: [],
   sendError: null,
   usage: null,
   contextUsage: null,
@@ -88,6 +98,7 @@ function createState(): ConversationStreamState {
     streamingToolLogs: [],
     streamingSubagents: [],
     streamingPlan: null,
+    pendingApprovals: [],
     sendError: null,
     usage: null,
     contextUsage: null,
@@ -106,6 +117,11 @@ export function useSendMessage(options: {
   const [conversationStates, setConversationStates] = useState<Record<string, ConversationStreamState>>({});
   const abortControllersRef = useRef<Record<string, AbortController>>({});
   const currentConversationIdRef = useRef<string | undefined>(currentConversationId);
+  const conversationStatesRef = useRef(conversationStates);
+
+  useEffect(() => {
+    conversationStatesRef.current = conversationStates;
+  }, [conversationStates]);
 
   useEffect(() => {
     currentConversationIdRef.current = currentConversationId;
@@ -157,10 +173,10 @@ export function useSendMessage(options: {
   }, [clearConversationState]);
 
   const send = useCallback(
-    (convId: string, overrideText?: string, overrideFiles?: FileWithData[]) => {
+    (convId: string, overrideText?: string, overrideFiles?: FileWithData[], mode?: ConversationMode) => {
       const text = (overrideText ?? input).trim();
       const toSend = overrideFiles ?? files;
-      if ((!text && toSend.length === 0) || (conversationStates[convId]?.loading ?? false)) return;
+      if ((!text && toSend.length === 0) || (conversationStatesRef.current[convId]?.loading ?? false)) return;
 
       abortStreaming(convId);
       const controller = new AbortController();
@@ -176,6 +192,7 @@ export function useSendMessage(options: {
         streamingToolLogs: [],
         streamingSubagents: [],
         streamingPlan: null,
+        pendingApprovals: [],
         sendError: null,
         usage: null,
         contextUsage: null,
@@ -304,15 +321,22 @@ export function useSendMessage(options: {
           }
           if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
             const payload = obj as {
-              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name";
+              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name" | "approval_request" | "approval_response";
               subagentId: string;
               subagentName?: string;
+              role?: string;
+              dependsOn?: string[];
               depth?: number;
               prompt?: string;
               phase?: "started" | "completed" | "failed" | "created" | "running";
               summary?: string;
               error?: string;
               content?: string;
+              requestId?: string;
+              approved?: boolean;
+              operationType?: string;
+              operationDescription?: string;
+              details?: Record<string, unknown>;
               steps?: Array<{
                 title: string;
                 acceptance_checks: string[];
@@ -337,6 +361,8 @@ export function useSendMessage(options: {
                 : {
                     subagentId: payload.subagentId,
                     subagentName: typeof payload.subagentName === "string" ? payload.subagentName : undefined,
+                    role: typeof payload.role === "string" && payload.role ? payload.role : undefined,
+                    dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : undefined,
                     depth: typeof payload.depth === "number" ? payload.depth : 1,
                     prompt: typeof payload.prompt === "string" ? payload.prompt : "",
                     phase: lifecyclePhase,
@@ -354,9 +380,12 @@ export function useSendMessage(options: {
                 prompt: typeof payload.prompt === "string" && payload.prompt ? payload.prompt : base.prompt,
               };
               if (payload.kind === "lifecycle") {
+                const parsedRole = typeof payload.role === "string" && payload.role ? payload.role : undefined;
                 nextItem = {
                   ...nextItem,
                   subagentName: typeof payload.subagentName === "string" ? payload.subagentName : nextItem.subagentName,
+                  role: parsedRole ?? nextItem.role,
+                  dependsOn: Array.isArray(payload.dependsOn) ? payload.dependsOn : nextItem.dependsOn,
                   phase: lifecyclePhase,
                   summary: typeof payload.summary === "string" ? payload.summary : nextItem.summary,
                   error: typeof payload.error === "string" ? payload.error : nextItem.error,
@@ -409,6 +438,38 @@ export function useSendMessage(options: {
                 };
               } else if (payload.kind === "subagent_name" && typeof payload.subagentName === "string") {
                 nextItem = { ...nextItem, subagentName: payload.subagentName };
+              } else if (payload.kind === "approval_request" && payload.requestId) {
+                const newApproval = {
+                  requestId: payload.requestId,
+                  subagentId: payload.subagentId,
+                  operationType: payload.operationType ?? "unknown",
+                  operationDescription: payload.operationDescription ?? "",
+                  details: payload.details ?? {},
+                };
+                if (idx >= 0) {
+                  const next = [...existing];
+                  next[idx] = nextItem;
+                  return {
+                    ...prev,
+                    streamingSubagents: next,
+                    pendingApprovals: [...prev.pendingApprovals, newApproval],
+                  };
+                }
+                return {
+                  ...prev,
+                  streamingSubagents: [...existing, nextItem],
+                  pendingApprovals: [...prev.pendingApprovals, newApproval],
+                };
+              } else if (payload.kind === "approval_response" && payload.requestId) {
+                const filteredApprovals = prev.pendingApprovals.filter(
+                  (a) => a.requestId !== payload.requestId
+                );
+                if (idx >= 0) {
+                  const next = [...existing];
+                  next[idx] = nextItem;
+                  return { ...prev, streamingSubagents: next, pendingApprovals: filteredApprovals };
+                }
+                return { ...prev, streamingSubagents: [...existing, nextItem], pendingApprovals: filteredApprovals };
               }
               if (idx >= 0) {
                 const next = [...existing];
@@ -460,6 +521,8 @@ export function useSendMessage(options: {
         },
         () => {
           delete abortControllersRef.current[convId];
+          // Don't clear streaming state yet — keep StreamingBubble visible
+          // until persisted messages are fetched, to avoid a flash of empty content.
           setConversationState(convId, (prev) => ({
             ...prev,
             loading: false,
@@ -474,6 +537,9 @@ export function useSendMessage(options: {
           getMessages(convId)
             .then((list) => {
               const arr = Array.isArray(list) ? list : [];
+              // Update messages first, then clear streaming state in the same
+              // React batch so the UI transitions directly from streaming to
+              // persisted messages without a blank frame.
               setMessages((prev) => (arr.length > 0 ? arr : prev));
               clearConversationState(convId);
             })
@@ -489,6 +555,7 @@ export function useSendMessage(options: {
           }));
         },
         attachments,
+        mode,
         controller.signal
       );
 
@@ -508,7 +575,7 @@ export function useSendMessage(options: {
       };
       setMessages((prev) => [...prev, optimisticHuman]);
     },
-    [input, files, conversationStates, onAfterSend, setMessages, setCurrent, abortStreaming, setConversationState, clearConversationState]
+    [input, files, onAfterSend, setMessages, setCurrent, abortStreaming, setConversationState, clearConversationState]
   );
 
   const activeState = currentConversationId ? (conversationStates[currentConversationId] ?? EMPTY_STATE) : EMPTY_STATE;
@@ -526,6 +593,7 @@ export function useSendMessage(options: {
     streamingToolLogs: activeState.streamingToolLogs,
     streamingSubagents: activeState.streamingSubagents,
     streamingPlan: activeState.streamingPlan,
+    pendingApprovals: activeState.pendingApprovals,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,
     contextUsage: activeState.contextUsage,

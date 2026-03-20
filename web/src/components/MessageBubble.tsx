@@ -1,15 +1,18 @@
-import { useState } from "react";
-import type { StoredMessage } from "../types";
+import { useState, useMemo, useRef } from "react";
+import type { StoredMessage, TeamDef, AgentDef } from "../types";
 import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
 import { formatTokenCount } from "../utils/format";
+import { getRoleConfig } from "../constants/roles";
 
 interface Props {
   message: StoredMessage;
   conversationId?: string;
   models?: Array<{ id: string; name: string }>;
+  team?: TeamDef | null;
+  agents?: AgentDef[];
 }
 
 function CopyIcon() {
@@ -21,7 +24,7 @@ function CopyIcon() {
   );
 }
 
-export default function MessageBubble({ message, conversationId, models = [] }: Props) {
+export default function MessageBubble({ message, conversationId, models = [], team = null, agents = [] }: Props) {
   const isHuman = message.type === "human";
   const attachments = message.attachments ?? [];
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
@@ -29,8 +32,33 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const [reasoningCollapsed, setReasoningCollapsed] = useState(true);
   const [planCollapsed, setPlanCollapsed] = useState(true);
   const [subagentsCollapsed, setSubagentsCollapsed] = useState(true);
-  const [subagentCollapsedMap, setSubagentCollapsedMap] = useState<Record<string, boolean>>({});
-  const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>({});
+  // F5: Default all historical subagents to collapsed
+  const [subagentCollapsedMap, setSubagentCollapsedMap] = useState<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {};
+    for (const s of (message.subagents ?? [])) map[s.subagentId] = true;
+    return map;
+  });
+  // F7: Default all sub-sections to collapsed for historical messages
+  const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {};
+    for (const s of (message.subagents ?? [])) {
+      map[`${s.subagentId}:reasoning`] = true;
+      map[`${s.subagentId}:plan`] = true;
+      map[`${s.subagentId}:tools`] = true;
+      map[`${s.subagentId}:content`] = true;
+    }
+    return map;
+  });
+  // 获取team成员信息
+  const teamMemberDisplay = useMemo(() => {
+    if (!team || team.agents.length === 0)
+      return [];
+    return team.agents
+      .map((agentId) => agents.find((a) => a.id === agentId))
+      .filter(Boolean) as AgentDef[];
+  }, [team, agents]);
+  const [showTeamMembers, setShowTeamMembers] = useState(false);
+  const teamMemberRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const toolLogs = message.toolLogs ?? [];
   const subagents = message.subagents ?? [];
@@ -40,9 +68,10 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
   const hasContent = typeof message.content === "string" && message.content.trim().length > 0;
+  const isToolDispatchOnly = message.type === "ai" && !hasContent && Array.isArray(message.tool_calls) && message.tool_calls.length > 0;
   const text = hasContent
     ? message.content
-    : (message.type === "ai" && toolLogs.length === 0 ? "(该条回复内容未保存)" : "");
+    : (message.type === "ai" && toolLogs.length === 0 && !isToolDispatchOnly ? "(该条回复内容未保存)" : "");
 
   const copyableText = text || (message.content && String(message.content).trim()) || "";
   const modelName = message.type === "ai" && message.modelId
@@ -106,6 +135,34 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             <span className="text-xs text-[var(--color-text-muted)] shrink-0">
               {isHuman ? "你" : "Agent"}
             </span>
+            {!isHuman && team && (<div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowTeamMembers(!showTeamMembers)}
+                onMouseEnter={() => setShowTeamMembers(true)}
+                onMouseLeave={() => setShowTeamMembers(false)}
+                className="text-[11px] px-2 py-0.5 rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0 hover:text-[var(--color-text)] transition-colors flex items-center gap-1"
+                title={team.name}
+              >
+                <span>👥</span>
+                <span className="truncate max-w-[100px]">{team.name}</span>
+              </button>
+              {showTeamMembers && (<div
+                ref={teamMemberRef}
+                className="absolute left-0 top-full mt-1 z-50 bg-[var(--color-surface)] border border-[var(--color-border)] rounded-lg shadow-lg p-3 min-w-[200px] shadow-xl"
+                style={{ minWidth: "200px" }}
+              >
+                <div className="text-xs font-medium mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  团队成员
+                </div>
+                <div className="space-y-1">
+                  {teamMemberDisplay.map((agent) => (<div key={agent.id} className="flex items-center gap-2 text-xs">
+                    <span style={{ color: agent.color }}>{agent.icon}</span>
+                    <span style={{ color: "var(--color-text)" }}>{agent.name}</span>
+                  </div>))}
+                </div>
+              </div>)}
+            </div>)}
             {modelName && (
               <span
                 className="text-[11px] rounded-md bg-[var(--color-surface-hover)] text-[var(--color-text-muted)] border border-[var(--color-border)] cursor-default shrink-0"
@@ -150,7 +207,7 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
             </button>
             {!reasoningCollapsed && (
               <div className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto">
-                <MarkdownContent>{reasoning}</MarkdownContent>
+                <MarkdownContent transformImageUrl={transformImageUrl}>{reasoning}</MarkdownContent>
               </div>
             )}
           </div>
@@ -234,20 +291,55 @@ export default function MessageBubble({ message, conversationId, models = [] }: 
                 const subPlanPhaseLabel = s.plan?.phase === "completed" ? "已完成" : s.plan?.phase === "running" ? "执行中" : "初始化中";
                 const promptTrimmed = (s.prompt ?? "").replace(/\s+/g, " ").trim();
                 const subagentDisplayName = s.subagentName ?? (promptTrimmed ? promptTrimmed.slice(0, 40) + (promptTrimmed.length > 40 ? "…" : "") : s.subagentId);
+                const roleConfig = getRoleConfig(s.role);
+                const borderColor = roleConfig?.color ?? "var(--color-border)";
                 return (
-                  <div key={s.subagentId} className="text-sm px-2 py-2 rounded border border-[var(--color-border)] text-[var(--color-text)]">
+                  <div key={s.subagentId} className="text-sm px-2 py-2 rounded text-[var(--color-text)]" style={{ borderLeft: `3px solid ${borderColor}`, border: `1px solid var(--color-border)`, borderLeftWidth: "3px", borderLeftColor: borderColor }}>
                     <button type="button" onClick={() => toggleSubagent(s.subagentId)} className="w-full text-left flex items-start gap-2 flex-wrap">
                       <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{subCollapsed ? "▶" : "▼"}</span>
-                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
+                      {roleConfig ? (
+                        <span className="shrink-0 text-[13px] flex items-center gap-1" style={{ color: roleConfig.color }}>
+                          <span>{roleConfig.icon}</span>
+                          <span className="font-medium text-[11px]">{roleConfig.displayName}</span>
+                        </span>
+                      ) : (
+                        <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">{s.phase === "completed" ? "✓" : s.phase === "failed" ? "✕" : "●"}</span>
+                      )}
                       <span className="text-[11px] text-[var(--color-text-muted)] min-w-0 flex-1 break-words" title={s.subagentId}>{subagentDisplayName}</span>
-                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">深度 {s.depth}</span>
-                      <span className="shrink-0 text-[11px] text-[var(--color-text-muted)]">
-                        {s.phase === "completed" ? "已完成" : s.phase === "failed" ? "失败" : "执行中"}
+                      <span className="shrink-0 text-[11px] px-1.5 py-0.5 rounded-full" style={roleConfig ? {
+                        backgroundColor: s.phase === "completed" ? "#10B98120" : s.phase === "failed" ? "#EF444420" : `${roleConfig.color}20`,
+                        color: s.phase === "completed" ? "#10B981" : s.phase === "failed" ? "#EF4444" : roleConfig.color,
+                      } : {}}>
+                        {s.phase === "completed" ? "✓ 已完成" : s.phase === "failed" ? "✕ 失败" : "● 执行中"}
                       </span>
                     </button>
                     {s.prompt && (
                       <div className="mt-1 text-[11px] text-[var(--color-text-muted)] break-words">
                         任务：{s.prompt}
+                      </div>
+                    )}
+                    {/* F6: Context from dependsOn agents */}
+                    {s.dependsOn && s.dependsOn.length > 0 && (
+                      <div className="mt-1.5 flex flex-wrap gap-1">
+                        {s.dependsOn.map((depId) => {
+                          const depAgent = subagents.find((a) => a.subagentId === depId);
+                          const depName = depAgent?.subagentName ?? depId.slice(0, 8);
+                          const depRole = getRoleConfig(depAgent?.role);
+                          return (
+                            <span
+                              key={depId}
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-[var(--color-surface-hover)] border border-[var(--color-border)] text-[var(--color-text-muted)]"
+                              title={`依赖: ${depId}`}
+                            >
+                              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
+                                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
+                              </svg>
+                              {depRole && <span style={{ color: depRole.color }}>{depRole.icon}</span>}
+                              <span>Context from: {depName}</span>
+                            </span>
+                          );
+                        })}
                       </div>
                     )}
                     {!subCollapsed && hasSubReasoning && (

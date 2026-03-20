@@ -1,17 +1,19 @@
 import { readdirSync, readFileSync, mkdirSync, existsSync, rmSync, writeFileSync } from "fs";
-import { join, dirname } from "path";
+import { join, dirname, resolve } from "path";
 import { fileURLToPath } from "url";
 import AdmZip from "adm-zip";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.DATA_DIR ?? join(process.cwd(), "data");
-const SKILLS_DIR = join(DATA_DIR, "skills");
+const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
+const SKILLS_DIR = resolve(join(DATA_DIR, "skills"));
 /** 项目根目录下的默认 skills（随仓库提交，不被 git 忽略） */
-const BUILTIN_SKILLS_DIR = join(__dirname, "..", "..", "..", "skills");
+const BUILTIN_SKILLS_DIR = resolve(join(__dirname, "..", "..", "..", "skills"));
 
 export interface SkillMeta {
   name: string;
   description: string;
+  /** skill 目录的绝对路径 */
+  dirPath: string;
   /** 是否来自用户上传（可删除）；否则为内置/示例 */
   userUploaded?: boolean;
 }
@@ -19,8 +21,6 @@ export interface SkillMeta {
 export interface SkillFull extends SkillMeta {
   /** SKILL.md 去掉 frontmatter 后的完整 body 内容 */
   body: string;
-  /** skill 目录的绝对路径 */
-  dirPath: string;
 }
 
 const FRONTMATTER_REG = /^---\r?\n([\s\S]*?)\r?\n---/;
@@ -66,7 +66,7 @@ function listSkillsFromDir(dir: string, userUploaded: boolean): SkillMeta[] {
       const content = readFileSync(skillMdPath, "utf-8");
       const parsed = parseSkillMd(content);
       if (parsed && safeName(parsed.name)) {
-        result.push({ name: parsed.name, description: parsed.description, userUploaded });
+        result.push({ name: parsed.name, description: parsed.description, dirPath: skillPath, userUploaded });
       }
     } catch {
       // skip invalid
@@ -132,12 +132,13 @@ export function listFullSkills(): SkillFull[] {
 export function getSkillCatalogForAgent(): string {
   const skills = listSkills();
   if (skills.length === 0) return "";
-  const lines = skills.map((s) => `- \`${s.name}\`: ${s.description || "(no description)"}`);
+  const lines = skills.map((s) => `- \`${s.name}\` (dir: \`${s.dirPath}\`): ${s.description || "(no description)"}`);
   return [
     "\n\n## Available Skills",
     "",
     "You have access to the following skills. If the task matches a skill, call `load_skill` with the exact skill name before executing the task.",
     "Only load skills that are relevant to the current task.",
+    "When executing skill scripts via run_command, always set working_directory to the skill's directory shown in parentheses.",
     "",
     ...lines,
   ].join("\n");
@@ -149,7 +150,17 @@ export function getSkillContentForAgent(name: string): string {
     return `Error: Unknown skill '${name}'.`;
   }
   const resolvedBody = skill.body.replace(/<SKILL_PATH>/g, skill.dirPath);
-  return `<skill name="${skill.name}">\n${resolvedBody}\n</skill>`;
+  return [
+    `<skill name="${skill.name}">`,
+    `<skill_directory>${skill.dirPath}</skill_directory>`,
+    `<important>`,
+    `When executing any scripts from this skill, ALWAYS set working_directory to "${skill.dirPath}" in the run_command call.`,
+    `All script paths shown below are absolute paths. Use them exactly as shown.`,
+    `If a script references relative paths (e.g., ./images/, ./output/), they are relative to the skill directory above.`,
+    `</important>`,
+    resolvedBody,
+    `</skill>`,
+  ].join("\n");
 }
 
 export function getSkillContextForAgent(): string {
