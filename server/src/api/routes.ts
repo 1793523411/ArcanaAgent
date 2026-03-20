@@ -40,7 +40,7 @@ import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
 import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig } from "../config/userConfig.js";
+import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { listModels } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
@@ -1085,6 +1085,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     context?: Partial<ContextStrategyConfig>;
     planning?: Partial<PlanningConfig>;
     templates?: PromptTemplate[];
+    approvalRules?: ApprovalRule[];
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -1108,6 +1109,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.planning.streamProgress === "boolean") config.planning.streamProgress = body.planning.streamProgress;
   }
   if (Array.isArray(body.templates)) config.templates = body.templates;
+  if (Array.isArray(body.approvalRules)) config.approvalRules = body.approvalRules;
   saveUserConfig(config);
 
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）

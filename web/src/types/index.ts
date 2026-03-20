@@ -160,6 +160,14 @@ export interface PlanningConfig {
   streamProgress: boolean;
 }
 
+export interface ApprovalRule {
+  id: string;
+  name: string;
+  pattern: string;
+  operationType: "run_command" | "write_file" | "edit_file";
+  enabled: boolean;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -170,6 +178,7 @@ export interface UserConfig {
   planning?: PlanningConfig;
   mcpStatus?: McpStatusItem[];
   templates?: PromptTemplate[];
+  approvalRules?: ApprovalRule[];
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;

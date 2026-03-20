@@ -18,6 +18,7 @@ import { z } from "zod";
 import { getAgentConfig, isValidTeamAgent, getTeamAgents, isAllToolsAllowed, type AgentRole } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { approvalManager } from "./approvalManager.js";
+import { loadUserConfig, type ApprovalRule } from "../config/userConfig.js";
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
 import { getModelContextWindow } from "../config/models.js";
 import { detectDiagnosticCommand, runDiagnostic } from "./diagnostics.js";
@@ -631,16 +632,27 @@ const HIGH_RISK_COMMAND_PATTERNS = [
   /\bkill\s+-9\b/,                      // kill -9
 ];
 
-function isHighRiskCommand(command: string): string | null {
+function isHighRiskCommand(command: string, customRules?: ApprovalRule[]): string | null {
   for (const pattern of HIGH_RISK_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
       return command.trim().slice(0, 120);
     }
   }
+  if (customRules) {
+    for (const rule of customRules) {
+      if (rule.enabled && rule.operationType === "run_command") {
+        try {
+          if (new RegExp(rule.pattern).test(command)) {
+            return `[${rule.name}] ${command.trim().slice(0, 120)}`;
+          }
+        } catch { /* ignore invalid regex */ }
+      }
+    }
+  }
   return null;
 }
 
-function isHighRiskWrite(path: string, workspacePath?: string): string | null {
+function isHighRiskWrite(path: string, workspacePath?: string, customRules?: ApprovalRule[]): string | null {
   if (workspacePath) {
     const resolvedWorkspace = resolve(workspacePath);
     const resolvedPath = resolve(path);
@@ -652,6 +664,17 @@ function isHighRiskWrite(path: string, workspacePath?: string): string | null {
   for (const pattern of riskyPatterns) {
     if (pattern.test(path)) {
       return `Writing to sensitive file: ${path}`;
+    }
+  }
+  if (customRules) {
+    for (const rule of customRules) {
+      if (rule.enabled && (rule.operationType === "write_file" || rule.operationType === "edit_file")) {
+        try {
+          if (new RegExp(rule.pattern).test(path)) {
+            return `[${rule.name}] ${path}`;
+          }
+        } catch { /* ignore invalid regex */ }
+      }
     }
   }
   return null;
@@ -955,11 +978,12 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
     const convId = options?.conversationId ?? context?.options?.conversationId;
     const subId = options?.subagentId;
     if (convMode === "team" && convId && subId) {
+      const customRules = loadUserConfig().approvalRules;
       return filteredWrappedTools.map((t) => {
         if (t.name === "run_command") {
           return wrapToolWithApproval(t, "run_command", (input) => {
             const cmd = typeof input.command === "string" ? input.command : "";
-            return isHighRiskCommand(cmd);
+            return isHighRiskCommand(cmd, customRules);
           }, {
             conversationId: convId,
             subagentId: subId,
@@ -970,7 +994,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
         if (t.name === "write_file") {
           return wrapToolWithApproval(t, "write_file", (input) => {
             const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath);
+            return isHighRiskWrite(path, workspacePath, customRules);
           }, {
             conversationId: convId,
             subagentId: subId,
@@ -981,7 +1005,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
         if (t.name === "edit_file") {
           return wrapToolWithApproval(t, "edit_file", (input) => {
             const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath);
+            return isHighRiskWrite(path, workspacePath, customRules);
           }, {
             conversationId: convId,
             subagentId: subId,
