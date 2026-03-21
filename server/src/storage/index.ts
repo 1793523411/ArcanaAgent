@@ -471,13 +471,26 @@ export function ensureWorkspace(convId: string): string {
 const MIME_MAP: Record<string, string> = {
   ".md": "text/markdown", ".txt": "text/plain", ".json": "application/json",
   ".csv": "text/csv", ".html": "text/html", ".htm": "text/html",
-  ".js": "text/javascript", ".ts": "text/typescript", ".py": "text/x-python",
-  ".sh": "text/x-shellscript", ".yaml": "text/yaml", ".yml": "text/yaml",
+  ".js": "text/javascript", ".mjs": "text/javascript", ".cjs": "text/javascript",
+  ".jsx": "text/javascript", ".ts": "text/typescript", ".tsx": "text/typescript",
+  ".py": "text/x-python", ".pyi": "text/x-python",
+  ".sh": "text/x-shellscript", ".bash": "text/x-shellscript", ".zsh": "text/x-shellscript",
+  ".yaml": "text/yaml", ".yml": "text/yaml",
   ".xml": "application/xml", ".log": "text/plain",
+  ".css": "text/css", ".scss": "text/css", ".less": "text/css",
+  ".go": "text/x-go", ".java": "text/x-java", ".rs": "text/x-rust",
+  ".rb": "text/x-ruby", ".php": "text/x-php",
+  ".c": "text/x-c", ".h": "text/x-c", ".cpp": "text/x-c++", ".cc": "text/x-c++", ".hpp": "text/x-c++",
+  ".cs": "text/x-csharp", ".swift": "text/x-swift", ".kt": "text/x-kotlin",
+  ".r": "text/x-r", ".lua": "text/x-lua",
+  ".sql": "text/x-sql", ".graphql": "text/x-graphql", ".gql": "text/x-graphql",
+  ".toml": "text/x-toml", ".ini": "text/x-ini", ".conf": "text/x-ini",
+  ".env": "text/plain", ".gitignore": "text/plain", ".dockerignore": "text/plain",
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
   ".gif": "image/gif", ".webp": "image/webp", ".svg": "image/svg+xml",
+  ".ico": "image/x-icon",
   ".pdf": "application/pdf",
-  ".mp3": "audio/mpeg", ".wav": "audio/wav",
+  ".mp3": "audio/mpeg", ".wav": "audio/wav", ".ogg": "audio/ogg",
   ".mp4": "video/mp4", ".webm": "video/webm",
 };
 
@@ -499,7 +512,7 @@ export function listArtifacts(convId: string): ArtifactMeta[] {
 const SCAN_SKIP_DIRS = new Set([
   "node_modules", ".git", ".next", "dist", "build", "__pycache__",
   ".venv", "venv", ".tox", ".mypy_cache", ".pytest_cache",
-  "vendor", "target", ".gradle", ".idea",
+  "vendor", "target", ".gradle", ".idea", ".agents",
 ]);
 
 function scanDir(base: string, current: string): ArtifactMeta[] {

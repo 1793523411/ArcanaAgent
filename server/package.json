@@ -10,6 +10,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "@lancedb/lancedb": "^0.27.1",
     "@langchain/anthropic": "^0.3.34",
     "@langchain/core": "^0.3.28",
     "@langchain/langgraph": "^0.2.74",
@@ -22,6 +24,11 @@
     "minimatch": "^10.2.4",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
+    "pagerank.js": "^1.0.2",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "web-tree-sitter": "^0.26.7",
     "winston": "^3.19.0",
     "zod": "^3.24.0"
   },

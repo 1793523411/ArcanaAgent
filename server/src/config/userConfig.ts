@@ -74,6 +74,8 @@ export const defaultApprovalRules: ApprovalRule[] = [
   },
 ];
 
+export type CodeIndexStrategy = "none" | "repomap" | "vector";
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -82,6 +84,8 @@ export interface UserConfig {
   planning?: PlanningConfig;
   templates?: PromptTemplate[];
   approvalRules?: ApprovalRule[];
+  /** Code index strategy. undefined = auto-detect recommended */
+  codeIndexStrategy?: CodeIndexStrategy;
 }
 
 const defaultContext: ContextStrategyConfig = {
@@ -167,6 +171,11 @@ export function loadUserConfig(): UserConfig {
             return acc;
           }, [])
         : [...defaultApprovalRules],
+      codeIndexStrategy: (() => {
+        const val = (parsed as Record<string, unknown>).codeIndexStrategy;
+        if (val === "none" || val === "repomap" || val === "vector") return val;
+        return undefined;
+      })(),
     };
   } catch {
     return { ...defaultConfig };

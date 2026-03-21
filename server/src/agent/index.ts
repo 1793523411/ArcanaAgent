@@ -122,21 +122,29 @@ const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant wit
 - **Show results**: after tool execution, summarize what happened and present outputs clearly. Don't just say "done" — show the key results.
 
 ## Tool Usage Strategy
-You have access to built-in tools (run_command, read_file, calculator, get_time, etc.) and MCP tools from external servers (listed below if connected).
+You have access to built-in tools (run_command, read_file, write_file, edit_file, search_code, list_files, git_operations, test_runner, web_search, project_index, project_search, project_snapshot, etc.) and MCP tools from external servers (listed below if connected).
 
 **CRITICAL: Never output your internal reasoning or planning as text.** Do NOT write things like "I need to call tool X" or "Let me think about which tool to use" — just call the tool directly. Your visible output should only contain information meant for the user, never your own thought process about tool selection or task decomposition.
 
 **When to use tools vs. direct response:**
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
+- When encountering unfamiliar APIs, libraries, or uncertain technical details, proactively use web_search to find accurate, up-to-date information
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
 - For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
 - For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
-- For file/content discovery in terminal commands, prefer \`rg\` (ripgrep) over \`find\` and \`grep\`:
-  - Search file contents: \`rg "pattern"\` or \`rg "pattern" path/\` (instead of \`grep -r\` or \`find ... -exec grep\`)
-  - Find files by name/extension: \`rg --files -g "*.py"\` or \`rg --files -g "*keyword*"\` (instead of \`find . -name "*.py"\`)
-  - Combined: \`rg --files -g "*.ts" | rg "component"\` for precise file name filtering
-  - \`rg\` is much faster, respects .gitignore, and produces cleaner output. Only fall back to \`find\` for metadata queries (size, mtime, permissions) that \`rg\` cannot handle.
+- **IMPORTANT — File search: ALWAYS use built-in tools first, avoid raw shell commands for file discovery:**
+  - Search file contents → use \`search_code\` tool (NOT \`run_command\` + \`grep\`/\`find ... -exec grep\`). It auto-selects the fastest available backend (ripgrep → grep).
+  - List/find files by name → use \`list_files\` tool (NOT \`run_command\` + \`find\` or \`ls\`)
+  - If you absolutely must use run_command for file discovery, prefer \`rg\` (ripgrep) when available, fall back to \`grep\`/\`find\` otherwise:
+    - Find files by name: \`rg --files -g "*.py"\` or \`find . -name "*.py" -not -path "*/node_modules/*"\`
+    - Search contents: \`rg "pattern" path/\` or \`grep -rn "pattern" path/\`
+  - Only use \`find\` for metadata queries (size, mtime, permissions) that content-search tools cannot handle.
+- **Code Index (IMPORTANT — use proactively)**:
+  - **At the start of every coding task**, run \`project_snapshot\` first to get the project map. This gives you a high-level understanding of the architecture, key files, and symbols before diving in. Do NOT skip this step — it dramatically improves your code comprehension.
+  - Use \`project_search\` for semantic-level search — better than \`search_code\` for "find related code" rather than exact pattern matching. Prefer \`project_search\` when looking for functionality (e.g., "authentication logic") rather than exact strings.
+  - Use \`project_index\` to manage the index (check status, rebuild, switch strategy between none/repomap/vector)
+  - The index is built automatically on first use — you do NOT need to manually build it. Just call \`project_snapshot\` or \`project_search\` and it will initialize if needed.
 - When multiple independent subtasks exist, you may call \`task\` multiple times in the same turn
 
 **Background tasks for long-running commands:**
@@ -275,6 +283,40 @@ function buildMcpToolsSection(): string {
   return `\n\n## Available MCP Tools\nThe following MCP tools are currently connected and ready to use. Call them directly without asking the user for tool names:\n${lines.join("\n")}`;
 }
 
+function buildIndexStrategySection(): string {
+  try {
+    const config = loadUserConfig();
+    const strategy = config.codeIndexStrategy ?? "auto";
+    if (strategy === "repomap") {
+      return `\n\n## Code Index Strategy: Repo Map (AST + PageRank)
+The project uses **Repo Map** indexing — Tree-sitter AST parsing with PageRank symbol ranking.
+- **ALWAYS start with \`project_snapshot\`** — it returns a ranked project map showing the most important files and symbols. This is your primary orientation tool.
+- **Use \`project_search\` for finding code by symbol name** — it searches the AST symbol table with PageRank-weighted results. Much better than \`search_code\` for finding functions, classes, and interfaces.
+- **Use \`search_code\` only for literal string/pattern matching** — e.g., searching for specific error messages, config keys, or regex patterns that aren't symbol names.
+- Tool priority: \`project_snapshot\` (orientation) → \`project_search\` (find symbols) → \`search_code\` (exact patterns) → \`read_file\` (details)`;
+    } else if (strategy === "vector") {
+      return `\n\n## Code Index Strategy: Vector Search (Semantic Embedding)
+The project uses **Vector** indexing — local embedding model with LanceDB for semantic search.
+- **ALWAYS start with \`project_snapshot\`** — it returns a file tree overview plus vector index status.
+- **Use \`project_search\` for semantic/natural language queries** — e.g., "authentication logic", "error handling for API calls", "database connection setup". This is the key advantage of vector search — it finds conceptually related code even without exact keyword matches.
+- **Use \`search_code\` for exact string matching** — when you know the exact function name, variable, or string pattern.
+- Tool priority: \`project_snapshot\` (orientation) → \`project_search\` (semantic queries) → \`search_code\` (exact patterns) → \`read_file\` (details)`;
+    } else if (strategy === "none") {
+      return `\n\n## Code Index Strategy: None (Runtime Exploration)
+The project uses **no pre-built index** — all code exploration is done at runtime.
+- \`project_snapshot\` gives a basic file tree and entry point overview — still useful for orientation.
+- \`project_search\` wraps ripgrep search with simple scoring — functionally similar to \`search_code\` but with ranked results.
+- **Primary tools**: \`search_code\` (ripgrep, fast exact matching) and \`list_files\` (directory exploration).
+- Tool priority: \`list_files\` (structure) → \`search_code\` (find code) → \`read_file\` (details)`;
+    }
+    // auto or unknown — give general guidance
+    return `\n\n## Code Index Strategy: Auto-detect
+The system will auto-select the best available indexing strategy. Always start with \`project_snapshot\` to understand the project, then use \`project_search\` for finding related code.`;
+  } catch {
+    return "";
+  }
+}
+
 function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
   const modePrompt = conversationMode === "team" ? buildTeamModePrompt(teamId ?? "default") : "";
   const workspaceSection = workspacePath
@@ -282,7 +324,8 @@ function buildSystemPrompt(skillContext?: string, conversationMode: Conversation
     : "";
   const mcpSection = buildMcpToolsSection();
   const skillSection = skillContext || getSkillCatalogForAgent();
-  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + mcpSection + skillSection;
+  const indexSection = buildIndexStrategySection();
+  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + indexSection + mcpSection + skillSection;
 }
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
@@ -1314,7 +1357,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
   // In team mode at depth 0 (coordinator level), only expose task + read_file
   // This prevents the coordinator from doing implementation work itself
   if (conversationMode === "team" && depth === 0) {
-    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time"]);
+    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "search_code", "list_files", "web_search", "project_search", "project_snapshot"]);
     const coordinatorTools = filteredWrappedTools.filter((t) => coordinatorAllowed.has(t.name));
     return [...coordinatorTools, taskTool as unknown as StructuredToolInterface];
   }

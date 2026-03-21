@@ -317,7 +317,53 @@ export async function compressConversation(conversationId: string): Promise<Comp
   return r.json();
 }
 
-// ─── Approval API ───────────────────────────────────────────
+// ─── Code Index Status ──────────────────────────────────
+
+export interface IndexStatusResponse {
+  configured: string | null;
+  recommended: string;
+  available: Array<{ type: string; ready: boolean; missing: string[] }>;
+  current: { strategy: string; ready: boolean; fileCount: number; lastUpdated?: string; error?: string } | null;
+}
+
+export async function getIndexStatus(): Promise<IndexStatusResponse> {
+  const r = await fetch(`${BASE}/index-status`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export interface ConversationIndexStatus {
+  strategy: string;
+  ready: boolean;
+  fileCount: number;
+  lastUpdated?: string;
+  error?: string;
+}
+
+export interface ConversationIndexFullStatus {
+  configured: string | null;
+  recommended: string;
+  active: ConversationIndexStatus;
+  /** Which strategies are currently being built */
+  building: string[];
+  strategies: Record<string, ConversationIndexStatus & { available: boolean; missing: string[] }>;
+}
+
+export async function getConversationIndexStatus(conversationId: string): Promise<ConversationIndexFullStatus> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/index-status`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function buildConversationIndex(conversationId: string, strategy?: string): Promise<ConversationIndexStatus> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/index-build`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(strategy ? { strategy } : {}),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 export interface ApprovalRequest {
   requestId: string;

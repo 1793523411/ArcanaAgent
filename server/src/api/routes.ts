@@ -1086,6 +1086,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     planning?: Partial<PlanningConfig>;
     templates?: PromptTemplate[];
     approvalRules?: ApprovalRule[];
+    codeIndexStrategy?: string;
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -1110,6 +1111,11 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
   }
   if (Array.isArray(body.templates)) config.templates = body.templates;
   if (Array.isArray(body.approvalRules)) config.approvalRules = body.approvalRules;
+  if (body.codeIndexStrategy === "none" || body.codeIndexStrategy === "repomap" || body.codeIndexStrategy === "vector") {
+    config.codeIndexStrategy = body.codeIndexStrategy;
+  } else if (body.codeIndexStrategy === "" || body.codeIndexStrategy === null) {
+    config.codeIndexStrategy = undefined;
+  }
   saveUserConfig(config);
 
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
@@ -1257,6 +1263,111 @@ export async function postConversationCompress(req: Request, res: Response): Pro
   }
 }
 
+// ─── Code Index Status ────────────────────────────────────
+
+export async function getIndexStatus(_req: Request, res: Response): Promise<void> {
+  try {
+    const { indexManager } = await import("../index-strategy/index.js");
+    const { detectAvailableStrategies } = await import("../index-strategy/detect.js");
+    const config = loadUserConfig();
+    const detection = await detectAvailableStrategies();
+    // Try to get current workspace status — use query param or cwd as fallback
+    let currentStatus = null;
+    try {
+      const workspacePath = (_req.query.workspace as string | undefined) || process.cwd();
+      const strategy = await indexManager.getStrategy(workspacePath);
+      currentStatus = strategy.getStatus();
+    } catch {
+      // No active workspace
+    }
+    res.json({
+      configured: config.codeIndexStrategy ?? null,
+      recommended: detection.recommended,
+      available: detection.available,
+      current: currentStatus,
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postIndexBuild(req: Request, res: Response): Promise<void> {
+  try {
+    const convId = String(req.params.id);
+    if (!convId) { res.status(400).json({ error: "conversation id required" }); return; }
+    const { indexManager } = await import("../index-strategy/index.js");
+    const config = loadUserConfig();
+    const workspacePath = ensureWorkspace(convId);
+    // Allow explicit strategy from request body, fallback to config
+    const requestedStrategy = req.body?.strategy as string | undefined;
+    const strategyType = (requestedStrategy === "none" || requestedStrategy === "repomap" || requestedStrategy === "vector")
+      ? requestedStrategy
+      : config.codeIndexStrategy;
+    const strategy = await indexManager.getStrategy(workspacePath, strategyType);
+
+    // Check if already building
+    const building = indexManager.getBuildingStrategies(workspacePath);
+    if (building.includes(strategy.type)) {
+      res.json({ status: "already_building", strategy: strategy.type });
+      return;
+    }
+
+    // Start build in background, respond immediately
+    indexManager.startBuild(workspacePath, strategy).catch((e) => {
+      logError(convId, e instanceof Error ? e : String(e), { stage: "index_build" });
+    });
+    res.json({ status: "building", strategy: strategy.type });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function getConversationIndexStatus(req: Request, res: Response): Promise<void> {
+  try {
+    const convId = String(req.params.id);
+    if (!convId) { res.status(400).json({ error: "conversation id required" }); return; }
+    const { indexManager } = await import("../index-strategy/index.js");
+    const { detectAvailableStrategies } = await import("../index-strategy/detect.js");
+    const config = loadUserConfig();
+    const workspacePath = ensureWorkspace(convId);
+
+    // Get active strategy status
+    const strategy = await indexManager.getStrategy(workspacePath);
+    const activeStatus = strategy.getStatus();
+
+    // Get all strategies' build statuses
+    const allStatuses = await indexManager.getAllStatuses(workspacePath);
+
+    // Get dependency availability
+    const detection = await detectAvailableStrategies();
+
+    // Get which strategies are currently building
+    const buildingStrategies = indexManager.getBuildingStrategies(workspacePath);
+
+    res.json({
+      configured: config.codeIndexStrategy ?? null,
+      recommended: detection.recommended,
+      active: activeStatus,
+      building: buildingStrategies,
+      strategies: {
+        none: { ...allStatuses["none"], available: true, missing: [] },
+        repomap: {
+          ...allStatuses["repomap"],
+          available: detection.available.find(a => a.type === "repomap")?.ready ?? false,
+          missing: detection.available.find(a => a.type === "repomap")?.missing ?? [],
+        },
+        vector: {
+          ...allStatuses["vector"],
+          available: detection.available.find(a => a.type === "vector")?.ready ?? false,
+          missing: detection.available.find(a => a.type === "vector")?.missing ?? [],
+        },
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
 // ─── 健康检查 ─────────────────────────────────────────────
 
 export function getHealth(_req: Request, res: Response): void {
@@ -1368,6 +1479,10 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 - background_run: 后台运行命令
 - background_check: 查看后台任务状态
 - background_cancel: 取消后台任务
+- web_search: 搜索网络信息（DuckDuckGo）
+- project_index: 管理代码索引（构建、状态、切换策略）
+- project_search: 语义级代码搜索（基于索引）
+- project_snapshot: 获取项目快照/地图（架构概览）
 
 注意：
 - systemPrompt 要详细、专业，清晰定义角色边界

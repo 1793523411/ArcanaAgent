@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, type SkillMeta } from "../api";
+import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, type SkillMeta, type IndexStatusResponse } from "../api";
 import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
 import { useToast } from "./Toast";
 
@@ -27,11 +27,13 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
   const [deleteSkillTarget, setDeleteSkillTarget] = useState<string | null>(null);
+  const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
+  const [indexStatusLoading, setIndexStatusLoading] = useState(false);
 
   // MCP form state
   const [showMcpForm, setShowMcpForm] = useState(false);
@@ -65,6 +67,13 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     if (activeSection === "skills") {
       getSkills().then(setSkills).catch(() => setSkills([]));
     }
+    if (activeSection === "codeIndex") {
+      setIndexStatusLoading(true);
+      getIndexStatus()
+        .then(setIndexStatus)
+        .catch(() => setIndexStatus(null))
+        .finally(() => setIndexStatusLoading(false));
+    }
   }, [activeSection]);
 
   const ctx = config?.context ?? DEFAULT_CONTEXT;
@@ -95,7 +104,8 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         planning: config.planning ?? DEFAULT_PLANNING,
         mcpServers: config.mcpServers,
         approvalRules: config.approvalRules,
-      });
+        codeIndexStrategy: config.codeIndexStrategy ?? null,
+      } as Partial<UserConfig>);
       setMcpStatus(updated.mcpStatus ?? []);
       toast("设置已保存", "success");
       onSaved();
@@ -205,6 +215,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   const sections = [
     { id: "context" as const, label: "上下文策略" },
+    { id: "codeIndex" as const, label: "代码索引" },
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
     { id: "approval" as const, label: "审批规则" },
@@ -371,6 +382,105 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     )}
                   </div>
                 </div>
+              </section>
+            )}
+            {activeSection === "codeIndex" && (
+              <section aria-labelledby="codeindex-heading" className="space-y-4">
+                <h2 id="codeindex-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  代码索引
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  选择代码索引策略以提升 Agent 对大型项目的理解能力。不同策略需要不同的依赖包。
+                </p>
+
+                {/* Live status panel */}
+                {indexStatusLoading ? (
+                  <div className="flex items-center gap-2 p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
+                    <span className="text-[13px] text-[var(--color-text-muted)]">检测依赖中...</span>
+                  </div>
+                ) : indexStatus && (
+                  <div className="p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[13px] font-medium text-[var(--color-text)]">依赖检测结果</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full bg-[var(--color-accent)]/15 text-[var(--color-accent)]">
+                        推荐: {indexStatus.recommended === "none" ? "无索引" : indexStatus.recommended === "repomap" ? "Repo Map" : "向量检索"}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1.5">
+                      {indexStatus.available.map((s) => (
+                        <div key={s.type} className="flex items-center gap-2 text-[12px]">
+                          {s.ready ? (
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shrink-0" />
+                          ) : (
+                            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-text-muted)] opacity-40 shrink-0" />
+                          )}
+                          <span className={s.ready ? "text-[var(--color-text)]" : "text-[var(--color-text-muted)]"}>
+                            {s.type === "none" ? "无索引" : s.type === "repomap" ? "Repo Map" : "向量检索"}
+                          </span>
+                          {s.ready ? (
+                            <span className="text-emerald-400">可用</span>
+                          ) : (
+                            <span className="text-[var(--color-text-muted)]">
+                              缺少: {s.missing.join(", ")}
+                            </span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <fieldset className="space-y-3">
+                  <legend className="text-sm text-[var(--color-text)]">索引策略</legend>
+                  {([
+                    { value: "" as const, label: "自动推荐", desc: "根据已安装的依赖自动选择最优策略。优先 Repo Map，其次向量检索，都不可用时回退到运行时探索。" },
+                    { value: "none" as const, label: "无索引（运行时探索）", desc: "不建索引，依赖 ripgrep 实时搜索。零依赖，适合小项目。" },
+                    { value: "repomap" as const, label: "Repo Map（AST + PageRank）", desc: "使用 Tree-sitter 解析 AST 提取符号，PageRank 排序重要度。适合中大型项目。" },
+                    { value: "vector" as const, label: "向量检索（语义搜索）", desc: "使用本地嵌入模型生成向量，LanceDB 存储。支持语义级搜索，适合超大仓库。" },
+                  ]).map((opt) => {
+                    const available = opt.value === "" || opt.value === "none" || indexStatus?.available.find((a) => a.type === opt.value)?.ready;
+                    return (
+                      <label
+                        key={opt.value || "auto"}
+                        className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                          (config.codeIndexStrategy ?? "") === opt.value
+                            ? "border-[var(--color-accent)] bg-[var(--color-accent)]/5"
+                            : "border-[var(--color-border)] hover:border-[var(--color-accent)]/50"
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="codeIndexStrategy"
+                          checked={(config.codeIndexStrategy ?? "") === opt.value}
+                          onChange={() => {
+                            if (!config) return;
+                            setConfig({
+                              ...config,
+                              codeIndexStrategy: opt.value === "" ? undefined : opt.value as "none" | "repomap" | "vector",
+                            });
+                          }}
+                          className="mt-0.5 border-[var(--color-border)]"
+                        />
+                        <div className="flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-[var(--color-text)]">{opt.label}</span>
+                            {opt.value !== "" && opt.value !== "none" && (
+                              available ? (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">可用</span>
+                              ) : (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">缺少依赖</span>
+                              )
+                            )}
+                          </div>
+                          <div className="text-[12px] text-[var(--color-text-muted)] mt-0.5">{opt.desc}</div>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </fieldset>
+                <p className="text-xs text-[var(--color-text-muted)]">
+                  保存后生效。如果选择的策略缺少依赖，系统会自动回退到"无索引"模式。索引会在 Agent 首次访问项目时自动构建，也可以在对话界面手动触发。
+                </p>
               </section>
             )}
             {activeSection === "mcp" && (
