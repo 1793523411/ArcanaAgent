@@ -148,6 +148,16 @@ export default function ChatPanel({
 
   // 获取配置中的策略（从 URL /api/config 读取）
   const [configStrategy, setConfigStrategy] = useState<"full" | "trim" | "compress" | undefined>();
+  const [indexStatus, setIndexStatus] = useState<{
+    active: { strategy: string; ready: boolean; fileCount: number };
+    strategies: Record<string, { strategy: string; ready: boolean; fileCount: number; available: boolean; missing: string[]; lastUpdated?: string; error?: string }>;
+    configured: string | null;
+    building?: string[];
+  } | null>(null);
+  // Track building: merge server-reported building with local trigger
+  const [localBuilding, setLocalBuilding] = useState<string | null>(null);
+  const isBuilding = !!(localBuilding || (indexStatus?.building && indexStatus.building.length > 0));
+  const buildingStrategy = localBuilding ?? indexStatus?.building?.[0] ?? null;
 
   useEffect(() => {
     fetch('/api/config')
@@ -157,6 +167,31 @@ export default function ChatPanel({
       })
       .catch(() => {});
   }, []);
+
+  // Fetch per-conversation index status, poll faster while building
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    const fetchStatus = () => {
+      fetch(`/api/conversations/${conversationId}/index-status`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (cancelled) return;
+          if (data) {
+            setIndexStatus(data);
+            // Clear local building flag once server confirms build is done
+            if (localBuilding && !(data.building ?? []).includes(localBuilding)) {
+              setLocalBuilding(null);
+            }
+          }
+        })
+        .catch(() => {});
+    };
+    fetchStatus();
+    const pollMs = isBuilding ? 2_000 : 10_000;
+    const interval = setInterval(fetchStatus, pollMs);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [conversationId, isBuilding, localBuilding]);
 
   const latestAiWithContext = [...(messages ?? [])]
     .reverse()
@@ -336,6 +371,16 @@ export default function ChatPanel({
               contextUsage={displayContextUsage}
               onCompress={onCompress}
               compressing={compressing}
+              indexStatus={indexStatus}
+              indexBuilding={buildingStrategy}
+              onIndexBuild={conversationId ? (strategy: string) => {
+                setLocalBuilding(strategy);
+                fetch(`/api/conversations/${conversationId}/index-build`, {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ strategy }),
+                }).catch(() => setLocalBuilding(null));
+              } : undefined}
             />
           </div>
           {(mode === "team" && onToggleTeamPanel) || (artifactCount > 0 && onToggleArtifacts) ? (

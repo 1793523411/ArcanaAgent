@@ -22,6 +22,9 @@ import {
   putConfig,
   getModels,
   getHealth,
+  getIndexStatus,
+  postIndexBuild,
+  getConversationIndexStatus,
   getApprovals,
   postApprovalDecision,
   getSkillsList,
@@ -80,6 +83,9 @@ app.use((req, res, next) => {
 });
 
 app.get("/api/health", getHealth);
+app.get("/api/index-status", getIndexStatus);
+app.get("/api/conversations/:id/index-status", getConversationIndexStatus);
+app.post("/api/conversations/:id/index-build", postIndexBuild);
 app.get("/api/conversations", getConversations);
 app.post("/api/conversations", postConversations);
 app.get("/api/conversations/:id/export", getConversationExport);

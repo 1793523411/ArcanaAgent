@@ -17,6 +17,7 @@ const HIDDEN_DIR_NAMES = new Set([
   ".nuxt",
   ".cache",
   "target",
+  ".agents",
 ]);
 
 export function shouldHideArtifactPath(path: string): boolean {

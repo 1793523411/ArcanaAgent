@@ -38,6 +38,14 @@ interface Props {
   } | null;
   onCompress?: () => void;
   compressing?: boolean;
+  indexStatus?: {
+    active: { strategy: string; ready: boolean; fileCount: number };
+    strategies: Record<string, { strategy: string; ready: boolean; fileCount: number; available: boolean; missing: string[]; lastUpdated?: string; error?: string }>;
+    configured: string | null;
+  } | null;
+  /** Which strategy is currently being built, or null */
+  indexBuilding?: string | null;
+  onIndexBuild?: (strategy: string) => void;
 }
 
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp"];
@@ -73,12 +81,16 @@ export default function ChatInputBar({
   contextUsage = null,
   onCompress,
   compressing = false,
+  indexStatus = null,
+  indexBuilding = null,
+  onIndexBuild,
 }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [contextTooltipOpen, setContextTooltipOpen] = useState(false);
+  const [indexTooltipOpen, setIndexTooltipOpen] = useState(false);
 
   useEffect(() => {
     if (loading) {
@@ -459,6 +471,106 @@ export default function ChatInputBar({
               >
                 {currentModel?.name ?? "模型"}
               </span>
+            )}
+            {indexStatus && (
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIndexTooltipOpen(!indexTooltipOpen)}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-[var(--color-text-muted)] text-[11px] hover:bg-[var(--color-surface-hover)] transition-colors data-[state=open]:bg-[var(--color-surface-hover)]"
+                  title="代码索引"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+                    <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+                  </svg>
+                  <span
+                    className={`inline-block w-1.5 h-1.5 rounded-full shrink-0${indexBuilding ? " animate-pulse" : ""}`}
+                    style={{ backgroundColor: indexBuilding ? "#3b82f6" : indexStatus.active.ready ? "#22c55e" : "#eab308" }}
+                  />
+                </button>
+                {indexTooltipOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setIndexTooltipOpen(false)} />
+                    <div className="absolute bottom-full right-0 mb-2 z-20 animate-in fade-in slide-in-from-bottom-1 duration-150">
+                      <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg p-3 text-[12px] text-[var(--color-text)] space-y-2 min-w-[260px]">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-[13px]">代码索引</span>
+                          <span className="text-[10px] text-[var(--color-text-muted)]">
+                            当前: {indexStatus.active.strategy === "repomap" ? "Repo Map" : indexStatus.active.strategy === "vector" ? "向量检索" : "无索引"}
+                          </span>
+                        </div>
+                        {(["repomap", "vector", "none"] as const).map((key) => {
+                          const s = indexStatus.strategies[key];
+                          if (!s) return null;
+                          const isActive = indexStatus.active.strategy === key;
+                          const label = key === "repomap" ? "Repo Map" : key === "vector" ? "向量检索" : "无索引（运行时）";
+                          return (
+                            <div
+                              key={key}
+                              className={`p-2 rounded-lg border transition-colors ${
+                                isActive
+                                  ? "border-[var(--color-accent)] bg-[var(--color-accent)]/5"
+                                  : "border-[var(--color-border)] opacity-70"
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                                    style={{
+                                      backgroundColor: !s.available ? "#6b7280" : s.ready ? "#22c55e" : "#eab308",
+                                    }}
+                                  />
+                                  <span className={isActive ? "font-medium" : ""}>{label}</span>
+                                  {isActive && (
+                                    <span className="text-[10px] px-1 py-0.5 rounded bg-[var(--color-accent)]/15 text-[var(--color-accent)]">当前</span>
+                                  )}
+                                </div>
+                                {s.available && key !== "none" && onIndexBuild && (
+                                  <button
+                                    type="button"
+                                    disabled={!!indexBuilding}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      onIndexBuild(key);
+                                    }}
+                                    className="text-[10px] px-1.5 py-0.5 rounded text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+                                  >
+                                    {indexBuilding === key ? (
+                                      <>
+                                        <span className="inline-block w-2.5 h-2.5 border border-current border-t-transparent rounded-full animate-spin" />
+                                        构建中…
+                                      </>
+                                    ) : s.ready ? "重建" : "构建"}
+                                  </button>
+                                )}
+                              </div>
+                              <div className="text-[var(--color-text-muted)] mt-1 text-[11px]">
+                                {!s.available ? (
+                                  <span>缺少依赖: {s.missing.join(", ")}</span>
+                                ) : key === "none" ? (
+                                  <span>无需构建</span>
+                                ) : s.ready ? (
+                                  <span>
+                                    {s.fileCount > 0 ? `${s.fileCount} 文件` : "已就绪"}
+                                    {s.lastUpdated && ` · ${new Date(s.lastUpdated).toLocaleString()}`}
+                                  </span>
+                                ) : (
+                                  <span>未构建</span>
+                                )}
+                              </div>
+                              {s.error && (
+                                <div className="text-red-400 text-[10px] mt-0.5">{s.error}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
             <button
               type="submit"

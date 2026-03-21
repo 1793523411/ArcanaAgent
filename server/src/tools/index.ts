@@ -12,6 +12,9 @@ import { list_files } from "./list_files.js";
 import { git_operations } from "./git_operations.js";
 import { test_runner } from "./test_runner.js";
 import { web_search } from "./web_search.js";
+import { project_index } from "./project_index.js";
+import { project_search } from "./project_search.js";
+import { project_snapshot } from "./project_snapshot.js";
 
 export const tools = {
   run_command,
@@ -27,6 +30,9 @@ export const tools = {
   git_operations,
   test_runner,
   web_search,
+  project_index,
+  project_search,
+  project_snapshot,
 } as const;
 
 export type ToolId = keyof typeof tools;

@@ -13,14 +13,32 @@ interface Props {
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5MB
 
-function isBinaryMime(mime: string): boolean {
-  return !(
+/** MIME types that can be rendered as text in the editor */
+function isTextMime(mime: string): boolean {
+  return (
     mime.startsWith("text/") ||
     mime === "application/json" ||
     mime === "application/xml" ||
     mime === "application/javascript" ||
     mime === "application/typescript"
   );
+}
+
+/** MIME types that can be previewed inline (not as text) */
+function isImageMime(mime: string): boolean {
+  return mime.startsWith("image/");
+}
+
+function isPdfMime(mime: string): boolean {
+  return mime === "application/pdf";
+}
+
+function isAudioMime(mime: string): boolean {
+  return mime.startsWith("audio/");
+}
+
+function isVideoMime(mime: string): boolean {
+  return mime.startsWith("video/");
 }
 
 export default function CodeBrowserPanel({ conversationId, theme }: Props) {
@@ -48,7 +66,8 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
     setSelected(artifact);
     setContent(null);
 
-    if (isBinaryMime(artifact.mimeType)) return;
+    // Only load text content for text-based files
+    if (!isTextMime(artifact.mimeType)) return;
     if (artifact.size > MAX_FILE_SIZE) return;
 
     setLoading(true);
@@ -100,7 +119,38 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
             </div>
             {/* Editor body */}
             <div className="flex-1 min-h-0">
-              {isBinaryMime(selected.mimeType) ? (
+              {isImageMime(selected.mimeType) ? (
+                <div className="flex items-center justify-center h-full p-4 bg-[var(--color-surface)]">
+                  <img
+                    src={getArtifactUrl(conversationId, selected.path)}
+                    alt={selected.path}
+                    className="max-w-full max-h-full object-contain rounded"
+                    loading="lazy"
+                  />
+                </div>
+              ) : isPdfMime(selected.mimeType) ? (
+                <iframe
+                  src={getArtifactUrl(conversationId, selected.path)}
+                  className="w-full h-full border-0"
+                  title={selected.path}
+                />
+              ) : isAudioMime(selected.mimeType) ? (
+                <div className="flex items-center justify-center h-full p-4">
+                  <audio
+                    controls
+                    src={getArtifactUrl(conversationId, selected.path)}
+                    className="max-w-full"
+                  />
+                </div>
+              ) : isVideoMime(selected.mimeType) ? (
+                <div className="flex items-center justify-center h-full p-4">
+                  <video
+                    controls
+                    src={getArtifactUrl(conversationId, selected.path)}
+                    className="max-w-full max-h-full rounded"
+                  />
+                </div>
+              ) : !isTextMime(selected.mimeType) ? (
                 <BinaryPlaceholder artifact={selected} conversationId={conversationId} />
               ) : selected.size > MAX_FILE_SIZE ? (
                 <div className="flex flex-col items-center justify-center h-full text-[var(--color-text-muted)] gap-2 p-4">

@@ -168,6 +168,8 @@ export interface ApprovalRule {
   enabled: boolean;
 }
 
+export type CodeIndexStrategy = "none" | "repomap" | "vector";
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -179,6 +181,7 @@ export interface UserConfig {
   mcpStatus?: McpStatusItem[];
   templates?: PromptTemplate[];
   approvalRules?: ApprovalRule[];
+  codeIndexStrategy?: CodeIndexStrategy;
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;
