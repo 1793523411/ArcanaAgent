@@ -323,6 +323,31 @@ npm run dev
 | Context too long | Increase `tokenThresholdPercent` or switch to `compress` strategy |
 | Index build slow | Use `repomap` strategy for large repos instead of `vector` |
 
+### LanceDB 原生绑定安装问题
+
+向量搜索依赖 `@lancedb/lancedb`，该包需要与操作系统匹配的原生二进制绑定。由于 [npm 的已知 bug](https://github.com/npm/cli/issues/4828)，`npm install` 可能不会自动安装平台对应的原生包，导致页面提示"缺少 @lancedb/lancedb"。
+
+**解决方法：根据你的操作系统手动安装对应的绑定包：**
+
+```bash
+# macOS Intel (x64)
+npm install @lancedb/lancedb-darwin-x64
+
+# macOS Apple Silicon (M1/M2/M3/M4)
+npm install @lancedb/lancedb-darwin-arm64
+
+# Linux x64
+npm install @lancedb/lancedb-linux-x64-gnu
+
+# Linux ARM64
+npm install @lancedb/lancedb-linux-arm64-gnu
+
+# Windows x64
+npm install @lancedb/lancedb-win32-x64-msvc
+```
+
+> **提示：** 可以通过 `node -e "console.log(process.platform, process.arch)"` 查看你的系统平台和架构。如果仍然不行，尝试先删除 `node_modules` 和 `package-lock.json` 后重新安装。
+
 ---
 
 ## Roadmap
