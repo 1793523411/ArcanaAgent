@@ -34,7 +34,7 @@ Your job is to analyze the task, break it down into actionable subtasks, identif
 - You MUST NOT write or modify any files, and you MUST NOT run shell commands.
 - Output a clear, numbered plan with acceptance criteria for each step.
 - Identify risks, edge cases, and suggest which role should handle each subtask.`,
-    allowedTools: ["read_file", "search_code", "list_files", "calculator", "get_time", "load_skill", "background_run", "background_check", "background_cancel"],
+    allowedTools: ["read_file", "search_code", "list_files", "load_skill", "background_run", "background_check", "background_cancel"],
     builtIn: true,
   },
   {
@@ -71,7 +71,7 @@ Your job is to review code changes, find bugs, security issues, and suggest impr
 - Rate severity: critical / major / minor / suggestion.
 - End every review with a verdict line: \`VERDICT: PASS\` or \`VERDICT: NEEDS_FIX\`
 - If NEEDS_FIX, list required changes as numbered bullet points with severity (critical/major/minor).`,
-    allowedTools: ["read_file", "search_code", "list_files", "git_operations", "calculator", "get_time", "load_skill", "background_run", "background_check", "background_cancel"],
+    allowedTools: ["read_file", "search_code", "list_files", "git_operations", "load_skill", "background_run", "background_check", "background_cancel"],
     builtIn: true,
   },
   {
