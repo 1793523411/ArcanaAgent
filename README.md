@@ -1,363 +1,363 @@
+<div align="center">
+
 # Rule Agent
 
-AI-powered rule engine with scheduled tasks and agent workflows.
+### Your Self-Hosted AI Agent Platform
 
-## Features
+**Conversations. Automation. Code Intelligence. Team Collaboration.**
 
-- 🤖 **AI Agent Conversations** - Chat with AI agents powered by multiple LLM providers
-- ⏰ **Scheduled Tasks** - Automate tasks with cron-based scheduling
-- 🔗 **Webhook Integration** - Connect with external services (Feishu, Slack, etc.)
-- 📊 **Task History** - Track and monitor task execution
-- 🎯 **Skill System** - Extend functionality with custom skills
-- 🌐 **Web UI** - Beautiful web interface for managing everything
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/1793523411/rule-agent/pulls)
 
-## Installation
+<br/>
 
-### Global Installation (Recommended)
+*An open-source, full-stack AI agent platform that combines interactive chat, intelligent task scheduling, deep code understanding, and multi-agent team collaboration — all through a beautiful web interface.*
+
+<br/>
+
+[Quick Start](#-quick-start) &bull; [Features](#-features) &bull; [Architecture](#-architecture) &bull; [API Reference](#-api-reference) &bull; [Configuration](#-configuration) &bull; [Contributing](#-contributing)
+
+</div>
+
+---
+
+## Why Rule Agent?
+
+Most AI chat tools are stateless and isolated. **Rule Agent** is different — it's a persistent, self-hosted platform where AI agents can:
+
+- **Read, write, and understand your codebase** with semantic search and AST-based indexing
+- **Execute scheduled tasks** with cron expressions, dependencies, and webhook integrations
+- **Work as a team** — multiple agents collaborating with role-based access control
+- **Stay within context** using intelligent compression that summarizes old messages automatically
+- **Be extended** with custom skills, MCP servers, and any OpenAI-compatible LLM
+
+Think of it as your private AI command center for development and automation.
+
+---
+
+## Quick Start
+
+### Install & Run
 
 ```bash
+# Install globally
 npm install -g rule-agent
+
+# Start the server
+rule-agent start
+
+# Open the web UI
+rule-agent open
 ```
+
+That's it. The web UI opens at `http://localhost:3001`.
 
 ### From Source
 
 ```bash
-git clone <your-repo>
+git clone https://github.com/1793523411/rule-agent.git
 cd rule-agent
-npm install
-npm run build
-npm link
+npm install && npm run build
+npm run dev    # Backend :3001 + Frontend :5173 with hot reload
 ```
 
-## CLI Usage
+### Configure Your LLM
 
-### Start the Server
+On first run, edit `~/.rule-agent/models.json` with your API key:
 
-```bash
-rule-agent start
-```
-
-This will:
-- Start the server on port 3001 (default)
-- Create data directory
-- Show you the server URL
-
-### Open in Browser
-
-```bash
-rule-agent open
-```
-
-### Check Status
-
-```bash
-rule-agent status
-```
-
-### View Logs
-
-```bash
-rule-agent logs
-```
-
-### Stop the Server
-
-```bash
-rule-agent stop
-```
-
-### Restart the Server
-
-```bash
-rule-agent restart
-```
-
-## Configuration
-
-**📖 For detailed configuration guide, see [CONFIGURATION.md](./CONFIGURATION.md)**
-
-### Quick Start Configuration
-
-### Configuration Files Location
-
-All user configuration files are stored in your home directory:
-
-```
-~/.rule-agent/
-├── models.json          # AI model providers configuration
-├── user-config.json     # User preferences (tools, MCP servers, etc.)
-├── server.pid           # Server process ID
-└── server.log           # Server logs
-```
-
-### First Time Setup
-
-When you first run `rule-agent start`, it will create a configuration template at `~/.rule-agent/models.json`. You need to update this file with your API keys.
-
-**Edit the configuration file:**
-
-```bash
-# macOS/Linux
-nano ~/.rule-agent/models.json
-# or
-code ~/.rule-agent/models.json
-
-# Windows
-notepad %USERPROFILE%\.rule-agent\models.json
-```
-
-**Configuration format:**
-
-```json
+```jsonc
 {
   "models": {
     "providers": {
-      "volcengine": {
-        "baseUrl": "https://ark.cn-beijing.volces.com/api/v3",
-        "apiKey": "YOUR_API_KEY_HERE",
-        "api": "openai-completions",
-        "models": [...]
-      },
       "openai": {
         "baseUrl": "https://api.openai.com/v1",
-        "apiKey": "YOUR_OPENAI_API_KEY",
+        "apiKey": "sk-...",
         "api": "openai-completions",
-        "models": [...]
+        "models": [
+          { "id": "gpt-4o", "name": "GPT-4o", "contextWindow": 128000, "maxTokens": 4096 }
+        ]
       }
     }
   }
 }
 ```
 
-Replace `YOUR_API_KEY_HERE` with your actual API keys. You can configure multiple providers and the UI will let you switch between them.
+> Supports **OpenAI**, **Anthropic**, **VolcEngine (Doubao)**, and any **OpenAI-compatible** endpoint.
 
-### Data Directory
+---
 
-By default, conversation data and logs are stored in `~/.rule-agent/`. You can change this with the `DATA_DIR` environment variable:
+## Features
+
+### AI Agent Conversations
+
+Interactive chat with streaming responses, multi-turn context, and real-time tool execution.
+
+- **15+ built-in tools** — file I/O, code search, git operations, web search, test runner, and more
+- **Planning mode** — agents break down complex tasks into step-by-step plans with reasoning
+- **Artifact system** — code and files are separated from the conversation for clean readability
+- **Context compression** — automatically summarizes old messages to stay within token limits
+
+### Code Intelligence
+
+Go beyond simple text search. Rule Agent understands your code structure.
+
+| Strategy | How It Works | Best For |
+|----------|-------------|----------|
+| **Vector Search** | LanceDB embeddings with semantic similarity | "Find functions related to authentication" |
+| **Repomap** | AST parsing + PageRank to find key symbols | Understanding code structure and relationships |
+| **Ripgrep** | Fast regex-based text search (fallback) | Exact string/pattern matching |
+
+The system auto-detects which strategy works best for your project.
+
+### Scheduled Tasks & Automation
+
+Automate recurring workflows with a full-featured task scheduler.
+
+```
+Type            Description                           Example
+────────────────────────────────────────────────────────────────
+Conversation    Send prompts to AI conversations      Daily code review
+Webhook         HTTP requests (Feishu, Slack, etc.)   Post daily report to Slack
+Skill           Execute custom skill packages         Run web scraper nightly
+System          Cleanup, backup operations             Weekly log rotation
+```
+
+- **Cron expressions** — `0 9 * * 1-5` (weekdays at 9am)
+- **One-time tasks** — execute at a specific UTC time
+- **Task dependencies** — chain tasks into orchestrated workflows
+- **AI-powered payloads** — use model output in webhook requests
+- **Full execution history** with audit trail
+
+### Multi-Agent Teams
+
+Create teams of specialized agents that collaborate on complex tasks.
+
+- **Role-based agents** — each with custom system prompts and tool restrictions
+- **Approval workflows** — human-in-the-loop for sensitive operations
+- **Visual workflow editor** — drag-and-drop team interaction design
+- **Round-based execution** — structured collaboration with task handoffs
+
+### Extensibility
+
+- **Custom Skills** — upload ZIP packages with `SKILL.md` definitions
+- **MCP Integration** — Model Context Protocol for custom tool servers
+- **Multi-Provider LLM** — switch between providers from the UI
+- **REST API** — full programmatic access to all features
+
+---
+
+## Architecture
+
+```
+rule-agent/
+├── cli.js                  # CLI entry point (start/stop/status/logs)
+├── server/                 # Express.js + LangGraph backend
+│   ├── src/
+│   │   ├── agent/          # Core agent logic (state graphs, planning, roles)
+│   │   ├── tools/          # 15+ tool implementations
+│   │   ├── scheduler/      # Cron engine + task executor
+│   │   ├── index-strategy/ # Vector / Repomap / Ripgrep search
+│   │   ├── llm/            # Multi-provider LLM adapter
+│   │   ├── mcp/            # Model Context Protocol integration
+│   │   ├── skills/         # Skill discovery & loading
+│   │   └── api/            # REST API routes
+│   └── public/             # Built frontend assets
+├── web/                    # React + TypeScript frontend
+│   └── src/
+│       ├── components/     # Chat, Sidebar, Artifacts, Scheduler UI
+│       └── App.tsx         # Router & layout
+├── skills/                 # Built-in skills
+│   ├── ddgs-web-search/    # DuckDuckGo web search
+│   ├── playwright-web-capture/  # Web scraping & screenshots
+│   └── novelty-driven-planning/ # AI planning strategy
+└── config/                 # Configuration templates
+```
+
+### Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| **Agent Framework** | LangGraph (StateGraph + ToolNode) |
+| **Backend** | Express.js, TypeScript, node-cron |
+| **Frontend** | React 18, Tailwind CSS v4, Monaco Editor |
+| **Code Parsing** | tree-sitter (TypeScript, Python, JavaScript) |
+| **Vector Search** | LanceDB |
+| **Flow Diagrams** | XYFlow |
+| **UI Primitives** | Radix UI |
+
+---
+
+## CLI Reference
 
 ```bash
-PORT=8080 rule-agent start          # Custom port
+rule-agent start              # Start the server (default port 3001)
+rule-agent stop               # Stop the server
+rule-agent restart             # Restart the server
+rule-agent status              # Check if running
+rule-agent logs                # View server logs
+rule-agent open                # Open web UI in browser
+
+# Environment variables
+PORT=8080 rule-agent start               # Custom port
 DATA_DIR=/path/to/data rule-agent start  # Custom data directory
 ```
 
-## API Usage
+---
 
-Once the server is running, you can access the REST API:
-
-### Conversations API
-
-```bash
-# Create a conversation
-curl -X POST http://localhost:3001/conversations \
-  -H "Content-Type: application/json" \
-  -d '{"title": "My Conversation"}'
-
-# Send a message
-curl -X POST http://localhost:3001/conversations/{id}/messages \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Hello, AI!"}'
-
-# Get messages
-curl http://localhost:3001/conversations/{id}/messages
-```
-
-### Scheduled Tasks API
-
-```bash
-# Create a task
-curl -X POST http://localhost:3001/scheduled-tasks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Daily Report",
-    "type": "webhook",
-    "schedule": "0 9 * * *",
-    "enabled": true,
-    "config": {
-      "url": "https://your-webhook-url",
-      "useModelOutput": true,
-      "prompt": "Generate a daily report"
-    }
-  }'
-
-# List tasks
-curl http://localhost:3001/scheduled-tasks
-
-# Execute a task manually
-curl -X POST http://localhost:3001/scheduled-tasks/{id}/execute
-
-# Get execution history
-curl http://localhost:3001/scheduled-executions
-```
-
-## API Endpoints
+## API Reference
 
 ### Conversations
 
-- `GET /conversations` - List all conversations
-- `POST /conversations` - Create a new conversation
-- `GET /conversations/:id` - Get conversation details
-- `GET /conversations/:id/messages` - Get conversation messages
-- `POST /conversations/:id/messages` - Send a message (streaming SSE)
-- `POST /conversations/:id/messages/sync` - Send a message (non-streaming)
-- `DELETE /conversations/:id` - Delete a conversation
+```bash
+POST   /api/conversations                    # Create conversation
+GET    /api/conversations                    # List conversations
+GET    /api/conversations/:id/messages       # Get messages
+POST   /api/conversations/:id/messages       # Send message (SSE streaming)
+POST   /api/conversations/:id/messages/sync  # Send message (synchronous)
+POST   /api/conversations/:id/compress       # Force context compression
+POST   /api/conversations/:id/index-build    # Build code index
+DELETE /api/conversations/:id                # Delete conversation
+```
 
 ### Scheduled Tasks
 
-- `GET /scheduled-tasks` - List all tasks
-- `POST /scheduled-tasks` - Create a new task
-- `GET /scheduled-tasks/:id` - Get task details
-- `PUT /scheduled-tasks/:id` - Update a task
-- `DELETE /scheduled-tasks/:id` - Delete a task
-- `POST /scheduled-tasks/:id/execute` - Execute a task manually
-- `POST /scheduled-tasks/:id/toggle` - Enable/disable a task
-- `GET /scheduled-tasks/:id/executions` - Get task execution history
-- `GET /scheduled-executions` - Get all execution history
-
-### Configuration
-
-- `GET /config` - Get configuration
-- `PUT /config` - Update configuration
-- `GET /models` - List available AI models
-
-## Scheduled Tasks
-
-### Task Types
-
-1. **Conversation** - Send messages to AI conversations
-   ```json
-   {
-     "type": "conversation",
-     "config": {
-       "message": "Your prompt here"
-     }
-   }
-   ```
-
-2. **Webhook** - HTTP requests to external APIs
-   ```json
-   {
-     "type": "webhook",
-     "config": {
-       "url": "https://api.example.com/webhook",
-       "method": "POST",
-       "useModelOutput": true,
-       "prompt": "Generate content"
-     }
-   }
-   ```
-
-3. **Skill** - Execute custom skills
-   ```json
-   {
-     "type": "skill",
-     "config": {
-       "skillName": "demo",
-       "params": {}
-     }
-   }
-   ```
-
-### Cron Schedule Format
-
-```
-┌─────────── minute (0 - 59)
-│ ┌───────── hour (0 - 23)
-│ │ ┌─────── day of month (1 - 31)
-│ │ │ ┌───── month (1 - 12)
-│ │ │ │ ┌─── day of week (0 - 6)
-* * * * *
+```bash
+POST   /api/scheduled-tasks                  # Create task
+GET    /api/scheduled-tasks                  # List tasks
+PUT    /api/scheduled-tasks/:id              # Update task
+DELETE /api/scheduled-tasks/:id              # Delete task
+POST   /api/scheduled-tasks/:id/execute      # Execute manually
+POST   /api/scheduled-tasks/:id/toggle       # Enable/disable
+GET    /api/scheduled-executions              # Execution history
 ```
 
-Examples:
-- `0 9 * * *` - Every day at 9:00 AM
-- `*/5 * * * *` - Every 5 minutes
-- `0 0 * * 0` - Every Sunday at midnight
-- `0 9 * * 1-5` - Weekdays at 9:00 AM
+### Configuration & Skills
+
+```bash
+GET    /api/config                           # Get configuration
+PUT    /api/config                           # Update configuration
+GET    /api/models                           # Available LLM models
+GET    /api/skills                           # List skills
+POST   /api/skills                           # Upload skill (ZIP)
+```
+
+### Teams & Agents
+
+```bash
+GET    /api/agents                           # List agent definitions
+POST   /api/agents                           # Create agent
+GET    /api/teams                            # List teams
+POST   /api/teams                            # Create team
+GET    /api/approvals                        # Pending approvals
+POST   /api/approvals/:id/decide             # Approve/reject action
+```
+
+---
+
+## Configuration
+
+All configuration lives in `~/.rule-agent/`:
+
+```
+~/.rule-agent/
+├── models.json          # LLM provider settings & API keys
+├── user-config.json     # Preferences (tools, MCP servers, context strategy)
+├── server.pid           # Process ID
+└── server.log           # Server logs
+```
+
+### User Config Example
+
+```json
+{
+  "enabledToolIds": ["read_file", "write_file", "run_command", "search_code"],
+  "mcpServers": [],
+  "modelId": "gpt-4o",
+  "context": {
+    "strategy": "compress",
+    "tokenThresholdPercent": 75,
+    "compressKeepRecent": 20
+  }
+}
+```
+
+> For the full configuration guide, see [CONFIGURATION.md](./CONFIGURATION.md).
+
+---
 
 ## Development
 
 ### Prerequisites
 
 - Node.js >= 18.0.0
-- npm or yarn
+- npm
 
-### Setup
+### Commands
 
 ```bash
-npm install
-npm run build
+npm run dev              # Start dev mode (backend + frontend with hot reload)
+npm run build            # Production build
+npm run test             # Run tests
+npm run test:watch       # Watch mode
 ```
 
 ### Development Mode
 
 ```bash
 npm run dev
+# Backend  → http://localhost:3001
+# Frontend → http://localhost:5173 (proxies API to backend)
 ```
 
-This starts:
-- Backend on `http://localhost:3001`
-- Frontend on `http://localhost:5173` (with API proxy)
-
-### Project Structure
-
-```
-rule-agent/
-├── cli.js              # CLI entry point
-├── server/            # Backend
-│   ├── src/          # TypeScript source
-│   ├── dist/         # Compiled JavaScript
-│   └── public/       # Frontend static files (after build)
-├── web/              # Frontend (React + TypeScript)
-│   └── src/
-├── skills/           # Custom skills
-└── data/            # Data directory (auto-created)
-```
-
-## Configuration File
-
-Location: `data/user-config.json` (or `~/.rule-agent/user-config.json` in production)
-
-Example:
-
-```json
-{
-  "llm": {
-    "provider": "openai",
-    "apiKey": "your-api-key",
-    "baseUrl": "https://api.openai.com/v1",
-    "defaultModel": "gpt-4"
-  },
-  "enabledToolIds": ["calculator", "get_time"],
-  "mcpServers": []
-}
-```
+---
 
 ## Troubleshooting
 
-### Server won't start
+| Problem | Solution |
+|---------|----------|
+| Server won't start | `rule-agent logs` to check errors |
+| Port already in use | `PORT=8080 rule-agent start` |
+| Permission errors | `chmod +x cli.js` |
+| Context too long | Increase `tokenThresholdPercent` or switch to `compress` strategy |
+| Index build slow | Use `repomap` strategy for large repos instead of `vector` |
 
-```bash
-rule-agent status      # Check status
-rule-agent logs        # View error logs
-rule-agent restart     # Restart server
-```
+---
 
-### Port already in use
+## Roadmap
 
-```bash
-PORT=8080 rule-agent start
-```
+- [ ] Plugin marketplace for community skills
+- [ ] WebSocket real-time collaboration
+- [ ] Multi-user authentication & permissions
+- [ ] Docker deployment with one-click setup
+- [ ] Mobile-responsive UI improvements
+- [ ] Agent memory & long-term knowledge base
 
-### Permission errors
-
-```bash
-chmod +x cli.js
-```
-
-## License
-
-MIT
+---
 
 ## Contributing
 
-Contributions welcome! Please submit a Pull Request.
+Contributions are welcome! Whether it's bug fixes, new features, documentation, or skills — we'd love your help.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feat/amazing-feature`)
+3. Commit your changes (`git commit -m 'feat: add amazing feature'`)
+4. Push to the branch (`git push origin feat/amazing-feature`)
+5. Open a Pull Request
+
+---
+
+## License
+
+[MIT](LICENSE) - Use it however you want.
+
+---
+
+<div align="center">
+
+**If you find Rule Agent useful, give it a star!**
+
+Built with LangGraph, React, and TypeScript.
+
+</div>
