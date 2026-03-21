@@ -1368,6 +1368,7 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 - background_run: 后台运行命令
 - background_check: 查看后台任务状态
 - background_cancel: 取消后台任务
+- web_search: 搜索网络信息（DuckDuckGo）
 
 注意：
 - systemPrompt 要详细、专业，清晰定义角色边界

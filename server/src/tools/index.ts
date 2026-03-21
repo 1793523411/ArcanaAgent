@@ -11,6 +11,7 @@ import { search_code } from "./search_code.js";
 import { list_files } from "./list_files.js";
 import { git_operations } from "./git_operations.js";
 import { test_runner } from "./test_runner.js";
+import { web_search } from "./web_search.js";
 
 export const tools = {
   run_command,
@@ -25,6 +26,7 @@ export const tools = {
   list_files,
   git_operations,
   test_runner,
+  web_search,
 } as const;
 
 export type ToolId = keyof typeof tools;

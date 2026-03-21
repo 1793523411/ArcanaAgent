@@ -122,21 +122,24 @@ const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant wit
 - **Show results**: after tool execution, summarize what happened and present outputs clearly. Don't just say "done" — show the key results.
 
 ## Tool Usage Strategy
-You have access to built-in tools (run_command, read_file, write_file, edit_file, search_code, list_files, git_operations, test_runner, etc.) and MCP tools from external servers (listed below if connected).
+You have access to built-in tools (run_command, read_file, write_file, edit_file, search_code, list_files, git_operations, test_runner, web_search, etc.) and MCP tools from external servers (listed below if connected).
 
 **CRITICAL: Never output your internal reasoning or planning as text.** Do NOT write things like "I need to call tool X" or "Let me think about which tool to use" — just call the tool directly. Your visible output should only contain information meant for the user, never your own thought process about tool selection or task decomposition.
 
 **When to use tools vs. direct response:**
 - Answer from knowledge when no system interaction is needed
 - Use tools when you need to: execute code, read/write files, run commands, fetch data, or perform any system operation
+- When encountering unfamiliar APIs, libraries, or uncertain technical details, proactively use web_search to find accurate, up-to-date information
 - For complex tasks, plan the steps first, then execute tools sequentially, checking results between each step
 - For run_command, if output contains signal \`__RUN_COMMAND_EXECUTED__\`, treat the command as command executed successfully
 - For run_command, if output contains signal \`__RUN_COMMAND_DUPLICATE_SKIPPED__\`, do not repeat the same command; move to next step or summarize
-- For file/content discovery in terminal commands, prefer \`rg\` (ripgrep) over \`find\` and \`grep\`:
-  - Search file contents: \`rg "pattern"\` or \`rg "pattern" path/\` (instead of \`grep -r\` or \`find ... -exec grep\`)
-  - Find files by name/extension: \`rg --files -g "*.py"\` or \`rg --files -g "*keyword*"\` (instead of \`find . -name "*.py"\`)
-  - Combined: \`rg --files -g "*.ts" | rg "component"\` for precise file name filtering
-  - \`rg\` is much faster, respects .gitignore, and produces cleaner output. Only fall back to \`find\` for metadata queries (size, mtime, permissions) that \`rg\` cannot handle.
+- **IMPORTANT — File search: ALWAYS use built-in tools first, avoid raw shell commands for file discovery:**
+  - Search file contents → use \`search_code\` tool (NOT \`run_command\` + \`grep\`/\`find ... -exec grep\`). It auto-selects the fastest available backend (ripgrep → grep).
+  - List/find files by name → use \`list_files\` tool (NOT \`run_command\` + \`find\` or \`ls\`)
+  - If you absolutely must use run_command for file discovery, prefer \`rg\` (ripgrep) when available, fall back to \`grep\`/\`find\` otherwise:
+    - Find files by name: \`rg --files -g "*.py"\` or \`find . -name "*.py" -not -path "*/node_modules/*"\`
+    - Search contents: \`rg "pattern" path/\` or \`grep -rn "pattern" path/\`
+  - Only use \`find\` for metadata queries (size, mtime, permissions) that content-search tools cannot handle.
 - When multiple independent subtasks exist, you may call \`task\` multiple times in the same turn
 
 **Background tasks for long-running commands:**
@@ -1314,7 +1317,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
   // In team mode at depth 0 (coordinator level), only expose task + read_file
   // This prevents the coordinator from doing implementation work itself
   if (conversationMode === "team" && depth === 0) {
-    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time"]);
+    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "search_code", "list_files", "web_search"]);
     const coordinatorTools = filteredWrappedTools.filter((t) => coordinatorAllowed.has(t.name));
     return [...coordinatorTools, taskTool as unknown as StructuredToolInterface];
   }
