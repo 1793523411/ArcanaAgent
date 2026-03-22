@@ -35,8 +35,6 @@ const lightVars: Record<string, string> = {
 const ShareCard = forwardRef<HTMLDivElement, Props>(
   ({ theme, content, title, modelName, createdAt }, ref) => {
     const isLight = theme === "light";
-    const maxLen = 1200;
-    const truncated = content.length > maxLen ? content.slice(0, maxLen) + "\n\n..." : content;
     const dateStr = createdAt
       ? new Date(createdAt).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
       : new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
@@ -50,29 +48,37 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
     const divider = isLight ? "rgba(226, 232, 240, 0.95)" : "rgba(51, 65, 85, 0.6)";
     const logoIconColor = "#fff";
 
+    /** Short answers look top-heavy; min-height + flex centers body between header and footer. */
+    const cardMinHeight = 580;
+
     return (
       <div
         ref={ref}
         className={isLight ? "share-card-hljs-light" : undefined}
         style={{
+          display: "flex",
+          flexDirection: "column",
           width: 560,
-          padding: "32px 32px 40px",
+          minHeight: cardMinHeight,
+          padding: "32px 32px 36px",
           background: bgGradient,
           borderRadius: 20,
           fontFamily: "'DM Sans', ui-sans-serif, system-ui, sans-serif",
           color: isLight ? "#0f172a" : "#f1f5f9",
           boxShadow: isLight ? "0 1px 3px rgba(15, 23, 42, 0.06)" : undefined,
+          boxSizing: "border-box",
           ...(isLight ? lightVars : darkVars),
         } as React.CSSProperties}
       >
         <div
           style={{
-            display: "grid",
-            gridTemplateColumns: "1fr auto",
+            display: "flex",
+            justifyContent: "space-between",
             alignItems: "center",
-            columnGap: 12,
+            gap: 12,
             minHeight: 36,
             marginBottom: 20,
+            flexShrink: 0,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 36 }}>
@@ -130,6 +136,7 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
             {title}
@@ -138,39 +145,56 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
 
         <div
           style={{
+            flex: "1 1 auto",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
             fontSize: 14,
             lineHeight: 1.7,
             color: bodyColor,
           }}
         >
-          <MarkdownContent variant="share">{truncated}</MarkdownContent>
+          <MarkdownContent variant="share">{content}</MarkdownContent>
         </div>
 
         <div
           style={{
-            marginTop: 24,
-            paddingTop: 16,
-            paddingBottom: 8,
+            marginTop: 18,
+            paddingTop: 12,
+            paddingBottom: 12,
             borderTop: `1px solid ${divider}`,
-            display: "grid",
-            gridTemplateColumns: modelName ? "1fr auto" : "1fr",
+            display: "flex",
+            justifyContent: "space-between",
             alignItems: "center",
-            columnGap: 12,
-            minHeight: 22,
+            gap: 12,
+            flexShrink: 0,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 22 }}>
-            <div
+          <div
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+            }}
+          >
+            <span
+              aria-hidden
               style={{
+                display: "inline-block",
                 width: 6,
                 height: 6,
                 flexShrink: 0,
                 borderRadius: "50%",
                 background: isLight ? "#0d9488" : "#14b8a6",
-                alignSelf: "center",
               }}
             />
-            <span style={{ fontSize: 11, lineHeight: "22px", color: "#64748b" }}>
+            <span
+              style={{
+                fontSize: 11,
+                lineHeight: 1.35,
+                color: "#64748b",
+              }}
+            >
               Powered by ArcanaAgent
             </span>
           </div>
@@ -178,7 +202,7 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
             <span
               style={{
                 fontSize: 11,
-                lineHeight: "22px",
+                lineHeight: 1.35,
                 color: "#64748b",
                 textAlign: "right",
                 wordBreak: "break-all",

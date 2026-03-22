@@ -32,49 +32,35 @@ export default function ShareCardModal({
   const [sharing, setSharing] = useState(false);
 
   /**
-   * Clone the card to an off-screen container so html2canvas can
-   * capture its full natural height without any parent clipping.
+   * Capture the same DOM node as the preview. A previous approach cloned the
+   * card off-screen and inlined computed styles; that diverged from the real
+   * layout (flex vertical alignment, list markers) in html2canvas output.
    */
   const captureCard = useCallback(async (): Promise<HTMLCanvasElement | null> => {
     const src = cardRef.current;
     if (!src) return null;
 
-    // Clone the card into a detached container
-    const container = document.createElement("div");
-    container.style.cssText =
-      "position:fixed;left:-9999px;top:0;z-index:-1;pointer-events:none;";
-    document.body.appendChild(container);
-
-    const clone = src.cloneNode(true) as HTMLElement;
-    clone.style.maxHeight = "none";
-    clone.style.overflow = "visible";
-    clone.style.width = `${src.offsetWidth}px`;
-    container.appendChild(clone);
-    void clone.offsetHeight;
-
-    try {
-      if (typeof document.fonts?.ready !== "undefined") {
-        await document.fonts.ready;
-      }
-      await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-
-      const canvas = await html2canvas(clone, {
-        backgroundColor: null,
-        scale: 2,
-        useCORS: true,
-        // Do not pass width/height — fixed height often underestimates clone layout and clips code blocks
-        onclone: (_doc, root) => {
-          root.querySelectorAll("pre").forEach((el) => {
-            const p = el as HTMLElement;
-            p.style.overflow = "visible";
-            p.style.maxHeight = "none";
-          });
-        },
-      });
-      return canvas;
-    } finally {
-      document.body.removeChild(container);
+    if (typeof document.fonts?.ready !== "undefined") {
+      await document.fonts.ready;
     }
+    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
+
+    // html2canvas 把 DOM「重画」到 canvas 上，不是系统截屏，因此与浏览器原生排版/抗锯齿
+    // 可能有细微差别（字体、渐变、阴影、列表 marker、圆角等）。scale: 2 也会与 1x 屏显观感略不同。
+    // 若需更接近矢量效果可试 foreignObjectRendering: true（部分环境/跨域图可能异常）。
+    return html2canvas(src, {
+      backgroundColor: null,
+      scale: 2,
+      useCORS: true,
+      logging: false,
+      onclone: (_doc, root) => {
+        root.querySelectorAll("pre").forEach((el) => {
+          const p = el as HTMLElement;
+          p.style.overflow = "visible";
+          p.style.maxHeight = "none";
+        });
+      },
+    });
   }, []);
 
   const handleSaveImage = async () => {

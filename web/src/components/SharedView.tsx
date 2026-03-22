@@ -78,7 +78,11 @@ export default function SharedView() {
           )}
         </div>
         <div className="text-sm leading-relaxed text-[var(--color-text)]">
-          <MarkdownContent>{record.message.content}</MarkdownContent>
+          {record.message.content?.trim() ? (
+            <MarkdownContent>{record.message.content}</MarkdownContent>
+          ) : (
+            <p className="text-[var(--color-text-muted)] text-sm">本条分享没有正文内容（可能为旧版分享链接错位，请重新生成分享）。</p>
+          )}
         </div>
       </div>
 
