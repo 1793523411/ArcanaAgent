@@ -97,6 +97,7 @@ interface Props {
   compressing?: boolean;
   team?: TeamDef | null;
   agents?: AgentDef[];
+  onShareMessage?: (message: StoredMessage, index: number) => void;
 }
 
 export default function ChatPanel({
@@ -136,6 +137,7 @@ export default function ChatPanel({
   compressing = false,
   team = null,
   agents = [],
+  onShareMessage,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -302,7 +304,7 @@ export default function ChatPanel({
           }
 
           return merged.map((m, i) => (
-            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} team={team} agents={agents} />
+            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} team={team} agents={agents} onShare={onShareMessage ? () => onShareMessage(m, i) : undefined} />
           ));
         })()}
         {isTaskExecuting && !loading && (

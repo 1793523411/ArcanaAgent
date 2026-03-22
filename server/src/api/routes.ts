@@ -18,6 +18,7 @@ import {
   type ConversationMeta,
   type ConversationMode,
 } from "../storage/index.js";
+import { createShare as createShareRecord, getShare as getShareRecord } from "../storage/shares.js";
 import {
   listAgentDefs,
   getAgentDef,
@@ -1691,4 +1692,47 @@ export function deleteTeamById(req: Request, res: Response): void {
   }
   deleteTeamDef(id);
   res.json({ ok: true });
+}
+
+// ─── Share ──────────────────────────────────────────────
+
+export function postShare(req: Request, res: Response): void {
+  const id = convId(req);
+  const meta = getConversation(id);
+  if (!meta) {
+    res.status(404).json({ error: "Conversation not found" });
+    return;
+  }
+  const { messageIndex } = req.body as { messageIndex?: number };
+  if (typeof messageIndex !== "number" || messageIndex < 0) {
+    res.status(400).json({ error: "Invalid messageIndex" });
+    return;
+  }
+  const messages = getMessages(id);
+  if (messageIndex >= messages.length) {
+    res.status(400).json({ error: "messageIndex out of range" });
+    return;
+  }
+  const msg = messages[messageIndex];
+  const record = createShareRecord(id, meta.title, messageIndex, {
+    type: msg.type,
+    content: msg.content,
+    modelId: msg.modelId,
+    reasoningContent: msg.reasoningContent,
+  });
+  res.json(record);
+}
+
+export function getSharedContent(req: Request, res: Response): void {
+  const shareId = Array.isArray(req.params.shareId) ? req.params.shareId[0] ?? "" : req.params.shareId;
+  if (!shareId) {
+    res.status(400).json({ error: "Missing shareId" });
+    return;
+  }
+  const record = getShareRecord(shareId);
+  if (!record) {
+    res.status(404).json({ error: "Share not found" });
+    return;
+  }
+  res.json(record);
 }

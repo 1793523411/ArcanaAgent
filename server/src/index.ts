@@ -45,6 +45,8 @@ import {
   getTeamById,
   putTeamById,
   deleteTeamById,
+  postShare,
+  getSharedContent,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -125,6 +127,10 @@ app.post("/api/teams", postTeams);
 app.get("/api/teams/:id", getTeamById);
 app.put("/api/teams/:id", putTeamById);
 app.delete("/api/teams/:id", deleteTeamById);
+
+// 分享 API
+app.post("/api/conversations/:id/share", postShare);
+app.get("/api/shares/:shareId", getSharedContent);
 
 // 定时任务 API
 app.get("/api/scheduled-tasks", getTasks);

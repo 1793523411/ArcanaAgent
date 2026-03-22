@@ -13,6 +13,7 @@ interface Props {
   models?: Array<{ id: string; name: string }>;
   team?: TeamDef | null;
   agents?: AgentDef[];
+  onShare?: () => void;
 }
 
 function CopyIcon() {
@@ -24,7 +25,19 @@ function CopyIcon() {
   );
 }
 
-export default function MessageBubble({ message, conversationId, models = [], team = null, agents = [] }: Props) {
+function ShareIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
+      <circle cx="18" cy="5" r="3" />
+      <circle cx="6" cy="12" r="3" />
+      <circle cx="18" cy="19" r="3" />
+      <line x1="8.59" y1="13.51" x2="15.42" y2="17.49" />
+      <line x1="15.41" y1="6.51" x2="8.59" y2="10.49" />
+    </svg>
+  );
+}
+
+export default function MessageBubble({ message, conversationId, models = [], team = null, agents = [], onShare }: Props) {
   const isHuman = message.type === "human";
   const attachments = message.attachments ?? [];
   const reasoning = message.type === "ai" ? message.reasoningContent : undefined;
@@ -180,20 +193,32 @@ export default function MessageBubble({ message, conversationId, models = [], te
               </span>
             )}
           </div>
-          {copyableText && (
-            <button
-              type="button"
-              onClick={handleCopy}
-              className="shrink-0 p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors"
-              title={copied ? "已复制" : "复制"}
-            >
-              {copied ? (
-                <span className="text-[10px] text-[var(--color-accent)]">已复制</span>
-              ) : (
-                <CopyIcon />
-              )}
-            </button>
-          )}
+          <div className="flex items-center gap-1">
+            {!isHuman && onShare && copyableText && (
+              <button
+                type="button"
+                onClick={() => onShare!()}
+                className="shrink-0 p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors"
+                title="分享"
+              >
+                <ShareIcon />
+              </button>
+            )}
+            {copyableText && (
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="shrink-0 p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-bg)] transition-colors"
+                title={copied ? "已复制" : "复制"}
+              >
+                {copied ? (
+                  <span className="text-[10px] text-[var(--color-accent)]">已复制</span>
+                ) : (
+                  <CopyIcon />
+                )}
+              </button>
+            )}
+          </div>
         </div>
         {hasReasoning && (
           <div className="mb-3">

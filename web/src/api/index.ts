@@ -470,3 +470,35 @@ export async function deleteTeamDef(id: string): Promise<void> {
   const r = await fetch(`${BASE}/teams/${id}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
 }
+
+// ─── Share ──────────────────────────────────────────────
+
+export interface ShareRecord {
+  shareId: string;
+  conversationId: string;
+  conversationTitle: string;
+  messageIndex: number;
+  message: {
+    type: string;
+    content: string;
+    modelId?: string;
+    reasoningContent?: string;
+  };
+  createdAt: string;
+}
+
+export async function createShare(conversationId: string, messageIndex: number): Promise<ShareRecord> {
+  const r = await fetch(`${BASE}/conversations/${conversationId}/share`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messageIndex }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getShare(shareId: string): Promise<ShareRecord> {
+  const r = await fetch(`${BASE}/shares/${shareId}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}

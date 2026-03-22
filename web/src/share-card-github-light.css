@@ -1,0 +1,81 @@
+/* GitHub light hljs — block padding lives on <pre> (.share-markdown); inline code keeps Tailwind */
+.share-card-hljs-light :not(pre) > code.hljs {
+  padding: 3px 5px;
+}
+.share-card-hljs-light .hljs {
+  color: #24292e;
+  background: #ffffff;
+}
+.share-card-hljs-light .hljs-doctag,
+.share-card-hljs-light .hljs-keyword,
+.share-card-hljs-light .hljs-meta .hljs-keyword,
+.share-card-hljs-light .hljs-template-tag,
+.share-card-hljs-light .hljs-template-variable,
+.share-card-hljs-light .hljs-type,
+.share-card-hljs-light .hljs-variable.language_ {
+  color: #d73a49;
+}
+.share-card-hljs-light .hljs-title,
+.share-card-hljs-light .hljs-title.class_,
+.share-card-hljs-light .hljs-title.class_.inherited__,
+.share-card-hljs-light .hljs-title.function_ {
+  color: #6f42c1;
+}
+.share-card-hljs-light .hljs-attr,
+.share-card-hljs-light .hljs-attribute,
+.share-card-hljs-light .hljs-literal,
+.share-card-hljs-light .hljs-meta,
+.share-card-hljs-light .hljs-number,
+.share-card-hljs-light .hljs-operator,
+.share-card-hljs-light .hljs-variable,
+.share-card-hljs-light .hljs-selector-attr,
+.share-card-hljs-light .hljs-selector-class,
+.share-card-hljs-light .hljs-selector-id {
+  color: #005cc5;
+}
+.share-card-hljs-light .hljs-regexp,
+.share-card-hljs-light .hljs-string,
+.share-card-hljs-light .hljs-meta .hljs-string {
+  color: #032f62;
+}
+.share-card-hljs-light .hljs-built_in,
+.share-card-hljs-light .hljs-symbol {
+  color: #e36209;
+}
+.share-card-hljs-light .hljs-comment,
+.share-card-hljs-light .hljs-code,
+.share-card-hljs-light .hljs-formula {
+  color: #6a737d;
+}
+.share-card-hljs-light .hljs-name,
+.share-card-hljs-light .hljs-quote,
+.share-card-hljs-light .hljs-selector-tag,
+.share-card-hljs-light .hljs-selector-pseudo {
+  color: #22863a;
+}
+.share-card-hljs-light .hljs-subst {
+  color: #24292e;
+}
+.share-card-hljs-light .hljs-section {
+  color: #005cc5;
+  font-weight: bold;
+}
+.share-card-hljs-light .hljs-bullet {
+  color: #735c0f;
+}
+.share-card-hljs-light .hljs-emphasis {
+  color: #24292e;
+  font-style: italic;
+}
+.share-card-hljs-light .hljs-strong {
+  color: #24292e;
+  font-weight: bold;
+}
+.share-card-hljs-light .hljs-addition {
+  color: #22863a;
+  background-color: #f0fff4;
+}
+.share-card-hljs-light .hljs-deletion {
+  color: #b31d28;
+  background-color: #ffeef0;
+}

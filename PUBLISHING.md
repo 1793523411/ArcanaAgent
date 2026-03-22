@@ -31,10 +31,10 @@ node cli.js stop
 
 ```bash
 npm link
-rule-agent start
-rule-agent status
-rule-agent stop
-npm unlink -g rule-agent
+arcana-agent start
+arcana-agent status
+arcana-agent stop
+npm unlink -g arcana-agent
 ```
 
 ### 4. Login to npm
@@ -56,8 +56,8 @@ npm publish
 ### 6. Verify
 
 ```bash
-npm install -g rule-agent
-rule-agent --help
+npm install -g arcana-agent
+arcana-agent --help
 ```
 
 ## Version Management
@@ -108,7 +108,7 @@ npm login
 Change the name in package.json or use a scoped package:
 ```json
 {
-  "name": "@yourname/rule-agent"
+  "name": "@yourname/arcana-agent"
 }
 ```
 

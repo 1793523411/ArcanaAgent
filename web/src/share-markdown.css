@@ -1,0 +1,63 @@
+/* ShareCard only — MarkdownContent variant="share" */
+
+/* GFM often renders <li><p>…</p></li>; block <p> breaks marker alignment — first line flows with marker */
+.share-markdown.markdown-content li.share-md-li > p:first-of-type {
+  display: inline;
+}
+
+.share-markdown.markdown-content li.share-md-li > p:not(:first-of-type) {
+  display: block;
+  margin-top: 0.5em;
+}
+
+.share-markdown.markdown-content li.share-md-li > p {
+  margin-bottom: 0.45em;
+}
+
+.share-markdown.markdown-content li.share-md-li > p:last-child {
+  margin-bottom: 0;
+}
+
+/* Room for two-digit markers; outside so wrap aligns with text start */
+.share-markdown.markdown-content ol.share-md-list-ol {
+  list-style-position: outside;
+  padding-left: 1.85rem;
+  margin-left: 0;
+}
+
+.share-markdown.markdown-content ul.share-md-list-ul {
+  list-style-position: outside;
+  padding-left: 1.5rem;
+  margin-left: 0;
+}
+
+.share-markdown.markdown-content li.share-md-li {
+  padding-left: 0.35rem;
+}
+
+.share-markdown.markdown-content li.share-md-li ol,
+.share-markdown.markdown-content li.share-md-li ul {
+  margin-top: 0.35em;
+}
+
+/* Code: padding on pre; code fills width; extra bottom space for descenders / html2canvas */
+.share-markdown pre.share-card-pre,
+.share-markdown pre {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  line-height: 1.65;
+  overflow-y: visible;
+}
+
+.share-markdown pre code.hljs,
+.share-markdown pre code {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.15em 0 0.35em !important;
+  line-height: inherit;
+}

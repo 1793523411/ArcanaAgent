@@ -2,10 +2,10 @@
 
 ## Configuration Files Location
 
-All configuration files are stored in your home directory under `~/.rule-agent/`:
+All configuration files are stored in your home directory under `~/.arcana-agent/`:
 
 ```
-~/.rule-agent/
+~/.arcana-agent/
 ├── models.json          # AI model providers and API keys
 ├── user-config.json     # User preferences (auto-created)
 ├── server.pid           # Server process ID (auto-created)
@@ -13,31 +13,31 @@ All configuration files are stored in your home directory under `~/.rule-agent/`
 ```
 
 **Platform-specific paths:**
-- **macOS/Linux**: `/Users/your-username/.rule-agent/`
-- **Windows**: `C:\Users\your-username\.rule-agent\`
+- **macOS/Linux**: `/Users/your-username/.arcana-agent/`
+- **Windows**: `C:\Users\your-username\.arcana-agent\`
 
 ## First Time Setup
 
-### 1. Install Rule Agent
+### 1. Install ArcanaAgent
 
 ```bash
-npm install -g rule-agent
+npm install -g arcana-agent
 ```
 
 ### 2. First Start
 
-When you run `rule-agent start` for the first time, it will create a configuration template:
+When you run `arcana-agent start` for the first time, it will create a configuration template:
 
 ```bash
-rule-agent start
+arcana-agent start
 ```
 
 Output:
 ```
 ⚙️  First time setup: Creating configuration file...
 ✅ Configuration file created!
-📝 Location: /Users/you/.rule-agent/models.json
-⚠️  You need to configure at least one model provider before using Rule Agent.
+📝 Location: /Users/you/.arcana-agent/models.json
+⚠️  You need to configure at least one model provider before using ArcanaAgent.
 ```
 
 ### 3. Configure Your API Keys
@@ -46,13 +46,13 @@ Edit the configuration file:
 
 ```bash
 # macOS/Linux
-nano ~/.rule-agent/models.json
+nano ~/.arcana-agent/models.json
 # or use your preferred editor
-code ~/.rule-agent/models.json
-vim ~/.rule-agent/models.json
+code ~/.arcana-agent/models.json
+vim ~/.arcana-agent/models.json
 
 # Windows
-notepad %USERPROFILE%\.rule-agent\models.json
+notepad %USERPROFILE%\.arcana-agent\models.json
 ```
 
 ### 4. Update API Keys
@@ -97,8 +97,8 @@ Replace placeholders with your actual API keys:
 After configuring your API keys:
 
 ```bash
-rule-agent start
-rule-agent open   # Opens in browser
+arcana-agent start
+arcana-agent open   # Opens in browser
 ```
 
 ## Configuration Options
@@ -159,13 +159,13 @@ You can override default settings with environment variables:
 
 ```bash
 # Custom port
-PORT=8080 rule-agent start
+PORT=8080 arcana-agent start
 
-# Custom data directory (overrides ~/.rule-agent)
-DATA_DIR=/custom/path rule-agent start
+# Custom data directory (overrides ~/.arcana-agent)
+DATA_DIR=/custom/path arcana-agent start
 
 # Volcengine API key (overrides models.json)
-VOLCENGINE_API_KEY=your-key rule-agent start
+VOLCENGINE_API_KEY=your-key arcana-agent start
 ```
 
 ## Editing Configuration While Running
@@ -173,12 +173,12 @@ VOLCENGINE_API_KEY=your-key rule-agent start
 You can edit configuration files while the server is running, but you need to restart for changes to take effect:
 
 ```bash
-rule-agent restart
+arcana-agent restart
 ```
 
 ## Backup Your Configuration
 
-Your API keys are stored in `~/.rule-agent/models.json`. Make sure to:
+Your API keys are stored in `~/.arcana-agent/models.json`. Make sure to:
 
 1. **Never commit this file to git** (it contains secrets)
 2. **Backup regularly** if you have complex configurations
@@ -186,10 +186,10 @@ Your API keys are stored in `~/.rule-agent/models.json`. Make sure to:
 
 ```bash
 # Backup your config
-cp ~/.rule-agent/models.json ~/.rule-agent/models.json.backup
+cp ~/.arcana-agent/models.json ~/.arcana-agent/models.json.backup
 
 # Restore from backup
-cp ~/.rule-agent/models.json.backup ~/.rule-agent/models.json
+cp ~/.arcana-agent/models.json.backup ~/.arcana-agent/models.json
 ```
 
 ## Troubleshooting
@@ -199,22 +199,22 @@ cp ~/.rule-agent/models.json.backup ~/.rule-agent/models.json
 The template should be auto-created. If not, check:
 
 ```bash
-ls -la ~/.rule-agent/
+ls -la ~/.arcana-agent/
 ```
 
 If empty, reinstall:
 
 ```bash
-npm uninstall -g rule-agent
-npm install -g rule-agent
+npm uninstall -g arcana-agent
+npm install -g arcana-agent
 ```
 
 ### "API key invalid"
 
-Check your API key in `~/.rule-agent/models.json`:
+Check your API key in `~/.arcana-agent/models.json`:
 
 ```bash
-cat ~/.rule-agent/models.json | grep apiKey
+cat ~/.arcana-agent/models.json | grep apiKey
 ```
 
 Make sure there are no extra spaces or quotes.
@@ -224,9 +224,9 @@ Make sure there are no extra spaces or quotes.
 Check the server logs:
 
 ```bash
-rule-agent logs
+arcana-agent logs
 # or
-tail -50 ~/.rule-agent/server.log
+tail -50 ~/.arcana-agent/server.log
 ```
 
 ### Reset to defaults
@@ -234,14 +234,14 @@ tail -50 ~/.rule-agent/server.log
 Remove the config and restart:
 
 ```bash
-rm ~/.rule-agent/models.json
-rule-agent start
+rm ~/.arcana-agent/models.json
+arcana-agent start
 # This will recreate the template
 ```
 
 ## Getting Help
 
-- View CLI help: `rule-agent --help`
-- Check status: `rule-agent status`
-- View logs: `rule-agent logs`
-- GitHub Issues: https://github.com/yourusername/rule-agent/issues
+- View CLI help: `arcana-agent --help`
+- Check status: `arcana-agent status`
+- View logs: `arcana-agent logs`
+- GitHub Issues: https://github.com/yourusername/arcana-agent/issues

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 
-const STORAGE_KEY = "rule-agent-tool-sidebar-open";
+const STORAGE_KEY = "arcana-agent-tool-sidebar-open";
 
 interface Props {
   onOpenTemplates: () => void;

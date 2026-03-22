@@ -1,10 +1,10 @@
 {
-  "name": "rule-agent",
+  "name": "arcana-agent",
   "version": "1.0.0",
-  "description": "AI-powered rule engine with scheduled tasks and agent workflows",
+  "description": "AI-powered agent platform with scheduled tasks and team collaboration",
   "type": "module",
   "bin": {
-    "rule-agent": "./cli.js"
+    "arcana-agent": "./cli.js"
   },
   "main": "./server/dist/index.js",
   "files": [

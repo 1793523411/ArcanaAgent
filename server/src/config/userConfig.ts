@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.IS_DEV === 'true';
 const DATA_DIR = resolve(process.env.DATA_DIR ?? (isDev
   ? join(__dirname, "../../../data")
-  : join(homedir(), ".rule-agent")));
+  : join(homedir(), ".arcana-agent")));
 
 const CONFIG_PATH = join(DATA_DIR, "user-config.json");
 

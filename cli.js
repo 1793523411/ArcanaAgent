@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Rule Agent CLI
+ * ArcanaAgent CLI
  */
 
 import { spawn, exec } from 'child_process';
@@ -16,7 +16,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 // 配置文件路径
-const CONFIG_DIR = join(homedir(), '.rule-agent');
+const CONFIG_DIR = join(homedir(), '.arcana-agent');
 const PID_FILE = join(CONFIG_DIR, 'server.pid');
 const LOG_FILE = join(CONFIG_DIR, 'server.log');
 const PORT = process.env.PORT || 3001;
@@ -60,13 +60,13 @@ async function startServer() {
   if (existsSync(PID_FILE)) {
     const pid = parseInt(readFileSync(PID_FILE, 'utf-8'));
     if (isProcessRunning(pid)) {
-      console.log(`✅ Rule Agent is already running (PID: ${pid})`);
+      console.log(`✅ ArcanaAgent is already running (PID: ${pid})`);
       console.log(`🌐 Open: http://localhost:${PORT}`);
       return;
     }
   }
 
-  console.log('🚀 Starting Rule Agent...');
+  console.log('🚀 Starting ArcanaAgent...');
 
   // 检查并初始化 config/models.json
   ensureModelsConfig();
@@ -95,14 +95,14 @@ async function startServer() {
 
   child.unref();
 
-  console.log(`✅ Rule Agent is starting...`);
+  console.log(`✅ ArcanaAgent is starting...`);
   console.log(`📝 PID: ${child.pid}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`📋 Logs: ${LOG_FILE}`);
-  console.log(`\n💡 Use 'rule-agent status' to check if it's ready`);
-  console.log(`💡 Use 'rule-agent open' to open in browser`);
-  console.log(`💡 Use 'rule-agent logs' to view logs`);
-  console.log(`💡 Use 'rule-agent stop' to stop the server`);
+  console.log(`\n💡 Use 'arcana-agent status' to check if it's ready`);
+  console.log(`💡 Use 'arcana-agent open' to open in browser`);
+  console.log(`💡 Use 'arcana-agent logs' to view logs`);
+  console.log(`💡 Use 'arcana-agent stop' to stop the server`);
 
   // 不等待服务器启动，立即返回让用户可以继续使用终端
 }
@@ -110,19 +110,19 @@ async function startServer() {
 // ==================== 停止服务 ====================
 async function stopServer() {
   if (!existsSync(PID_FILE)) {
-    console.log('⚠️  Rule Agent is not running');
+    console.log('⚠️  ArcanaAgent is not running');
     return;
   }
 
   const pid = parseInt(readFileSync(PID_FILE, 'utf-8'));
 
   if (!isProcessRunning(pid)) {
-    console.log('⚠️  Rule Agent is not running (stale PID file)');
+    console.log('⚠️  ArcanaAgent is not running (stale PID file)');
     unlinkSync(PID_FILE);
     return;
   }
 
-  console.log(`🛑 Stopping Rule Agent (PID: ${pid})...`);
+  console.log(`🛑 Stopping ArcanaAgent (PID: ${pid})...`);
 
   try {
     process.kill(pid, 'SIGTERM');
@@ -140,7 +140,7 @@ async function stopServer() {
     }
 
     unlinkSync(PID_FILE);
-    console.log('✅ Rule Agent stopped successfully');
+    console.log('✅ ArcanaAgent stopped successfully');
   } catch (error) {
     console.error('❌ Failed to stop server:', error.message);
     process.exit(1);
@@ -150,19 +150,19 @@ async function stopServer() {
 // ==================== 查看状态 ====================
 async function showStatus() {
   if (!existsSync(PID_FILE)) {
-    console.log('⚫ Rule Agent is not running');
+    console.log('⚫ ArcanaAgent is not running');
     return;
   }
 
   const pid = parseInt(readFileSync(PID_FILE, 'utf-8'));
 
   if (!isProcessRunning(pid)) {
-    console.log('⚫ Rule Agent is not running (stale PID file)');
+    console.log('⚫ ArcanaAgent is not running (stale PID file)');
     unlinkSync(PID_FILE);
     return;
   }
 
-  console.log('🟢 Rule Agent is running');
+  console.log('🟢 ArcanaAgent is running');
   console.log(`📝 PID: ${pid}`);
   console.log(`🌐 URL: http://localhost:${PORT}`);
   console.log(`📋 Logs: ${LOG_FILE}`);
@@ -219,31 +219,31 @@ function openBrowser() {
 function showHelp() {
   console.log(`
 ╔═══════════════════════════════════════════════╗
-║          Rule Agent CLI v1.0.0                ║
+║          ArcanaAgent CLI v1.0.0                ║
 ╚═══════════════════════════════════════════════╝
 
-Usage: rule-agent <command>
+Usage: arcana-agent <command>
 
 Commands:
-  start       Start the Rule Agent server
-  stop        Stop the Rule Agent server
-  restart     Restart the Rule Agent server
+  start       Start the ArcanaAgent server
+  stop        Stop the ArcanaAgent server
+  restart     Restart the ArcanaAgent server
   status      Show server status
   logs        Show server logs
-  open        Open Rule Agent in browser
+  open        Open ArcanaAgent in browser
 
 Examples:
-  $ rule-agent start
-  $ rule-agent status
-  $ rule-agent open
-  $ rule-agent logs
-  $ rule-agent stop
+  $ arcana-agent start
+  $ arcana-agent status
+  $ arcana-agent open
+  $ arcana-agent logs
+  $ arcana-agent stop
 
 Environment Variables:
   PORT        Server port (default: 3001)
   DATA_DIR    Data directory (default: ./data)
 
-Documentation: https://github.com/yourusername/rule-agent
+Documentation: https://github.com/yourusername/arcana-agent
 `);
 }
 
@@ -263,7 +263,7 @@ function ensureModelsConfig() {
 
   if (!existsSync(examplePath)) {
     console.error('❌ Configuration template not found.');
-    console.log('   Please reinstall rule-agent or check your installation.');
+    console.log('   Please reinstall arcana-agent or check your installation.');
     process.exit(1);
   }
 
@@ -276,7 +276,7 @@ function ensureModelsConfig() {
   console.log('✅ Configuration file created!');
   console.log(`📝 Location: ${userConfigPath}`);
   console.log('');
-  console.log('⚠️  You need to configure at least one model provider before using Rule Agent.');
+  console.log('⚠️  You need to configure at least one model provider before using ArcanaAgent.');
   console.log('');
   console.log('📖 Edit the configuration file and replace placeholders with your actual API keys:');
   console.log(`   ${userConfigPath}`);
@@ -284,7 +284,7 @@ function ensureModelsConfig() {
   console.log('💡 Supported providers: volcengine, openai, anthropic, etc.');
   console.log('💡 Example: Change "YOUR_API_KEY" to your actual API key');
   console.log('');
-  console.log('After editing the config, run "rule-agent start" again.');
+  console.log('After editing the config, run "arcana-agent start" again.');
   console.log('');
   process.exit(0);
 }

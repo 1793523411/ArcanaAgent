@@ -32,7 +32,7 @@ __tests__/
 # Logs and data
 *.log
 data/
-.rule-agent/
+.arcana-agent/
 
 # Config with API keys (only include example)
 config/models.json
