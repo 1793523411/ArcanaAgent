@@ -91,6 +91,9 @@ USER.md
 # local tooling
 .serena/
 
+# Oh My Claude Code (OMC) — project/session state, do not commit
+.omc/
+
 # Agent credentials and memory (NEVER COMMIT)
 /memory/
 .agent/*.json

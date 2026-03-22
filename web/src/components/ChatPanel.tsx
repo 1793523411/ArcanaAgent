@@ -97,6 +97,8 @@ interface Props {
   compressing?: boolean;
   team?: TeamDef | null;
   agents?: AgentDef[];
+  /** index 须为服务端 messages.json 中的下标（与 POST share 一致），勿用合并展示后的序号 */
+  onShareMessage?: (message: StoredMessage, serverMessageIndex: number) => void;
 }
 
 export default function ChatPanel({
@@ -136,6 +138,7 @@ export default function ChatPanel({
   compressing = false,
   team = null,
   agents = [],
+  onShareMessage,
 }: Props) {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const shouldStickToBottomRef = useRef(true);
@@ -272,37 +275,52 @@ export default function ChatPanel({
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(() => {
           // 合并中间 AI 消息的 reasoning 到后续有内容的 AI 消息，与流式展示保持一致
-          const filtered = (messages ?? []).filter((m) => m.type !== "tool");
-          const merged: typeof filtered = [];
+          const raw = messages ?? [];
+          const merged: Array<{ display: StoredMessage; serverIndex: number }> = [];
           let pendingReasoning: string[] = [];
 
-          for (const m of filtered) {
+          for (let serverIndex = 0; serverIndex < raw.length; serverIndex++) {
+            const m = raw[serverIndex];
+            if (m.type === "tool") continue;
+
             const isDispatchOnly = m.type === "ai"
               && (!m.content || !m.content.trim())
               && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
 
             if (isDispatchOnly) {
-              // 收集 reasoning，不渲染此消息
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
               continue;
             }
 
             if (m.type === "ai" && pendingReasoning.length > 0) {
-              // 将收集的 reasoning 合并到这条 AI 消息
               const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
-              merged.push({ ...m, reasoningContent: combined });
+              merged.push({ display: { ...m, reasoningContent: combined }, serverIndex });
               pendingReasoning = [];
             } else {
-              merged.push(m);
+              merged.push({ display: m, serverIndex });
             }
           }
-          // 如果末尾还有未合并的 reasoning（没有后续 AI 消息），单独渲染
           if (pendingReasoning.length > 0) {
-            merged.push({ type: "ai", content: "", reasoningContent: pendingReasoning.join("\n\n---\n\n") } as typeof filtered[0]);
+            merged.push({
+              display: { type: "ai", content: "", reasoningContent: pendingReasoning.join("\n\n---\n\n") } as StoredMessage,
+              serverIndex: -1,
+            });
           }
 
-          return merged.map((m, i) => (
-            <MessageBubble key={i} message={m} conversationId={conversationId} models={models} team={team} agents={agents} />
+          return merged.map(({ display: m, serverIndex }, i) => (
+            <MessageBubble
+              key={serverIndex >= 0 ? `m-${serverIndex}` : `orphan-${i}`}
+              message={m}
+              conversationId={conversationId}
+              models={models}
+              team={team}
+              agents={agents}
+              onShare={
+                onShareMessage && serverIndex >= 0
+                  ? () => onShareMessage(m, serverIndex)
+                  : undefined
+              }
+            />
           ));
         })()}
         {isTaskExecuting && !loading && (

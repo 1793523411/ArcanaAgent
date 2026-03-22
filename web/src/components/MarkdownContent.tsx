@@ -2,11 +2,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
 import { useState } from "react";
+import "../share-markdown.css";
 
 interface Props {
   children: string;
   className?: string;
   transformImageUrl?: (src: string) => string;
+  /** Share card: code block layout tweaks (see share-markdown.css) */
+  variant?: "default" | "share";
 }
 
 function CopyButton({ text }: { text: string }) {
@@ -29,17 +32,29 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-function CodeBlock({ className, children }: { className?: string; children: React.ReactNode }) {
+function CodeBlock({
+  className,
+  children,
+  variant = "default",
+}: {
+  className?: string;
+  children: React.ReactNode;
+  variant?: "default" | "share";
+}) {
   const text = typeof children === "string" ? children : String(children ?? "");
   const lang = className?.match(/language-([\w-]+)/)?.[1] ?? "";
+  const pad = variant === "share" ? "px-5 py-4 pb-5" : "p-4";
+  const barPad = variant === "share" ? "px-5" : "px-4";
   return (
     <div className="relative group my-3">
       {lang && (
-        <div className="flex items-center justify-between px-4 py-1.5 rounded-t-lg bg-[var(--color-bg)] border border-b-0 border-[var(--color-border)]">
+        <div className={`flex items-center justify-between ${barPad} py-1.5 rounded-t-lg bg-[var(--color-bg)] border border-b-0 border-[var(--color-border)]`}>
           <span className="text-[11px] text-[var(--color-text-muted)] font-mono">{lang}</span>
         </div>
       )}
-      <pre className={`${lang ? "rounded-b-lg rounded-t-none" : "rounded-lg"} overflow-x-auto border border-[var(--color-border)] bg-[var(--color-bg)] p-4 text-[13px] leading-relaxed`}>
+      <pre
+        className={`${lang ? "rounded-b-lg rounded-t-none" : "rounded-lg"} overflow-x-auto overflow-y-visible border border-[var(--color-border)] bg-[var(--color-bg)] ${pad} text-[13px] leading-relaxed ${variant === "share" ? "share-card-pre" : ""}`}
+      >
         <code className={className}>{children}</code>
       </pre>
       <CopyButton text={text.replace(/\n$/, "")} />
@@ -47,9 +62,12 @@ function CodeBlock({ className, children }: { className?: string; children: Reac
   );
 }
 
-export default function MarkdownContent({ children, className = "", transformImageUrl }: Props) {
+export default function MarkdownContent({ children, className = "", transformImageUrl, variant = "default" }: Props) {
+  const shareCls = variant === "share" ? "share-markdown" : "";
   return (
-    <div className={`markdown-content break-words text-[var(--color-text)] text-sm leading-relaxed ${className}`}>
+    <div
+      className={["markdown-content", "break-words", "text-[var(--color-text)]", "text-sm", "leading-relaxed", shareCls, className].filter(Boolean).join(" ")}
+    >
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
@@ -61,9 +79,31 @@ export default function MarkdownContent({ children, className = "", transformIma
           h3: ({ children }) => <h3 className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h3>,
           h4: ({ children }) => <h4 className="text-sm font-semibold mt-3 mb-1 first:mt-0">{children}</h4>,
 
-          ul: ({ children }) => <ul className="mb-3 space-y-1 list-disc pl-5">{children}</ul>,
-          ol: ({ children }) => <ol className="mb-3 space-y-1 list-decimal pl-5">{children}</ol>,
-          li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+          ul: ({ children }) => (
+            <ul
+              className={
+                variant === "share"
+                  ? "mb-3 space-y-1.5 list-disc share-md-list-ul"
+                  : "mb-3 space-y-1 list-disc pl-5"
+              }
+            >
+              {children}
+            </ul>
+          ),
+          ol: ({ children }) => (
+            <ol
+              className={
+                variant === "share"
+                  ? "mb-3 space-y-1.5 list-decimal share-md-list-ol"
+                  : "mb-3 space-y-1 list-decimal pl-5"
+              }
+            >
+              {children}
+            </ol>
+          ),
+          li: ({ children }) => (
+            <li className={variant === "share" ? "leading-relaxed share-md-li" : "leading-relaxed"}>{children}</li>
+          ),
 
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
           em: ({ children }) => <em className="italic">{children}</em>,
@@ -89,7 +129,11 @@ export default function MarkdownContent({ children, className = "", transformIma
             const codeEl = (children as React.ReactElement<{ className?: string; children?: React.ReactNode }>);
             const codeClass = codeEl?.props?.className ?? "";
             const codeChildren = codeEl?.props?.children;
-            return <CodeBlock className={codeClass} {...props}>{codeChildren}</CodeBlock>;
+            return (
+              <CodeBlock variant={variant} className={codeClass} {...props}>
+                {codeChildren}
+              </CodeBlock>
+            );
           },
 
           blockquote: ({ children }) => (

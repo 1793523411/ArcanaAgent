@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { ConversationMeta } from "../types";
 
-const SIDEBAR_OPEN_KEY = "rule-agent-conversation-sidebar-open";
+const SIDEBAR_OPEN_KEY = "arcana-agent-conversation-sidebar-open";
 
 interface Props {
   conversations: ConversationMeta[];

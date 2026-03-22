@@ -1,7 +1,7 @@
 # AI Coding 工具代码理解能力调研报告
 
 > 调研时间：2026-03-21
-> 目的：了解主流 AI Coding 工具如何处理大型代码库的理解与分析，为 Rule Agent 的代码索引能力增强提供参考
+> 目的：了解主流 AI Coding 工具如何处理大型代码库的理解与分析，为 ArcanaAgent 的代码索引能力增强提供参考
 
 ---
 
@@ -195,10 +195,10 @@
 
 ---
 
-## 四、对 Rule Agent 的启示
+## 四、对 ArcanaAgent 的启示
 
 ### 当前状态
-Rule Agent 目前属于"运行时探索派"（和 Claude Code、Codex CLI 类似），无预建索引、无 AST 解析、无依赖图。对小项目够用，但大项目会在"找路"上浪费大量 token。
+ArcanaAgent 目前属于"运行时探索派"（和 Claude Code、Codex CLI 类似），无预建索引、无 AST 解析、无依赖图。对小项目够用，但大项目会在"找路"上浪费大量 token。
 
 ### 推荐改进路线（按投入产出比排序）
 

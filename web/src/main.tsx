@@ -3,10 +3,11 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { ToastProvider } from "./components/Toast";
 import App from "./App";
+import SharedView from "./components/SharedView";
 import "./index.css";
 import "highlight.js/styles/github-dark.css";
 
-const THEME_KEY = "rule-agent-theme";
+const THEME_KEY = "arcana-agent-theme";
 const saved = localStorage.getItem(THEME_KEY);
 if (saved === "light") {
   document.documentElement.classList.add("theme-light");
@@ -19,6 +20,7 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
     <BrowserRouter>
       <ToastProvider>
         <Routes>
+          <Route path="/share/:shareId" element={<SharedView />} />
           <Route path="/*" element={<App />} />
         </Routes>
       </ToastProvider>

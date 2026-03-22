@@ -3,13 +3,14 @@ import { useNavigate, useMatch } from "react-router-dom";
 import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval, listTeamDefs, listAgentDefs } from "./api";
 import type { TeamDef, AgentDef } from "./types";
 import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import ShareCardModal from "./components/ShareCardModal";
 import TeamPanel from "./components/TeamPanel";
 import AgentTeamPanel from "./components/AgentTeamPanel";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
-import type { ConversationMode, SubagentLog } from "./types";
+import type { ConversationMode, SubagentLog, StoredMessage } from "./types";
 
 export default function App() {
   const match = useMatch("/c/:conversationId");
@@ -34,14 +35,15 @@ export default function App() {
   const [draftTeamId, setDraftTeamId] = useState("default");
   const [teams, setTeams] = useState<TeamDef[]>([]);
   const [agents, setAgents] = useState<AgentDef[]>([]);
+  const [shareMessage, setShareMessage] = useState<{ message: StoredMessage; index: number } | null>(null);
   const mainRef = useRef<HTMLElement | null>(null);
   const [theme, setTheme] = useState<"light" | "dark">(
-    () => (typeof localStorage !== "undefined" && localStorage.getItem("rule-agent-theme") === "light" ? "light" : "dark")
+    () => (typeof localStorage !== "undefined" && localStorage.getItem("arcana-agent-theme") === "light" ? "light" : "dark")
   );
   const toggleTheme = useCallback(() => {
     const next = theme === "dark" ? "light" : "dark";
     setTheme(next);
-    localStorage.setItem("rule-agent-theme", next);
+    localStorage.setItem("arcana-agent-theme", next);
     if (next === "light") document.documentElement.classList.add("theme-light");
     else document.documentElement.classList.remove("theme-light");
   }, [theme]);
@@ -487,6 +489,7 @@ export default function App() {
               compressing={compressing}
               team={currentTeam}
               agents={agents}
+              onShareMessage={(msg, idx) => setShareMessage({ message: msg, index: idx })}
             />
           )}
         </div>
@@ -586,6 +589,18 @@ export default function App() {
         onConfirm={handleDeleteConfirm}
         loading={deleting}
       />
+      {shareMessage && current && (
+        <ShareCardModal
+          open={!!shareMessage}
+          onOpenChange={(open) => !open && setShareMessage(null)}
+          content={shareMessage.message.content}
+          title={current.title}
+          modelName={shareMessage.message.modelId ? (models.find((m) => m.id === shareMessage.message.modelId)?.name ?? shareMessage.message.modelId) : undefined}
+          conversationId={current.id}
+          messageIndex={shareMessage.index}
+          theme={theme}
+        />
+      )}
     </div>
   );
 }

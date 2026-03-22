@@ -9,7 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const isDev = process.env.IS_DEV === 'true';
 const configPath = isDev
   ? join(__dirname, "../../../config/models.json")
-  : join(homedir(), ".rule-agent", "models.json");
+  : join(homedir(), ".arcana-agent", "models.json");
 
 export interface ModelSpec {
   id: string;

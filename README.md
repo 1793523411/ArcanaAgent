@@ -1,6 +1,6 @@
 <div align="center">
 
-# Rule Agent
+# ArcanaAgent
 
 ### Your Self-Hosted AI Agent Platform
 
@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Node.js](https://img.shields.io/badge/Node.js-%3E%3D18-green.svg)](https://nodejs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/1793523411/rule-agent/pulls)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/1793523411/arcana-agent/pulls)
 
 <br/>
 
@@ -23,9 +23,9 @@
 
 ---
 
-## Why Rule Agent?
+## Why ArcanaAgent?
 
-Most AI chat tools are stateless and isolated. **Rule Agent** is different — it's a persistent, self-hosted platform where AI agents can:
+Most AI chat tools are stateless and isolated. **ArcanaAgent** is different — it's a persistent, self-hosted platform where AI agents can:
 
 - **Read, write, and understand your codebase** with semantic search and AST-based indexing
 - **Execute scheduled tasks** with cron expressions, dependencies, and webhook integrations
@@ -43,13 +43,13 @@ Think of it as your private AI command center for development and automation.
 
 ```bash
 # Install globally
-npm install -g rule-agent
+npm install -g arcana-agent
 
 # Start the server
-rule-agent start
+arcana-agent start
 
 # Open the web UI
-rule-agent open
+arcana-agent open
 ```
 
 That's it. The web UI opens at `http://localhost:3001`.
@@ -57,15 +57,15 @@ That's it. The web UI opens at `http://localhost:3001`.
 ### From Source
 
 ```bash
-git clone https://github.com/1793523411/rule-agent.git
-cd rule-agent
+git clone https://github.com/1793523411/arcana-agent.git
+cd arcana-agent
 npm install && npm run build
 npm run dev    # Backend :3001 + Frontend :5173 with hot reload
 ```
 
 ### Configure Your LLM
 
-On first run, edit `~/.rule-agent/models.json` with your API key:
+On first run, edit `~/.arcana-agent/models.json` with your API key:
 
 ```jsonc
 {
@@ -101,7 +101,7 @@ Interactive chat with streaming responses, multi-turn context, and real-time too
 
 ### Code Intelligence
 
-Go beyond simple text search. Rule Agent understands your code structure.
+Go beyond simple text search. ArcanaAgent understands your code structure.
 
 | Strategy | How It Works | Best For |
 |----------|-------------|----------|
@@ -151,7 +151,7 @@ Create teams of specialized agents that collaborate on complex tasks.
 ## Architecture
 
 ```
-rule-agent/
+arcana-agent/
 ├── cli.js                  # CLI entry point (start/stop/status/logs)
 ├── server/                 # Express.js + LangGraph backend
 │   ├── src/
@@ -192,16 +192,16 @@ rule-agent/
 ## CLI Reference
 
 ```bash
-rule-agent start              # Start the server (default port 3001)
-rule-agent stop               # Stop the server
-rule-agent restart             # Restart the server
-rule-agent status              # Check if running
-rule-agent logs                # View server logs
-rule-agent open                # Open web UI in browser
+arcana-agent start              # Start the server (default port 3001)
+arcana-agent stop               # Stop the server
+arcana-agent restart             # Restart the server
+arcana-agent status              # Check if running
+arcana-agent logs                # View server logs
+arcana-agent open                # Open web UI in browser
 
 # Environment variables
-PORT=8080 rule-agent start               # Custom port
-DATA_DIR=/path/to/data rule-agent start  # Custom data directory
+PORT=8080 arcana-agent start               # Custom port
+DATA_DIR=/path/to/data arcana-agent start  # Custom data directory
 ```
 
 ---
@@ -258,10 +258,10 @@ POST   /api/approvals/:id/decide             # Approve/reject action
 
 ## Configuration
 
-All configuration lives in `~/.rule-agent/`:
+All configuration lives in `~/.arcana-agent/`:
 
 ```
-~/.rule-agent/
+~/.arcana-agent/
 ├── models.json          # LLM provider settings & API keys
 ├── user-config.json     # Preferences (tools, MCP servers, context strategy)
 ├── server.pid           # Process ID
@@ -317,8 +317,8 @@ npm run dev
 
 | Problem | Solution |
 |---------|----------|
-| Server won't start | `rule-agent logs` to check errors |
-| Port already in use | `PORT=8080 rule-agent start` |
+| Server won't start | `arcana-agent logs` to check errors |
+| Port already in use | `PORT=8080 arcana-agent start` |
 | Permission errors | `chmod +x cli.js` |
 | Context too long | Increase `tokenThresholdPercent` or switch to `compress` strategy |
 | Index build slow | Use `repomap` strategy for large repos instead of `vector` |
@@ -381,7 +381,7 @@ Contributions are welcome! Whether it's bug fixes, new features, documentation, 
 
 <div align="center">
 
-**If you find Rule Agent useful, give it a star!**
+**If you find ArcanaAgent useful, give it a star!**
 
 Built with LangGraph, React, and TypeScript.
 
