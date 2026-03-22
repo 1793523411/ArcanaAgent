@@ -1,4 +1,4 @@
-import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate, ConversationMode, AgentDef, TeamDef } from "../types";
+import type { ConversationMeta, StoredMessage, UserConfig, ArtifactMeta, PromptTemplate, ConversationMode, AgentDef, TeamDef, ProviderInfo, ModelSpec, ModelValidationResult } from "../types";
 
 const BASE = "/api";
 function encodeArtifactPath(filePath: string): string {
@@ -499,6 +499,73 @@ export async function createShare(conversationId: string, messageIndex: number):
 
 export async function getShare(shareId: string): Promise<ShareRecord> {
   const r = await fetch(`${BASE}/shares/${shareId}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Model Provider CRUD ────────────────────────────────
+
+export async function getProviders(): Promise<ProviderInfo[]> {
+  const r = await fetch(`${BASE}/models/providers`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createProvider(payload: {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+  api: string;
+  models?: ModelSpec[];
+}): Promise<void> {
+  const r = await fetch(`${BASE}/models/providers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function updateProvider(
+  name: string,
+  payload: { baseUrl?: string; apiKey?: string; api?: string; models?: ModelSpec[] }
+): Promise<void> {
+  const r = await fetch(`${BASE}/models/providers/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function deleteProvider(name: string): Promise<void> {
+  const r = await fetch(`${BASE}/models/providers/${encodeURIComponent(name)}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+// ─── Model Validation ───────────────────────────────────
+
+export async function validateModels(modelIds: string[]): Promise<ModelValidationResult[]> {
+  const r = await fetch(`${BASE}/models/validate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ modelIds }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function validateAllModels(): Promise<ModelValidationResult[]> {
+  const r = await fetch(`${BASE}/models/validate-all`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getCachedValidations(): Promise<Record<string, ModelValidationResult>> {
+  const r = await fetch(`${BASE}/models/validations`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { homedir } from "os";
@@ -132,4 +132,68 @@ export function getModelReasoning(modelId?: string): boolean {
   const resolved = resolveModel(modelId, providers);
   const model = resolved?.model ?? (providers.volcengine as ProviderConfig | undefined)?.models?.[0];
   return (model as ModelSpec | undefined)?.reasoning === true;
+}
+
+// ─── Provider CRUD ──────────────────────────────────
+
+/** 将 providers 写回 models.json */
+function saveProviders(providers: Record<string, ProviderConfig>): void {
+  const dir = dirname(configPath);
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  const data = { models: { providers } };
+  writeFileSync(configPath, JSON.stringify(data, null, 2), "utf-8");
+}
+
+/** 校验 provider 名称 */
+function validateProviderName(name: string): void {
+  if (!name || typeof name !== "string") throw new Error("Provider name is required");
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) throw new Error("Provider name can only contain letters, digits, hyphens and underscores");
+  if (name === "__proto__" || name === "constructor" || name === "prototype") throw new Error("Invalid provider name");
+}
+
+/** 获取所有 provider（apiKey 脱敏，不返回原始 key） */
+export function listProviders(): Array<Omit<ProviderConfig, "apiKey"> & { name: string; apiKeyMasked: string }> {
+  const providers = readProviders();
+  return Object.entries(providers).map(([name, cfg]) => {
+    const { apiKey, ...rest } = cfg;
+    return {
+      ...rest,
+      name,
+      apiKeyMasked: apiKey && apiKey.length > 8 ? `****${apiKey.slice(-4)}` : apiKey ? "****" : "",
+    };
+  });
+}
+
+/** 获取所有 provider（含完整 apiKey，仅供内部验证使用） */
+export function listProvidersRaw(): Record<string, ProviderConfig> {
+  return readProviders();
+}
+
+/** 添加新 provider */
+export function addProvider(name: string, config: Omit<ProviderConfig, "models"> & { models?: ModelSpec[] }): void {
+  validateProviderName(name);
+  const providers = readProviders();
+  if (providers[name]) throw new Error(`Provider "${name}" already exists`);
+  providers[name] = { baseUrl: config.baseUrl, apiKey: config.apiKey, api: config.api, models: config.models ?? [] };
+  saveProviders(providers);
+}
+
+/** 更新 provider（支持部分更新） */
+export function updateProvider(name: string, updates: Partial<ProviderConfig>): void {
+  const providers = readProviders();
+  if (!providers[name]) throw new Error(`Provider "${name}" not found`);
+  const existing = providers[name];
+  if (updates.baseUrl !== undefined) existing.baseUrl = updates.baseUrl;
+  if (updates.apiKey !== undefined) existing.apiKey = updates.apiKey;
+  if (updates.api !== undefined) existing.api = updates.api;
+  if (updates.models !== undefined) existing.models = updates.models;
+  saveProviders(providers);
+}
+
+/** 删除 provider */
+export function deleteProvider(name: string): void {
+  const providers = readProviders();
+  if (!providers[name]) throw new Error(`Provider "${name}" not found`);
+  delete providers[name];
+  saveProviders(providers);
 }

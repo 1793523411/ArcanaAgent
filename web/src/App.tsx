@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useNavigate, useMatch } from "react-router-dom";
 import { createConversation, deleteConversation, updateConversationTitle, exportConversation, getArtifacts, getMessages as fetchConversationMessages, compressConversation, submitApproval, listTeamDefs, listAgentDefs } from "./api";
 import type { TeamDef, AgentDef } from "./types";
-import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel } from "./components";
+import { Sidebar, ToolSidebar, ChatPanel, WelcomeBox, SettingsPanel, PromptTemplatesPanel, DeleteConfirmModal, ArtifactPanel, ModelsPanel } from "./components";
 import ShareCardModal from "./components/ShareCardModal";
 import TeamPanel from "./components/TeamPanel";
 import AgentTeamPanel from "./components/AgentTeamPanel";
@@ -21,6 +21,7 @@ export default function App() {
   const [showTemplates, setShowTemplates] = useState(false);
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [showAgentTeam, setShowAgentTeam] = useState(false);
+  const [showModels, setShowModels] = useState(false);
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [showTeamPanel, setShowTeamPanel] = useState(false);
@@ -403,6 +404,7 @@ export default function App() {
         onOpenConfig={() => setShowConfig(true)}
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
         onOpenAgentTeam={() => setShowAgentTeam(true)}
+        onOpenModels={() => setShowModels(true)}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -582,6 +584,9 @@ export default function App() {
       )}
       {showAgentTeam && (
         <AgentTeamPanel onClose={() => setShowAgentTeam(false)} />
+      )}
+      {showModels && (
+        <ModelsPanel onClose={() => setShowModels(false)} onSaved={() => { setShowModels(false); }} />
       )}
       <DeleteConfirmModal
         open={deleteTargetId !== null}

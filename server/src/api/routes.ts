@@ -43,7 +43,8 @@ import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
-import { listModels, loadModelConfig } from "../config/models.js";
+import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
+import { validateModel, validateModels as validateModelsBatch, validateAllModels, loadValidationResults, clearProviderValidations } from "../llm/validate.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 import {
@@ -953,6 +954,91 @@ export function getConfig(_req: Request, res: Response): void {
 export function getModels(_req: Request, res: Response): void {
   try {
     res.json(listModels());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── Model Provider CRUD ──────────────────────────────
+
+export function getModelProviders(_req: Request, res: Response): void {
+  try {
+    res.json(listProviders());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function postModelProvider(req: Request, res: Response): void {
+  try {
+    const { name, baseUrl, apiKey, api, models } = req.body as {
+      name?: string; baseUrl?: string; apiKey?: string; api?: string; models?: unknown[];
+    };
+    if (!name || !baseUrl || !apiKey || !api) {
+      res.status(400).json({ error: "name, baseUrl, apiKey, and api are required" });
+      return;
+    }
+    addProviderConfig(name, { baseUrl, apiKey, api, models: (models ?? []) as any[] });
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("already exists") ? 409 : 500).json({ error: msg });
+  }
+}
+
+export function putModelProvider(req: Request, res: Response): void {
+  try {
+    const name = String(req.params.name);
+    const updates = req.body as Record<string, unknown>;
+    updateProviderConfig(name, updates as any);
+    clearProviderValidations(name);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("not found") ? 404 : 500).json({ error: msg });
+  }
+}
+
+export function deleteModelProvider(req: Request, res: Response): void {
+  try {
+    const name = String(req.params.name);
+    deleteProviderConfig(name);
+    clearProviderValidations(name);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("not found") ? 404 : 500).json({ error: msg });
+  }
+}
+
+// ─── Model Validation ──────────────────────────────
+
+export function getValidationResults(_req: Request, res: Response): void {
+  try {
+    res.json(loadValidationResults());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postValidateModels(req: Request, res: Response): Promise<void> {
+  try {
+    const { modelIds } = req.body as { modelIds?: string[] };
+    if (!Array.isArray(modelIds) || modelIds.length === 0) {
+      res.status(400).json({ error: "modelIds array is required" });
+      return;
+    }
+    const results = await validateModelsBatch(modelIds);
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postValidateAllModels(_req: Request, res: Response): Promise<void> {
+  try {
+    const results = await validateAllModels();
+    res.json(results);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

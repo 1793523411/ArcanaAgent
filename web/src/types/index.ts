@@ -193,3 +193,34 @@ export interface ArtifactMeta {
   mimeType: string;
   modifiedAt: string;
 }
+
+// ─── Model Management Types ──────────────────────────
+
+export interface ModelSpec {
+  id: string;
+  name: string;
+  api: string;
+  contextWindow: number;
+  maxTokens: number;
+  input?: string[];
+  reasoning?: boolean;
+}
+
+export interface ProviderInfo {
+  name: string;
+  baseUrl: string;
+  apiKeyMasked: string;
+  api: string;
+  models: ModelSpec[];
+}
+
+export interface ModelValidationResult {
+  modelId: string;
+  provider: string;
+  modelName: string;
+  status: "success" | "error" | "warning";
+  connectivity: boolean;
+  toolUse: boolean;
+  latencyMs: number;
+  error?: string;
+}
