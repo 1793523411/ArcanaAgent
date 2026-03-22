@@ -3,7 +3,7 @@ import type { ModelAdapter } from "../llm/adapter.js";
 
 export interface PlanningPrelude {
   planMessage?: AIMessage;
-  executionConstraint?: SystemMessage;
+  executionConstraint?: HumanMessage;
   planSteps?: PlanStep[];
 }
 
@@ -86,7 +86,7 @@ export function extractPlanSteps(planText: string): PlanStep[] {
   return compact;
 }
 
-function buildExecutionConstraint(planText: string): SystemMessage {
+function buildExecutionConstraint(planText: string): HumanMessage {
   const steps = extractPlanSteps(planText);
   const compactPlan = steps.length > 0
     ? steps.map((s, i) => `${i + 1}. ${s.title} | 验收: ${s.acceptance_checks.join("; ")}`).join("\n")
@@ -101,7 +101,7 @@ Rules:
 - If a step fails, repair then continue
 - A step can be marked [x] only if all its acceptance checks are satisfied with evidence
 - Final answer must include checklist + evidence for each completed step`;
-  return new SystemMessage(content);
+  return new HumanMessage(content);
 }
 
 export async function buildPlanningPrelude(

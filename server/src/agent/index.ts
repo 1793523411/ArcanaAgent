@@ -361,7 +361,11 @@ function getReasoningFromMessage(msg: BaseMessage): string | undefined {
   return parts.trim() || undefined;
 }
 
-function getReasoningFromChunk(chunk: { content?: unknown }): string {
+function getReasoningFromChunk(chunk: { content?: unknown; additional_kwargs?: Record<string, unknown> }): string {
+  // OpenAI / DeepSeek reasoning models: reasoning_content in additional_kwargs
+  const fromKwargs = chunk.additional_kwargs?.reasoning_content;
+  if (typeof fromKwargs === "string" && fromKwargs) return fromKwargs;
+  // Anthropic thinking models: content block array with type "thinking"/"reasoning"
   const c = chunk.content;
   if (!Array.isArray(c)) return "";
   return c

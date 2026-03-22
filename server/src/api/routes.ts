@@ -43,7 +43,7 @@ import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
-import { listModels } from "../config/models.js";
+import { listModels, loadModelConfig } from "../config/models.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 import {
@@ -483,7 +483,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
   const sanitized = sanitizeMessageSequence(contextMessages);
-  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
+  // Filter out system messages — runAgent/streamAgentWithTokens create their own SystemMessage.
+  // Keeping stored system messages causes Anthropic API error:
+  // "System messages are only permitted as the first passed message."
+  const lcMessages = sanitized.filter((m) => m.type !== "system").map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -568,6 +571,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   const skillContext = buildSkillContext(id);
   const workspacePath = ensureWorkspace(id);
   const collectedStored: StoredMessage[] = [];
+  const isAnthropicApi = (() => { try { return loadModelConfig(config.modelId).api === "anthropic-messages"; } catch { return false; } })();
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
   let lastReasoning: string | undefined;
@@ -731,8 +735,17 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             if (typeof stored.content === "string" && stored.content.trim()) {
               streamedContent = stored.content;
             }
+            // Merge reasoning: prefer reasoning from stream event, fallback to langChainToStored extraction
             if (reasoning) stored.reasoningContent = reasoning;
             if (config.modelId) stored.modelId = config.modelId;
+            // For Anthropic models: intermediate AI messages (with tool_calls + text content)
+            // should not create separate bubbles. Strip their text content so only tool_calls
+            // are stored; the text has already been streamed to the user via onToken.
+            // Only apply to Anthropic API — OpenAI models may legitimately include text alongside tool_calls.
+            const hasToolCalls = Array.isArray(stored.tool_calls) && stored.tool_calls.length > 0;
+            if (isAnthropicApi && hasToolCalls && typeof stored.content === "string" && stored.content.trim()) {
+              stored.content = "";
+            }
             collectedStored.push(stored);
           }
         }
@@ -853,7 +866,8 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const humanMsg: StoredMessage = { type: "human", content: text };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
   const sanitized = sanitizeMessageSequence(contextMessages);
-  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
+  // Filter out system messages — runAgent already creates its own SystemMessage
+  const lcMessages = sanitized.filter((m) => m.type !== "system").map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage(text));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);

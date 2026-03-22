@@ -152,7 +152,7 @@ export async function buildContextForAgent(
       saveConversationSummary(id, summary, older.length, rest.length);
     }
     const summaryMsg: StoredMessage = {
-      type: "system",
+      type: "human",
       content: `[此前对话摘要]\n${summary}`,
     };
     return [...system, summaryMsg, ...recent];
@@ -195,7 +195,7 @@ export async function buildContextForAgent(
         saveConversationSummary(id, reducedSummary, reducedOlder.length, rest.length);
       }
       const reducedSummaryMsg: StoredMessage = {
-        type: "system",
+        type: "human",
         content: `[此前对话摘要]\n${reducedSummary}`,
       };
       const reducedResult = [...system, reducedSummaryMsg, ...reducedRecent];
