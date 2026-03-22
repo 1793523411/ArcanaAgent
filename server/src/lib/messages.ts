@@ -63,15 +63,48 @@ export function storedToLangChain(m: StoredMessage, convId?: string): BaseMessag
   return new SystemMessage(m.content);
 }
 
+/** Extract plain text from content that may be a string or Anthropic content block array */
+function extractTextContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((x) => x && typeof x === "object" && (x as { type?: string }).type === "text")
+      .map((x) => (x as { text?: string }).text ?? "")
+      .join("");
+  }
+  return typeof content === "string" ? content : JSON.stringify(content ?? "");
+}
+
+/** Extract reasoning/thinking content from Anthropic content block array */
+function extractReasoningContent(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  const parts = content
+    .filter((x) => x && typeof x === "object" && (
+      (x as { type?: string }).type === "thinking" ||
+      (x as { type?: string }).type === "reasoning"
+    ))
+    .map((x) => {
+      const obj = x as { text?: string; thinking?: string };
+      return typeof obj.thinking === "string" ? obj.thinking : (obj.text ?? "");
+    })
+    .join("");
+  return parts.trim() || undefined;
+}
+
 export function langChainToStored(msg: BaseMessage): StoredMessage {
   const type = msg._getType();
   if (type === "human") return { type: "human", content: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) };
   if (type === "ai") {
-    const ai = msg as { content: string; tool_calls?: Array<{ id?: string; name: string; args: string }> };
+    const ai = msg as { content: unknown; tool_calls?: Array<{ id?: string; name: string; args: string }>; additional_kwargs?: { reasoning_content?: string } };
+    const textContent = extractTextContent(ai.content);
+    // Extract reasoning from Anthropic content blocks or additional_kwargs
+    const reasoning = extractReasoningContent(ai.content)
+      ?? (typeof ai.additional_kwargs?.reasoning_content === "string" ? ai.additional_kwargs.reasoning_content : undefined);
     return {
       type: "ai",
-      content: typeof ai.content === "string" ? ai.content : JSON.stringify(ai.content ?? ""),
+      content: textContent,
       tool_calls: ai.tool_calls?.map((tc) => ({ id: tc.id, name: tc.name, args: typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args) })),
+      ...(reasoning ? { reasoningContent: reasoning } : {}),
     };
   }
   if (type === "tool") {

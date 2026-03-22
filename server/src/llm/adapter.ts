@@ -126,16 +126,19 @@ class AnthropicAdapter implements ModelAdapter {
 const adapterCache = new Map<string, ModelAdapter>();
 
 export function getModelAdapter(modelId?: string): ModelAdapter {
-  const { baseUrl, apiKey, modelId: resolved, api } = loadModelConfig(modelId);
-  const cached = adapterCache.get(resolved);
+  // Use the original modelId (may include provider prefix) as cache key
+  // to avoid collisions between same model IDs from different providers
+  const cacheKey = modelId ?? "__default__";
+  const cached = adapterCache.get(cacheKey);
   if (cached) return cached;
 
-  const reasoning = getModelReasoning(resolved);
+  const { baseUrl, apiKey, modelId: resolved, api } = loadModelConfig(modelId);
+  const reasoning = getModelReasoning(modelId);
   const adapter: ModelAdapter =
     api === "anthropic-messages"
       ? new AnthropicAdapter({ baseUrl, apiKey, modelId: resolved, reasoning })
       : new OpenAICompatibleAdapter({ baseUrl, apiKey, modelId: resolved, reasoning });
 
-  adapterCache.set(resolved, adapter);
+  adapterCache.set(cacheKey, adapter);
   return adapter;
 }

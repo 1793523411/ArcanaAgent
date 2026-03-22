@@ -43,7 +43,8 @@ import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
-import { listModels } from "../config/models.js";
+import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
+import { validateModel, validateModels as validateModelsBatch, validateAllModels, loadValidationResults, clearProviderValidations } from "../llm/validate.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
 import {
@@ -483,7 +484,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
   const sanitized = sanitizeMessageSequence(contextMessages);
-  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
+  // Filter out system messages — runAgent/streamAgentWithTokens create their own SystemMessage.
+  // Keeping stored system messages causes Anthropic API error:
+  // "System messages are only permitted as the first passed message."
+  const lcMessages = sanitized.filter((m) => m.type !== "system").map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage({ content: humanContent }));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -568,6 +572,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   const skillContext = buildSkillContext(id);
   const workspacePath = ensureWorkspace(id);
   const collectedStored: StoredMessage[] = [];
+  const isAnthropicApi = (() => { try { return loadModelConfig(config.modelId).api === "anthropic-messages"; } catch { return false; } })();
   const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
   let streamedContent = "";
   let lastReasoning: string | undefined;
@@ -731,8 +736,17 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             if (typeof stored.content === "string" && stored.content.trim()) {
               streamedContent = stored.content;
             }
+            // Merge reasoning: prefer reasoning from stream event, fallback to langChainToStored extraction
             if (reasoning) stored.reasoningContent = reasoning;
             if (config.modelId) stored.modelId = config.modelId;
+            // For Anthropic models: intermediate AI messages (with tool_calls + text content)
+            // should not create separate bubbles. Strip their text content so only tool_calls
+            // are stored; the text has already been streamed to the user via onToken.
+            // Only apply to Anthropic API — OpenAI models may legitimately include text alongside tool_calls.
+            const hasToolCalls = Array.isArray(stored.tool_calls) && stored.tool_calls.length > 0;
+            if (isAnthropicApi && hasToolCalls && typeof stored.content === "string" && stored.content.trim()) {
+              stored.content = "";
+            }
             collectedStored.push(stored);
           }
         }
@@ -853,7 +867,8 @@ export async function postConversationMessageSync(req: Request, res: Response): 
   const humanMsg: StoredMessage = { type: "human", content: text };
   const { messages: contextMessages, meta: contextMeta } = await buildContextForAgent(id, config.modelId, humanMsg);
   const sanitized = sanitizeMessageSequence(contextMessages);
-  const lcMessages = sanitized.map((m) => storedToLangChain(m, id));
+  // Filter out system messages — runAgent already creates its own SystemMessage
+  const lcMessages = sanitized.filter((m) => m.type !== "system").map((m) => storedToLangChain(m, id));
   lcMessages.push(new HumanMessage(text));
 
   saveFullContext(id, contextMessages, humanMsg, contextMeta);
@@ -939,6 +954,91 @@ export function getConfig(_req: Request, res: Response): void {
 export function getModels(_req: Request, res: Response): void {
   try {
     res.json(listModels());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── Model Provider CRUD ──────────────────────────────
+
+export function getModelProviders(_req: Request, res: Response): void {
+  try {
+    res.json(listProviders());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function postModelProvider(req: Request, res: Response): void {
+  try {
+    const { name, baseUrl, apiKey, api, models } = req.body as {
+      name?: string; baseUrl?: string; apiKey?: string; api?: string; models?: unknown[];
+    };
+    if (!name || !baseUrl || !apiKey || !api) {
+      res.status(400).json({ error: "name, baseUrl, apiKey, and api are required" });
+      return;
+    }
+    addProviderConfig(name, { baseUrl, apiKey, api, models: (models ?? []) as any[] });
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("already exists") ? 409 : 500).json({ error: msg });
+  }
+}
+
+export function putModelProvider(req: Request, res: Response): void {
+  try {
+    const name = String(req.params.name);
+    const updates = req.body as Record<string, unknown>;
+    updateProviderConfig(name, updates as any);
+    clearProviderValidations(name);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("not found") ? 404 : 500).json({ error: msg });
+  }
+}
+
+export function deleteModelProvider(req: Request, res: Response): void {
+  try {
+    const name = String(req.params.name);
+    deleteProviderConfig(name);
+    clearProviderValidations(name);
+    res.json({ ok: true });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(msg.includes("not found") ? 404 : 500).json({ error: msg });
+  }
+}
+
+// ─── Model Validation ──────────────────────────────
+
+export function getValidationResults(_req: Request, res: Response): void {
+  try {
+    res.json(loadValidationResults());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postValidateModels(req: Request, res: Response): Promise<void> {
+  try {
+    const { modelIds } = req.body as { modelIds?: string[] };
+    if (!Array.isArray(modelIds) || modelIds.length === 0) {
+      res.status(400).json({ error: "modelIds array is required" });
+      return;
+    }
+    const results = await validateModelsBatch(modelIds);
+    res.json(results);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export async function postValidateAllModels(_req: Request, res: Response): Promise<void> {
+  try {
+    const results = await validateAllModels();
+    res.json(results);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

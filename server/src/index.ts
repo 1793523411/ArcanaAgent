@@ -47,6 +47,13 @@ import {
   deleteTeamById,
   postShare,
   getSharedContent,
+  getModelProviders,
+  postModelProvider,
+  putModelProvider,
+  deleteModelProvider,
+  postValidateModels,
+  postValidateAllModels,
+  getValidationResults,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -107,6 +114,13 @@ app.post("/api/chat", postChat);
 app.get("/api/config", getConfig);
 app.put("/api/config", putConfig);
 app.get("/api/models", getModels);
+app.get("/api/models/providers", getModelProviders);
+app.post("/api/models/providers", postModelProvider);
+app.put("/api/models/providers/:name", putModelProvider);
+app.delete("/api/models/providers/:name", deleteModelProvider);
+app.post("/api/models/validate", postValidateModels);
+app.post("/api/models/validate-all", postValidateAllModels);
+app.get("/api/models/validations", getValidationResults);
 app.get("/api/skills", getSkillsList);
 app.post("/api/skills/upload", upload.single("zip"), postSkillsUpload);
 app.delete("/api/skills/:name", deleteSkillById);

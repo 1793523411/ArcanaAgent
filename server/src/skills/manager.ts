@@ -134,9 +134,11 @@ export function getSkillCatalogForAgent(): string {
   if (skills.length === 0) return "";
   const lines = skills.map((s) => `- \`${s.name}\` (dir: \`${s.dirPath}\`): ${s.description || "(no description)"}`);
   return [
-    "\n\n## Available Skills",
+    "\n\n## Available Skills (NOT tools — cannot be called directly)",
     "",
-    "You have access to the following skills. If the task matches a skill, call `load_skill` with the exact skill name before executing the task.",
+    "Skills are NOT tools. You CANNOT call a skill name as a tool.",
+    "To use a skill, you MUST first call the `load_skill` tool with the skill name.",
+    "The `load_skill` tool will return instructions and context for the skill.",
     "Only load skills that are relevant to the current task.",
     "When executing skill scripts via run_command, always set working_directory to the skill's directory shown in parentheses.",
     "",
