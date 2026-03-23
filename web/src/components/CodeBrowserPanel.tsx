@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import Editor from "@monaco-editor/react";
 import type { ArtifactMeta } from "../types";
 import { getArtifacts, getArtifactText, getArtifactUrl } from "../api";
@@ -46,6 +46,31 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
   const [selected, setSelected] = useState<ArtifactMeta | null>(null);
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [treeWidth, setTreeWidth] = useState(() => {
+    try { return Number(localStorage.getItem("code_tree_width")) || 260; } catch { return 260; }
+  });
+  const resizing = useRef(false);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (!resizing.current || !containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const newWidth = Math.min(Math.max(e.clientX - rect.left, 140), 500);
+      setTreeWidth(newWidth);
+    };
+    const onMouseUp = () => {
+      if (resizing.current) {
+        resizing.current = false;
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+        try { localStorage.setItem("code_tree_width", String(treeWidth)); } catch { /* */ }
+      }
+    };
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+    return () => { window.removeEventListener("mousemove", onMouseMove); window.removeEventListener("mouseup", onMouseUp); };
+  }, [treeWidth]);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,9 +106,9 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
   const monacoTheme = theme === "dark" ? "vs-dark" : "vs";
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full" ref={containerRef}>
       {/* File tree */}
-      <div className="w-60 shrink-0 border-r border-[var(--color-border)] overflow-auto bg-[var(--color-surface)]">
+      <div className="shrink-0 border-r border-[var(--color-border)] overflow-auto bg-[var(--color-surface)]" style={{ width: treeWidth }}>
         <div className="px-3 py-2 text-xs font-medium text-[var(--color-text-muted)] uppercase tracking-wide border-b border-[var(--color-border)]">
           Explorer
         </div>
@@ -106,6 +131,16 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
           )}
         </div>
       </div>
+
+      {/* Resize handle */}
+      <div
+        className="shrink-0 w-[3px] cursor-col-resize hover:bg-[var(--color-accent)] active:bg-[var(--color-accent)] transition-colors"
+        onMouseDown={() => {
+          resizing.current = true;
+          document.body.style.cursor = "col-resize";
+          document.body.style.userSelect = "none";
+        }}
+      />
 
       {/* Editor area */}
       <div className="flex-1 min-w-0 flex flex-col">
@@ -183,6 +218,20 @@ export default function CodeBrowserPanel({ conversationId, theme }: Props) {
                     lineNumbers: "on",
                     renderLineHighlight: "all",
                     automaticLayout: true,
+                    bracketPairColorization: { enabled: true },
+                    guides: { bracketPairs: true, indentation: true },
+                    folding: true,
+                    foldingHighlight: true,
+                    showFoldingControls: "always",
+                    stickyScroll: { enabled: true },
+                    smoothScrolling: true,
+                    cursorBlinking: "smooth",
+                    cursorSmoothCaretAnimation: "on",
+                    formatOnPaste: false,
+                    links: true,
+                    colorDecorators: true,
+                    renderWhitespace: "boundary",
+                    matchBrackets: "always",
                   }}
                 />
               )}
