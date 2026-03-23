@@ -46,7 +46,7 @@ import { listToolIds } from "../tools/index.js";
 import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
 import { validateModel, validateModels as validateModelsBatch, validateAllModels, loadValidationResults, clearProviderValidations } from "../llm/validate.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
-import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
+import { connectToMcpServers, getMcpStatus, restartMcpServer } from "../mcp/client.js";
 import {
   getConversationLogger,
   logConversation,
@@ -1228,6 +1228,24 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
 
   const mcpStatus = getMcpStatus();
   res.json({ ...config, mcpStatus });
+}
+
+// ─── MCP restart ─────────────────────────────────────────────
+
+export async function postMcpRestart(req: Request, res: Response): Promise<void> {
+  const { serverName } = req.body as { serverName?: string };
+  if (!serverName || typeof serverName !== "string") {
+    res.status(400).json({ error: "serverName is required" });
+    return;
+  }
+  const config = loadUserConfig();
+  try {
+    const result = await restartMcpServer(serverName, config.mcpServers);
+    const mcpStatus = getMcpStatus();
+    res.json({ ...result, mcpStatus });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 // ─── Artifact (workspace) routes ─────────────────────────────

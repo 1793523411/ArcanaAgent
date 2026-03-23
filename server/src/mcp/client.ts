@@ -18,6 +18,7 @@ interface McpConnection {
 }
 
 const connections = new Map<string, McpConnection>();
+const failedServers = new Map<string, { config: McpServerConfig; error: string }>();
 
 function jsonSchemaToZod(schema: Record<string, unknown> | undefined): z.ZodObject<Record<string, z.ZodTypeAny>> {
   if (!schema || typeof schema !== "object") return z.object({});
@@ -170,6 +171,9 @@ export async function connectToMcpServers(servers: McpServerConfig[]): Promise<v
   for (const name of [...connections.keys()]) {
     if (!desired.has(name)) await disconnectServer(name);
   }
+  for (const name of [...failedServers.keys()]) {
+    if (!desired.has(name)) failedServers.delete(name);
+  }
 
   for (const server of servers) {
     const existing = connections.get(server.name);
@@ -180,8 +184,11 @@ export async function connectToMcpServers(servers: McpServerConfig[]): Promise<v
     }
     try {
       await connectServer(server);
+      failedServers.delete(server.name);
     } catch (e) {
-      logMCP("error", server.name, e instanceof Error ? e.message : String(e));
+      const errMsg = e instanceof Error ? e.message : String(e);
+      failedServers.set(server.name, { config: server, error: errMsg });
+      logMCP("error", server.name, errMsg);
     }
   }
 }
@@ -194,12 +201,45 @@ export function getMcpTools(): StructuredToolInterface[] {
   return all;
 }
 
-export function getMcpStatus(): Array<{ name: string; connected: boolean; toolCount: number }> {
-  return [...connections.entries()].map(([name, conn]) => ({
-    name,
-    connected: true,
-    toolCount: conn.tools.length,
-  }));
+export function getMcpStatus(): Array<{ name: string; connected: boolean; toolCount: number; tools?: Array<{ name: string; description: string }>; error?: string }> {
+  const result: Array<{ name: string; connected: boolean; toolCount: number; tools?: Array<{ name: string; description: string }>; error?: string }> = [];
+  for (const [name, conn] of connections.entries()) {
+    result.push({
+      name,
+      connected: true,
+      toolCount: conn.tools.length,
+      tools: conn.tools.map((t) => ({
+        name: t.name.replace(`mcp_${name}__`, ""),
+        description: (t.description ?? "").replace(`[MCP: ${name}] `, ""),
+      })),
+    });
+  }
+  for (const [name, info] of failedServers.entries()) {
+    if (!connections.has(name)) {
+      result.push({ name, connected: false, toolCount: 0, error: info.error });
+    }
+  }
+  return result;
+}
+
+export async function restartMcpServer(serverName: string, servers: McpServerConfig[]): Promise<{ connected: boolean; toolCount: number; error?: string }> {
+  const config = servers.find((s) => s.name === serverName);
+  if (!config) throw new Error(`MCP server "${serverName}" not found in config`);
+
+  await disconnectServer(serverName);
+  failedServers.delete(serverName);
+
+  try {
+    await connectServer(config);
+    failedServers.delete(serverName);
+    const conn = connections.get(serverName);
+    return { connected: true, toolCount: conn?.tools.length ?? 0 };
+  } catch (e) {
+    const errMsg = e instanceof Error ? e.message : String(e);
+    failedServers.set(serverName, { config, error: errMsg });
+    logMCP("error", serverName, errMsg);
+    return { connected: false, toolCount: 0, error: errMsg };
+  }
 }
 
 export async function disconnectAll(): Promise<void> {

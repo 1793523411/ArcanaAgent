@@ -241,6 +241,16 @@ export async function putConfig(config: Partial<UserConfig>): Promise<UserConfig
   return r.json();
 }
 
+export async function restartMcpServer(serverName: string): Promise<{ connected: boolean; toolCount: number; error?: string; mcpStatus: import("../types").McpStatusItem[] }> {
+  const r = await fetch(`${BASE}/mcp/restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverName }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export interface SkillMeta {
   name: string;
   description: string;

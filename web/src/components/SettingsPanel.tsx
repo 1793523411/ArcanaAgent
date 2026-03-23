@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, type SkillMeta, type IndexStatusResponse } from "../api";
+import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, restartMcpServer, type SkillMeta, type IndexStatusResponse } from "../api";
 import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
 import { useToast } from "./Toast";
 
@@ -46,6 +46,8 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [mcpHeaders, setMcpHeaders] = useState("");
   const [mcpAdding, setMcpAdding] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
+  const [mcpRestarting, setMcpRestarting] = useState<string | null>(null);
+  const [mcpExpanded, setMcpExpanded] = useState<Set<string>>(new Set());
 
   // Approval rule form state
   const [showApprovalForm, setShowApprovalForm] = useState(false);
@@ -206,6 +208,23 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
       toast(`已移除 ${name}`, "success");
     } catch (e) {
       toast(`移除失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    }
+  };
+
+  const handleRestartMcpServer = async (name: string) => {
+    setMcpRestarting(name);
+    try {
+      const result = await restartMcpServer(name);
+      setMcpStatus(result.mcpStatus ?? []);
+      if (result.connected) {
+        toast(`${name} 重启成功，已加载 ${result.toolCount} 个工具`, "success");
+      } else {
+        toast(`${name} 连接失败: ${result.error ?? "未知错误"}`, "error");
+      }
+    } catch (e) {
+      toast(`重启失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setMcpRestarting(null);
     }
   };
 
@@ -501,39 +520,110 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 <div className="flex flex-col gap-2">
                   {config.mcpServers.map((server) => {
                     const status = getServerStatus(server.name);
+                    const hasFailed = status && !status.connected;
+                    const isExpanded = mcpExpanded.has(server.name);
+                    const hasTools = status?.connected && status.tools && status.tools.length > 0;
                     return (
                       <div
                         key={server.name}
-                        className="flex items-start justify-between gap-3 p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                        className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
                       >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-[var(--color-text)]">{server.name}</span>
-                            {status ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                {status.toolCount} tool{status.toolCount !== 1 ? "s" : ""}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                                未连接
-                              </span>
+                        <div className="flex items-start justify-between gap-3 p-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-[var(--color-text)]">{server.name}</span>
+                              {status?.connected ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMcpExpanded((prev) => {
+                                      const next = new Set(prev);
+                                      next.has(server.name) ? next.delete(server.name) : next.add(server.name);
+                                      return next;
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border-none cursor-pointer hover:bg-emerald-500/25 transition-colors"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                  {status.toolCount} tool{status.toolCount !== 1 ? "s" : ""}
+                                  <svg
+                                    width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                                    className={`transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                                  >
+                                    <polyline points="6 9 12 15 18 9" />
+                                  </svg>
+                                </button>
+                              ) : hasFailed ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                                  连接失败
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                                  未连接
+                                </span>
+                              )}
+                            </div>
+                            <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
+                              {server.transport === "streamablehttp"
+                                ? server.url
+                                : `${server.command} ${server.args.join(" ")}`}
+                            </p>
+                            {hasFailed && status.error && (
+                              <p className="m-0 mt-1 text-[12px] text-red-400 break-all">
+                                {status.error}
+                              </p>
                             )}
                           </div>
-                          <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
-                            {server.transport === "streamablehttp"
-                              ? server.url
-                              : `${server.command} ${server.args.join(" ")}`}
-                          </p>
+                          <div className="shrink-0 flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleRestartMcpServer(server.name)}
+                              disabled={mcpRestarting === server.name}
+                              className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="重启"
+                            >
+                              {mcpRestarting === server.name ? (
+                                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                                </svg>
+                              ) : (
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M21 2v6h-6" />
+                                  <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                                  <path d="M3 22v-6h6" />
+                                  <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveMcpServer(server.name)}
+                              className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                            >
+                              删除
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveMcpServer(server.name)}
-                          className="shrink-0 px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
-                        >
-                          删除
-                        </button>
+                        {isExpanded && hasTools && (
+                          <div className="px-3 pb-3 pt-0">
+                            <div className="flex flex-col gap-1 p-2 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)]">
+                              {status.tools!.map((t) => (
+                                <div key={t.name} className="flex items-center gap-2 text-[12px] min-w-0" title={t.description || undefined}>
+                                  <code className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)] font-mono text-[11px]">
+                                    {t.name}
+                                  </code>
+                                  {t.description && (
+                                    <span className="text-[var(--color-text-muted)] truncate">
+                                      {t.description}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}

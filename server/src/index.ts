@@ -20,6 +20,7 @@ import {
   postChat,
   getConfig,
   putConfig,
+  postMcpRestart,
   getModels,
   getHealth,
   getIndexStatus,
@@ -113,6 +114,7 @@ app.post("/api/conversations/:id/messages/sync", postConversationMessageSync);
 app.post("/api/chat", postChat);
 app.get("/api/config", getConfig);
 app.put("/api/config", putConfig);
+app.post("/api/mcp/restart", postMcpRestart);
 app.get("/api/models", getModels);
 app.get("/api/models/providers", getModelProviders);
 app.post("/api/models/providers", postModelProvider);

@@ -140,10 +140,17 @@ export type McpServerConfig =
       headers?: Record<string, string>;
     };
 
+export interface McpToolInfo {
+  name: string;
+  description: string;
+}
+
 export interface McpStatusItem {
   name: string;
   connected: boolean;
   toolCount: number;
+  tools?: McpToolInfo[];
+  error?: string;
 }
 
 export interface PromptTemplate {
