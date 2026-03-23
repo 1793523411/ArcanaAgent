@@ -10,6 +10,7 @@ interface Props {
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  onStop?: () => void;
   loading: boolean;
   streamingContent: string;
   streamingReasoning: string;
@@ -107,6 +108,7 @@ export default function ChatPanel({
   input,
   onInputChange,
   onSend,
+  onStop,
   loading,
   streamingContent,
   streamingReasoning,
@@ -374,6 +376,7 @@ export default function ChatPanel({
               value={input}
               onChange={onInputChange}
               onSend={onSend}
+              onStop={loading ? onStop : undefined}
               loading={loading || isTaskExecuting}
               compact
               placeholder={isTaskExecuting ? "定时任务执行中，请稍候..." : "输入消息…"}

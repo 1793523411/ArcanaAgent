@@ -80,6 +80,21 @@ export interface Attachment {
   data: string;
 }
 
+/** Explicitly abort server-side agent execution for a conversation */
+export async function abortConversation(conversationId: string, partialMessage?: {
+  content?: string;
+  reasoningContent?: string;
+  toolLogs?: unknown[];
+  plan?: unknown;
+  subagents?: unknown[];
+}): Promise<void> {
+  await fetch(`${BASE}/conversations/${conversationId}/abort`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ partialMessage }),
+  });
+}
+
 export async function sendMessageStream(
   conversationId: string,
   text: string,

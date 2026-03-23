@@ -92,6 +92,7 @@ export default function App() {
     sendError,
     usageTokens,
     contextUsage,
+    abortStreaming,
   } = useSendMessage({
     currentConversationId: current?.id,
     onAfterSend: loadList,
@@ -448,6 +449,34 @@ export default function App() {
               input={input}
               onInputChange={setInput}
               onSend={() => send(current.id, undefined, undefined, current.mode ?? "default")}
+              onStop={() => {
+                // Preserve all partial output as a message before aborting
+                const hasContent = streamingContent?.trim();
+                const hasReasoning = streamingReasoning?.trim();
+                const hasToolLogs = streamingToolLogs.length > 0;
+                const hasPlan = streamingPlan && streamingPlan.steps?.length > 0;
+                const hasSubagents = streamingSubagents.length > 0;
+                const hasAny = hasContent || hasReasoning || hasToolLogs || hasPlan || hasSubagents;
+                const partialForServer = hasAny ? {
+                  content: hasContent ? streamingContent : "(已停止)",
+                  ...(hasReasoning ? { reasoningContent: streamingReasoning } : {}),
+                  ...(hasToolLogs ? { toolLogs: streamingToolLogs } : {}),
+                  ...(hasPlan ? { plan: streamingPlan } : {}),
+                  ...(hasSubagents ? { subagents: streamingSubagents } : {}),
+                } : undefined;
+                if (hasAny) {
+                  const storedMsg: StoredMessage = {
+                    type: "ai",
+                    content: hasContent ? streamingContent : "(已停止)",
+                    ...(hasReasoning ? { reasoningContent: streamingReasoning } : {}),
+                    ...(hasToolLogs ? { toolLogs: streamingToolLogs } : {}),
+                    ...(hasPlan ? { plan: streamingPlan as StoredMessage["plan"] } : {}),
+                    ...(hasSubagents ? { subagents: streamingSubagents as StoredMessage["subagents"] } : {}),
+                  };
+                  setMessages((prev) => [...prev, storedMsg]);
+                }
+                abortStreaming(current.id, partialForServer);
+              }}
               loading={loading}
               streamingContent={streamingContent}
               streamingReasoning={streamingReasoning}

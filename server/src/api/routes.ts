@@ -58,6 +58,9 @@ import {
 import { estimateBaseMessageTokens, estimateTextTokens } from "../lib/tokenizer.js";
 
 
+/** Global registry of active streaming abort controllers per conversation */
+const activeAbortControllers = new Map<string, AbortController>();
+
 function convId(req: Request): string {
   const id = req.params.id;
   return Array.isArray(id) ? id[0] ?? "" : id;
@@ -520,10 +523,12 @@ export async function postConversationMessage(req: Request, res: Response): Prom
 
   // S6: Handle client disconnect — cancel pending approvals and abort agent execution
   const abortController = new AbortController();
+  activeAbortControllers.set(id, abortController);
   let clientDisconnected = false;
   req.on("close", () => {
     clientDisconnected = true;
     abortController.abort();
+    activeAbortControllers.delete(id);
     approvalManager.cancelConversation(id);
   });
 
@@ -814,7 +819,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         promptTokens: contextPromptTokens,
       };
     }
-    if (toStore.length > 0) {
+    if (toStore.length > 0 && !abortController.signal.aborted) {
       compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
     }
@@ -832,15 +837,24 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     });
   } catch (e) {
     flushNow();
+    const isAborted = abortController.signal.aborted;
     const errMsg = e instanceof Error ? e.message : String(e);
-    logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
-    // 保存已完成的部分结果，避免刷新后消息丢失
-    try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
-    res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
+    if (!isAborted) {
+      logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
+      // 保存已完成的部分结果，避免刷新后消息丢失
+      try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
+      res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
+    }
+    // When aborted, partial content is saved by the abort endpoint — skip duplicate save
   } finally {
+    activeAbortControllers.delete(id);
     if (flushTimer !== null) clearTimeout(flushTimer);
-    res.write("data: [DONE]\n\n");
-    res.end();
+    if (!clientDisconnected) {
+      try {
+        res.write("data: [DONE]\n\n");
+        res.end();
+      } catch { /* client gone */ }
+    }
   }
 }
 
@@ -1228,6 +1242,42 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
 
   const mcpStatus = getMcpStatus();
   res.json({ ...config, mcpStatus });
+}
+
+// ─── Abort streaming ─────────────────────────────────────────
+
+export function postAbortConversation(req: Request, res: Response): void {
+  const id = convId(req);
+  const meta = getConversation(id);
+  if (!meta) { res.status(404).json({ error: "Conversation not found" }); return; }
+
+  const controller = activeAbortControllers.get(id);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(id);
+    approvalManager.cancelConversation(id);
+  }
+  // Save partial content sent from the frontend.
+  // Note: don't gate on `controller` — req.on("close") from the SSE stream may have
+  // already deleted it from the map before this POST arrives (race condition).
+  // The frontend's `!state?.loading` guard prevents spurious calls.
+  const { partialMessage } = req.body as { partialMessage?: { content?: string; reasoningContent?: string; toolLogs?: unknown[]; plan?: unknown; subagents?: unknown[] } };
+  if (partialMessage) {
+    const msg: StoredMessage = {
+      type: "ai",
+      content: partialMessage.content || "(已停止)",
+    };
+    if (partialMessage.reasoningContent) msg.reasoningContent = partialMessage.reasoningContent;
+    if (partialMessage.toolLogs && (partialMessage.toolLogs as unknown[]).length > 0) msg.toolLogs = partialMessage.toolLogs as StoredMessage["toolLogs"];
+    if (partialMessage.plan) msg.plan = partialMessage.plan as StoredMessage["plan"];
+    if (partialMessage.subagents && (partialMessage.subagents as unknown[]).length > 0) msg.subagents = partialMessage.subagents as StoredMessage["subagents"];
+    try {
+      appendMessages(id, [msg]);
+    } catch (e) {
+      logError(id, e instanceof Error ? e : String(e), { stage: "abort_save_partial" });
+    }
+  }
+  res.json({ ok: true });
 }
 
 // ─── MCP restart ─────────────────────────────────────────────

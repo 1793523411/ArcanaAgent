@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { sendMessageStream, getMessages, getConversation, type Attachment } from "../api";
+import { sendMessageStream, getMessages, getConversation, abortConversation, type Attachment } from "../api";
 import type { AgentRole, ConversationMeta, ConversationMode, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
 
@@ -156,15 +156,28 @@ export function useSendMessage(options: {
     });
   }, []);
 
-  const abortStreaming = useCallback((convId?: string) => {
+  const abortStreaming = useCallback((convId?: string, partialMessage?: {
+    content?: string;
+    reasoningContent?: string;
+    toolLogs?: unknown[];
+    plan?: unknown;
+    subagents?: unknown[];
+  }) => {
     const targetId = convId ?? currentConversationIdRef.current;
     if (!targetId) return;
+    // Guard: no-op if not currently streaming
+    const state = conversationStatesRef.current[targetId];
+    if (!state?.loading) return;
     const controller = abortControllersRef.current[targetId];
     if (controller) {
       controller.abort();
       delete abortControllersRef.current[targetId];
     }
-  }, []);
+    // Immediately clear loading/streaming state so the UI resets
+    clearConversationState(targetId);
+    // Explicitly tell the server to abort agent execution and save partial content
+    abortConversation(targetId, partialMessage).catch((e) => console.warn("abortConversation failed:", e));
+  }, [clearConversationState]);
 
   const clearStreaming = useCallback((convId?: string) => {
     const targetId = convId ?? currentConversationIdRef.current;
@@ -547,6 +560,11 @@ export function useSendMessage(options: {
         },
         (err) => {
           delete abortControllersRef.current[convId];
+          // If aborted by user, state is already cleared — don't re-set error
+          if (controller.signal.aborted) {
+            clearConversationState(convId);
+            return;
+          }
           setConversationState(convId, (prev) => ({
             ...prev,
             loading: false,
