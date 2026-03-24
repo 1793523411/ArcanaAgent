@@ -317,6 +317,32 @@ The system will auto-select the best available indexing strategy. Always start w
   }
 }
 
+function buildEnvironmentSection(): string {
+  const now = new Date();
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const weekdaysEn = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const weekdaysZh = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = Object.fromEntries(
+    formatter.formatToParts(now).map((p) => [p.type, p.value])
+  );
+  const dateStr = `${parts.year}-${parts.month}-${parts.day}`;
+  const timeStr = `${parts.hour}:${parts.minute}:${parts.second}`;
+  const weekdayIdx = now.getDay();
+  return `\n\n## Environment
+- Current time: ${dateStr} ${timeStr} (${tz}, ${weekdaysEn[weekdayIdx]} ${weekdaysZh[weekdayIdx]})
+- Platform: ${process.platform}`;
+}
+
 function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
   const modePrompt = conversationMode === "team" ? buildTeamModePrompt(teamId ?? "default") : "";
   const workspaceSection = workspacePath
@@ -325,7 +351,8 @@ function buildSystemPrompt(skillContext?: string, conversationMode: Conversation
   const mcpSection = buildMcpToolsSection();
   const skillSection = skillContext || getSkillCatalogForAgent();
   const indexSection = buildIndexStrategySection();
-  return BASE_SYSTEM_PROMPT + modePrompt + workspaceSection + indexSection + mcpSection + skillSection;
+  const envSection = buildEnvironmentSection();
+  return BASE_SYSTEM_PROMPT + modePrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection;
 }
 
 function getTextFromChunk(chunk: { content?: unknown }): string {
@@ -1361,7 +1388,7 @@ function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToo
   // In team mode at depth 0 (coordinator level), only expose task + read_file
   // This prevents the coordinator from doing implementation work itself
   if (conversationMode === "team" && depth === 0) {
-    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "search_code", "list_files", "web_search", "project_search", "project_snapshot"]);
+    const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "fetch_url", "search_code", "list_files", "web_search", "project_search", "project_snapshot"]);
     const coordinatorTools = filteredWrappedTools.filter((t) => coordinatorAllowed.has(t.name));
     return [...coordinatorTools, taskTool as unknown as StructuredToolInterface];
   }

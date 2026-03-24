@@ -97,7 +97,7 @@ const defaultContext: ContextStrategyConfig = {
 };
 
 const defaultConfig: UserConfig = {
-  enabledToolIds: ["calculator", "get_time", "echo", "run_command", "read_file"],
+  enabledToolIds: ["get_time", "run_command", "read_file"],
   mcpServers: [],
   context: defaultContext,
   planning: {

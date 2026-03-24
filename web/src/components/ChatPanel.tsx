@@ -284,6 +284,7 @@ export default function ChatPanel({
           const merged: Array<{ display: StoredMessage; serverIndex: number }> = [];
           let pendingReasoning: string[] = [];
           let pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
+          let pendingContent: string[] = [];
 
           for (let serverIndex = 0; serverIndex < raw.length; serverIndex++) {
             const m = raw[serverIndex];
@@ -294,17 +295,20 @@ export default function ChatPanel({
               && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
 
             if (isDispatchOnly) {
+              if (typeof m.content === "string" && m.content.trim()) pendingContent.push(m.content.trim());
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
               if (Array.isArray(m.toolLogs)) pendingToolLogs.push(...m.toolLogs);
               continue;
             }
 
-            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0)) {
+            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0)) {
               const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
               const combinedToolLogs = [...pendingToolLogs, ...(m.toolLogs ?? [])];
+              const combinedContent = [...pendingContent, ...(typeof m.content === "string" && m.content.trim() ? [m.content.trim()] : [])].join("\n\n");
               merged.push({
                 display: {
                   ...m,
+                  content: combinedContent || m.content,
                   reasoningContent: combined || m.reasoningContent,
                   toolLogs: combinedToolLogs.length > 0 ? combinedToolLogs : m.toolLogs,
                 },
@@ -312,15 +316,16 @@ export default function ChatPanel({
               });
               pendingReasoning = [];
               pendingToolLogs = [];
+              pendingContent = [];
             } else {
               merged.push({ display: m, serverIndex });
             }
           }
-          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0) {
+          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0) {
             merged.push({
               display: {
                 type: "ai",
-                content: "",
+                content: pendingContent.join("\n\n"),
                 reasoningContent: pendingReasoning.join("\n\n---\n\n"),
                 toolLogs: pendingToolLogs.length > 0 ? pendingToolLogs : undefined,
               } as StoredMessage,

@@ -15,6 +15,8 @@ import { web_search } from "./web_search.js";
 import { project_index } from "./project_index.js";
 import { project_search } from "./project_search.js";
 import { project_snapshot } from "./project_snapshot.js";
+import { get_time } from "./get_time.js";
+import { fetch_url } from "./fetch_url.js";
 
 export const tools = {
   run_command,
@@ -33,6 +35,8 @@ export const tools = {
   project_index,
   project_search,
   project_snapshot,
+  get_time,
+  fetch_url,
 } as const;
 
 export type ToolId = keyof typeof tools;
