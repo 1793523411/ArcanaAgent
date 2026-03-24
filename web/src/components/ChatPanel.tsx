@@ -285,9 +285,14 @@ export default function ChatPanel({
             const m = raw[serverIndex];
             if (m.type === "tool") continue;
 
+            // 判断是否为纯工具调用的中间消息（无实质内容）：
+            // 1. 内容为空/纯空白
+            // 2. 内容极短（≤5字符）且携带 tool_calls —— 某些模型（如 doubao）
+            //    会在工具调用时输出 "ms"、"AI" 等无意义碎片文本
+            const trimmed = m.type === "ai" ? (m.content ?? "").trim() : "";
             const isDispatchOnly = m.type === "ai"
-              && (!m.content || !m.content.trim())
-              && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+              && Array.isArray(m.tool_calls) && m.tool_calls.length > 0
+              && trimmed.length <= 5;
 
             if (isDispatchOnly) {
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
