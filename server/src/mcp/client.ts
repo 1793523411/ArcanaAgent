@@ -89,12 +89,19 @@ function jsonSchemaToZod(schema: Record<string, unknown> | undefined): z.ZodObje
   return z.object(shape);
 }
 
+/** Sanitize a string so it only contains characters allowed by LLM API tool name patterns: [a-zA-Z0-9_-] */
+function sanitizeToolName(raw: string): string {
+  // Replace non-ASCII / special chars with underscores, collapse runs, trim edges
+  return raw.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "") || "unnamed";
+}
+
 function createLangChainTool(
   mcpTool: { name: string; description?: string; inputSchema?: Record<string, unknown> },
   mcpClient: Client,
   serverName: string
 ): StructuredToolInterface {
   const schema = jsonSchemaToZod(mcpTool.inputSchema);
+  const safeName = `mcp_${sanitizeToolName(serverName)}__${sanitizeToolName(mcpTool.name)}`;
   return tool(
     async (input: Record<string, unknown>) => {
       try {
@@ -109,7 +116,7 @@ function createLangChainTool(
       }
     },
     {
-      name: `mcp_${serverName}__${mcpTool.name}`,
+      name: safeName,
       description: `[MCP: ${serverName}] ${mcpTool.description || mcpTool.name}`,
       schema,
     }
@@ -209,7 +216,7 @@ export function getMcpStatus(): Array<{ name: string; connected: boolean; toolCo
       connected: true,
       toolCount: conn.tools.length,
       tools: conn.tools.map((t) => ({
-        name: t.name.replace(`mcp_${name}__`, ""),
+        name: t.name.replace(`mcp_${sanitizeToolName(name)}__`, ""),
         description: (t.description ?? "").replace(`[MCP: ${name}] `, ""),
       })),
     });
