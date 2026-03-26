@@ -39,75 +39,66 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
       ? new Date(createdAt).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })
       : new Date().toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" });
 
-    const bgGradient = isLight
-      ? "linear-gradient(135deg, #f8fafc 0%, #ffffff 45%, #f1f5f9 100%)"
-      : "linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%)";
-    const titleColor = isLight ? "#64748b" : "#94a3b8";
+    const vars = isLight ? lightVars : darkVars;
+    const titleColor = isLight ? "#94a3b8" : "#64748b";
     const headingColor = isLight ? "#0f172a" : "#f1f5f9";
-    const bodyColor = isLight ? "#334155" : "#e2e8f0";
-    const divider = isLight ? "rgba(226, 232, 240, 0.95)" : "rgba(51, 65, 85, 0.6)";
-    const logoIconColor = "#fff";
-
-    /** Short answers look top-heavy; min-height + flex centers body between header and footer. */
-    const cardMinHeight = 580;
+    const bodyColor = isLight ? "#334155" : "#cbd5e1";
+    const divider = isLight ? "#e2e8f0" : "#1e293b";
+    const accentColor = isLight ? "#0d9488" : "#14b8a6";
 
     return (
       <div
         ref={ref}
-        className={isLight ? "share-card-hljs-light" : undefined}
+        className={isLight ? "share-card-hljs-light share-card-root" : "share-card-root"}
         style={{
           display: "flex",
           flexDirection: "column",
           width: 560,
-          minHeight: cardMinHeight,
-          padding: "32px 32px 36px",
-          background: bgGradient,
-          borderRadius: 20,
-          fontFamily: "'DM Sans', ui-sans-serif, system-ui, sans-serif",
+          minHeight: 420,
+          padding: "36px 36px 28px",
+          background: isLight
+            ? "linear-gradient(180deg, #ffffff 0%, #f8fafc 100%)"
+            : "linear-gradient(180deg, #0f172a 0%, #1a2332 100%)",
+          borderRadius: 16,
+          fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif",
           color: isLight ? "#0f172a" : "#f1f5f9",
-          boxShadow: isLight ? "0 1px 3px rgba(15, 23, 42, 0.06)" : undefined,
           boxSizing: "border-box",
-          ...(isLight ? lightVars : darkVars),
+          ...vars,
         } as React.CSSProperties}
       >
+        {/* Header */}
         <div
           style={{
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            gap: 12,
-            minHeight: 36,
-            marginBottom: 20,
-            flexShrink: 0,
+            marginBottom: title ? 16 : 24,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 36 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div
               style={{
-                width: 32,
-                height: 32,
-                flexShrink: 0,
-                borderRadius: 10,
-                background: isLight
-                  ? "linear-gradient(135deg, #0d9488, #115e59)"
-                  : "linear-gradient(135deg, #14b8a6, #0d9488)",
+                width: 28,
+                height: 28,
+                borderRadius: 7,
+                background: `linear-gradient(135deg, ${accentColor}, ${isLight ? "#115e59" : "#0d9488"})`,
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                fontSize: 15,
+                fontSize: 13,
                 fontWeight: 700,
-                lineHeight: 1,
-                color: logoIconColor,
+                color: "#fff",
+                letterSpacing: 0,
               }}
             >
               A
             </div>
             <span
               style={{
-                fontSize: 16,
+                fontSize: 14,
                 fontWeight: 600,
-                lineHeight: "32px",
                 color: headingColor,
+                letterSpacing: "-0.01em",
               }}
             >
               ArcanaAgent
@@ -115,10 +106,8 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
           </div>
           <span
             style={{
-              fontSize: 12,
-              lineHeight: "32px",
+              fontSize: 11,
               color: titleColor,
-              whiteSpace: "nowrap",
             }}
           >
             {dateStr}
@@ -128,51 +117,47 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
         {title && (
           <div
             style={{
-              fontSize: 13,
-              color: titleColor,
-              marginBottom: 12,
-              paddingBottom: 12,
+              fontSize: 12,
+              color: isLight ? "#64748b" : "#94a3b8",
+              marginBottom: 20,
+              paddingBottom: 16,
               borderBottom: `1px solid ${divider}`,
               overflow: "hidden",
               textOverflow: "ellipsis",
               whiteSpace: "nowrap",
-              flexShrink: 0,
+              letterSpacing: "0.01em",
             }}
           >
             {title}
           </div>
         )}
 
+        {/* Content */}
         <div
           style={{
             flex: "1 1 auto",
-            display: "flex",
-            flexDirection: "column",
-            justifyContent: "center",
-            fontSize: 14,
-            lineHeight: 1.7,
+            fontSize: 13.5,
+            lineHeight: 1.8,
             color: bodyColor,
           }}
         >
           <MarkdownContent variant="share">{content}</MarkdownContent>
         </div>
 
+        {/* Footer */}
         <div
           style={{
-            marginTop: 18,
-            paddingTop: 12,
-            paddingBottom: 12,
+            marginTop: 28,
+            paddingTop: 14,
             borderTop: `1px solid ${divider}`,
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            gap: 12,
-            flexShrink: 0,
           }}
         >
           <div
             style={{
-              display: "inline-flex",
+              display: "flex",
               alignItems: "center",
               gap: 6,
             }}
@@ -181,18 +166,17 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
               aria-hidden
               style={{
                 display: "inline-block",
-                width: 6,
-                height: 6,
-                flexShrink: 0,
+                width: 5,
+                height: 5,
                 borderRadius: "50%",
-                background: isLight ? "#0d9488" : "#14b8a6",
+                background: accentColor,
               }}
             />
             <span
               style={{
-                fontSize: 11,
-                lineHeight: 1.35,
-                color: "#64748b",
+                fontSize: 10,
+                color: titleColor,
+                letterSpacing: "0.02em",
               }}
             >
               Powered by ArcanaAgent
@@ -201,11 +185,11 @@ const ShareCard = forwardRef<HTMLDivElement, Props>(
           {modelName && (
             <span
               style={{
-                fontSize: 11,
-                lineHeight: 1.35,
-                color: "#64748b",
+                fontSize: 10,
+                color: titleColor,
                 textAlign: "right",
                 wordBreak: "break-all",
+                letterSpacing: "0.01em",
               }}
             >
               {modelName}

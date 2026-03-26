@@ -243,17 +243,18 @@ function CodeBlock({
 }) {
   const text = typeof children === "string" ? children : String(children ?? "");
   const lang = className?.match(/language-([\w-]+)/)?.[1] ?? "";
-  const pad = variant === "share" ? "px-5 py-4 pb-5" : "p-4";
-  const barPad = variant === "share" ? "px-5" : "px-4";
+  const isShare = variant === "share";
+  const pad = isShare ? "" : "p-4";
+  const barPad = isShare ? "" : "px-4";
   return (
     <div className="relative group my-3">
       {lang && (
-        <div className={`flex items-center justify-between ${barPad} py-1.5 rounded-t-lg bg-[var(--color-bg)] border border-b-0 border-[var(--color-border)]`}>
-          <span className="text-[11px] text-[var(--color-text-muted)] font-mono">{lang}</span>
+        <div className={`flex items-center justify-between ${barPad} py-1.5 rounded-t-lg ${isShare ? "" : "bg-[var(--color-bg)] border border-b-0 border-[var(--color-border)]"}`}>
+          <span className={`font-mono ${isShare ? "" : "text-[11px] text-[var(--color-text-muted)]"}`}>{lang}</span>
         </div>
       )}
       <pre
-        className={`${lang ? "rounded-b-lg rounded-t-none" : "rounded-lg"} overflow-x-auto overflow-y-visible border border-[var(--color-border)] bg-[var(--color-bg)] ${pad} text-[13px] leading-relaxed ${variant === "share" ? "share-card-pre" : ""}`}
+        className={`${lang ? "rounded-b-lg rounded-t-none" : "rounded-lg"} overflow-x-auto overflow-y-visible ${isShare ? "share-card-pre" : `border border-[var(--color-border)] bg-[var(--color-bg)] ${pad} text-[13px] leading-relaxed`}`}
       >
         <code className={className}>{children}</code>
       </pre>
@@ -283,7 +284,7 @@ export default function MarkdownContent({ children, className = "", transformIma
             <ul
               className={
                 variant === "share"
-                  ? "mb-3 space-y-1.5 list-disc share-md-list-ul"
+                  ? "mb-3 list-disc share-md-list-ul"
                   : "mb-3 space-y-1 list-disc pl-5"
               }
             >
@@ -294,7 +295,7 @@ export default function MarkdownContent({ children, className = "", transformIma
             <ol
               className={
                 variant === "share"
-                  ? "mb-3 space-y-1.5 list-decimal share-md-list-ol"
+                  ? "mb-3 list-decimal share-md-list-ol"
                   : "mb-3 space-y-1 list-decimal pl-5"
               }
             >
@@ -302,7 +303,7 @@ export default function MarkdownContent({ children, className = "", transformIma
             </ol>
           ),
           li: ({ children }) => (
-            <li className={variant === "share" ? "leading-relaxed share-md-li" : "leading-relaxed"}>{children}</li>
+            <li className={variant === "share" ? "share-md-li" : "leading-relaxed"}>{children}</li>
           ),
 
           strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
