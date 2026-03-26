@@ -10,6 +10,8 @@ export interface AgentDef {
   systemPrompt: string;
   allowedTools: string[];
   builtIn: boolean;
+  /** 是否启用 Claude Code 能力（仅在全局开启时生效） */
+  claudeCodeEnabled?: boolean;
 }
 
 export interface TeamDef {
@@ -42,6 +44,8 @@ export interface ToolLog {
   name: string;
   input: string;
   output: string;
+  /** Claude Code 实时执行子日志 */
+  subLogs?: Array<{ type: string; content: string }>;
 }
 
 export interface PlanLog {
@@ -177,6 +181,17 @@ export interface ApprovalRule {
 
 export type CodeIndexStrategy = "none" | "repomap" | "vector";
 
+export interface ClaudeCodeConfig {
+  /** 全局开关 */
+  enabled: boolean;
+  /** 使用的模型，如 "sonnet", "opus", "claude-sonnet-4-6" */
+  model?: string;
+  /** 默认最大轮次 */
+  maxTurns?: number;
+  /** 限制 Claude Code 可用工具 */
+  allowedTools?: string[];
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -189,6 +204,8 @@ export interface UserConfig {
   templates?: PromptTemplate[];
   approvalRules?: ApprovalRule[];
   codeIndexStrategy?: CodeIndexStrategy;
+  /** Claude Code 集成配置 */
+  claudeCode?: ClaudeCodeConfig;
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;

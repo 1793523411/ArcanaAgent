@@ -235,6 +235,32 @@ function buildEnvironmentSection(): string {
 - Platform: ${process.platform}`;
 }
 
+function buildClaudeCodeSection(): string {
+  const config = loadUserConfig();
+  if (!config.claudeCode?.enabled) return "";
+  return `
+
+## Claude Code Integration
+You have access to the \`claude_code\` tool — a powerful AI coding agent powered by Claude Code.
+
+**When to use \`claude_code\`:**
+- Complex multi-file refactoring or architecture changes
+- Tasks requiring deep codebase exploration + iterative editing
+- Writing + running tests in a loop until they pass
+- Any coding task that benefits from an autonomous agent approach
+
+**When NOT to use it (use existing tools instead):**
+- Simple file reads → use \`read_file\`
+- Single-line or small edits → use \`edit_file\`
+- Running a single command → use \`run_command\`
+- Searching for code → use \`search_code\` or \`project_search\`
+
+**Tips:**
+- Write a clear, detailed prompt describing what you want Claude Code to accomplish
+- Specify the working directory if different from the default workspace
+- The tool has a 10-minute timeout and max turns limit`;
+}
+
 export function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
   const modePrompt = conversationMode === "team" ? buildTeamModePrompt(teamId ?? "default") : "";
   const workspaceSection = workspacePath
@@ -244,7 +270,8 @@ export function buildSystemPrompt(skillContext?: string, conversationMode: Conve
   const skillSection = skillContext || getSkillCatalogForAgent();
   const indexSection = buildIndexStrategySection();
   const envSection = buildEnvironmentSection();
-  return BASE_SYSTEM_PROMPT + modePrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection;
+  const claudeCodeSection = buildClaudeCodeSection();
+  return BASE_SYSTEM_PROMPT + modePrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection + claudeCodeSection;
 }
 
 export function buildSubagentSystemPrompt(agentId: string, skillContext?: string, workspacePath?: string): string {

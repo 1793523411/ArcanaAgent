@@ -56,6 +56,7 @@ import {
   postValidateModels,
   postValidateAllModels,
   getValidationResults,
+  postClaudeCodeTest,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -124,6 +125,7 @@ app.put("/api/models/providers/:name", putModelProvider);
 app.delete("/api/models/providers/:name", deleteModelProvider);
 app.post("/api/models/validate", postValidateModels);
 app.post("/api/models/validate-all", postValidateAllModels);
+app.post("/api/claude-code/test", postClaudeCodeTest);
 app.get("/api/models/validations", getValidationResults);
 app.get("/api/skills", getSkillsList);
 app.post("/api/skills/upload", upload.single("zip"), postSkillsUpload);

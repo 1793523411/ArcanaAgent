@@ -15,6 +15,8 @@ export interface AgentDef {
   /** Allowed tool IDs. ["*"] = all tools allowed. [] = no tools. */
   allowedTools: string[];
   builtIn: boolean;
+  /** 是否启用 Claude Code 能力（仅在全局开启时生效） */
+  claudeCodeEnabled?: boolean;
 }
 
 /** Wildcard value meaning "all tools are allowed" */

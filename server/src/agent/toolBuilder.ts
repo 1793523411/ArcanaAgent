@@ -8,6 +8,7 @@ import { loadUserConfig } from "../config/userConfig.js";
 import type { ApprovalRule } from "../config/userConfig.js";
 import { detectDiagnosticCommand, runDiagnostic } from "./diagnostics.js";
 import { getModelAdapter } from "../llm/adapter.js";
+import { getAgentDef } from "../storage/agentDefs.js";
 import { serverLogger } from "../lib/logger.js";
 import { isValidTeamAgent } from "./roles.js";
 import type { AgentRole } from "./roles.js";
@@ -215,6 +216,22 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
       );
       return wrapped as unknown as StructuredToolInterface;
     }
+    if (t.name === "claude_code" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          // 强制 cwd 为 workspace，并在 prompt 前注入 workspace 约束
+          const originalPrompt = typeof input.prompt === "string" ? input.prompt : "";
+          const constrainedPrompt = `[IMPORTANT] Your working directory is: ${workspacePath}\nAll files MUST be created/read/written within this directory. Do NOT use /tmp, /repo, or any path outside this workspace. Use relative paths or paths under ${workspacePath}.\n\n${originalPrompt}`;
+          return String(await t.invoke({ ...input, prompt: constrainedPrompt, cwd: workspacePath }));
+        },
+        {
+          name: "claude_code",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
     if (t.name !== "run_command") return t;
     const wrapped = tool(
       async (input: { command: string; timeout_ms?: number; working_directory?: string }) => {
@@ -245,6 +262,25 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
   });
   const subagentRole = options?.subagentRole;
   const filteredWrappedTools = subagentRole ? filterToolsByRole(wrappedTools, subagentRole) : wrappedTools;
+
+  // ── Claude Code 条件注入 ──────────────────────────
+  // 全局关闭时移除 claude_code；全局开启时根据 agent 配置决定
+  const userConfig = loadUserConfig();
+  const claudeCodeGlobalEnabled = userConfig.claudeCode?.enabled ?? false;
+  const shouldIncludeClaudeCode = (() => {
+    if (!claudeCodeGlobalEnabled) return false;
+    // 子 agent（team 模式）：根据 AgentDef.claudeCodeEnabled 决定
+    if (subagentRole) {
+      const agentDef = getAgentDef(subagentRole);
+      return agentDef?.claudeCodeEnabled ?? false;
+    }
+    // 默认模式或 coordinator：全局开启即可用
+    return true;
+  })();
+  const finalTools = shouldIncludeClaudeCode
+    ? filteredWrappedTools
+    : filteredWrappedTools.filter((t) => t.name !== "claude_code");
+
   const depth = context?.options?.subagentDepth ?? 0;
   const subagentEnabled = context?.options?.subagentEnabled ?? true;
   if (!subagentEnabled || depth >= 1) {
@@ -253,7 +289,7 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
     const subId = options?.subagentId;
     if (convMode === "team" && convId && subId) {
       const customRules = loadUserConfig().approvalRules;
-      return filteredWrappedTools.map((t) => {
+      return finalTools.map((t) => {
         if (t.name === "run_command") {
           return wrapToolWithApproval(t, "run_command", (input) => {
             const cmd = typeof input.command === "string" ? input.command : "";
@@ -290,10 +326,10 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         return t;
       });
     }
-    return filteredWrappedTools;
+    return finalTools;
   }
   if (!context) {
-    return filteredWrappedTools;
+    return finalTools;
   }
   const conversationMode = context.options?.conversationMode ?? "default";
   const subagentResults = context.subagentResults ?? new Map<string, { name: string; summary: string }>();

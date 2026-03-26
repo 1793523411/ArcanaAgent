@@ -332,6 +332,40 @@ export function useSendMessage(options: {
             });
             return;
           }
+          if (obj.type === "claude_code_log" && obj.log) {
+            const log = obj.log as { type: string; toolName?: string; elapsed?: number; content?: string };
+            let content = "";
+            if (log.type === "tool_progress") {
+              content = `[${log.toolName ?? "tool"}] ${log.elapsed ?? 0}s`;
+            } else if (log.type === "tool_summary") {
+              content = log.content ?? "";
+            } else if (log.type === "text") {
+              content = log.content ?? "";
+            } else if (log.type === "tool_use") {
+              content = `$ ${log.toolName ?? "tool"}: ${log.content ?? ""}`;
+            } else if (log.type === "tool_result") {
+              content = log.content ?? "";
+            } else if (log.type === "result" || log.type === "error") {
+              content = `[${log.type}] ${log.content ?? ""}`;
+            } else if (log.type === "system") {
+              content = log.content ?? "";
+            }
+            if (content) {
+              setConversationState(convId, (prev) => {
+                const logs = [...prev.streamingToolLogs];
+                let idx = -1;
+                for (let i = logs.length - 1; i >= 0; i--) {
+                  if (logs[i].name === "claude_code" && !logs[i].output) { idx = i; break; }
+                }
+                if (idx >= 0) {
+                  const entry = logs[idx];
+                  logs[idx] = { ...entry, subLogs: [...(entry.subLogs ?? []), { type: log.type, content }] };
+                }
+                return { ...prev, streamingToolLogs: logs };
+              });
+            }
+            return;
+          }
           if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
             const payload = obj as {
               kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name" | "approval_request" | "approval_response";

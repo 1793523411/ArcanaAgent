@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, restartMcpServer, type SkillMeta, type IndexStatusResponse } from "../api";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, restartMcpServer, testClaudeCode, type SkillMeta, type IndexStatusResponse, type ClaudeCodeTestResult } from "../api";
 import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
 import { useToast } from "./Toast";
 
@@ -27,13 +28,17 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex" | "claudeCode">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
   const [deleteSkillTarget, setDeleteSkillTarget] = useState<string | null>(null);
   const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
   const [indexStatusLoading, setIndexStatusLoading] = useState(false);
+
+  // Claude Code test state
+  const [ccTesting, setCcTesting] = useState(false);
+  const [ccTestResult, setCcTestResult] = useState<ClaudeCodeTestResult | null>(null);
 
   // MCP form state
   const [showMcpForm, setShowMcpForm] = useState(false);
@@ -107,6 +112,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         mcpServers: config.mcpServers,
         approvalRules: config.approvalRules,
         codeIndexStrategy: config.codeIndexStrategy ?? null,
+        claudeCode: config.claudeCode,
       } as Partial<UserConfig>);
       setMcpStatus(updated.mcpStatus ?? []);
       toast("设置已保存", "success");
@@ -238,6 +244,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
     { id: "approval" as const, label: "审批规则" },
+    { id: "claudeCode" as const, label: "Claude Code" },
   ] as const;
 
   return (
@@ -1015,6 +1022,168 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     </svg>
                     添加审批规则
                   </button>
+                )}
+              </section>
+            )}
+            {activeSection === "claudeCode" && (
+              <section aria-labelledby="claudecode-heading" className="space-y-4">
+                <h2 id="claudecode-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  Claude Code
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  集成 Claude Code Agent SDK，让 Agent 拥有强大的自主编码能力（文件编辑、终端执行、代码搜索等）。需要安装 <code>@anthropic-ai/claude-agent-sdk</code>。
+                </p>
+
+                <fieldset className="space-y-3">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={config.claudeCode?.enabled ?? false}
+                      onChange={(e) => setConfig({ ...config, claudeCode: { ...config.claudeCode, enabled: e.target.checked } })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-[var(--color-text)]">启用 Claude Code 能力</span>
+                      <p className="text-xs text-[var(--color-text-muted)] m-0 mt-0.5">
+                        全局开关。关闭后所有 Agent（包括 Team 模式子 Agent）都无法使用 Claude Code。
+                      </p>
+                    </div>
+                  </label>
+                </fieldset>
+
+                {(config.claudeCode?.enabled) && (
+                  <div className="space-y-3 pl-1">
+                    <div className="space-y-2">
+                      <label className="flex flex-col gap-1 text-sm text-[var(--color-text)]">
+                        <span>模型</span>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="默认（Sonnet）"
+                            value={config.claudeCode?.model ?? ""}
+                            onChange={(e) => setConfig({
+                              ...config,
+                              claudeCode: { ...config.claudeCode, enabled: true, model: e.target.value || undefined }
+                            })}
+                            className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] w-48"
+                          />
+                          <DropdownMenu.Root modal={false}>
+                            <DropdownMenu.Trigger asChild>
+                              <button
+                                type="button"
+                                className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-sm shrink-0 flex items-center gap-1 hover:bg-[var(--color-bg-secondary)]"
+                              >
+                                预设
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                              </button>
+                            </DropdownMenu.Trigger>
+                              <DropdownMenu.Content
+                                side="bottom"
+                                sideOffset={4}
+                                align="start"
+                                className="min-w-[180px] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-[100]"
+                              >
+                                {["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"].map((m) => (
+                                  <DropdownMenu.Item
+                                    key={m}
+                                    onSelect={() => setConfig({
+                                      ...config,
+                                      claudeCode: { ...config.claudeCode, enabled: true, model: m }
+                                    })}
+                                    className="w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none hover:bg-[var(--color-bg-secondary)] text-[var(--color-text)]"
+                                  >
+                                    {m}
+                                  </DropdownMenu.Item>
+                                ))}
+                              </DropdownMenu.Content>
+                          </DropdownMenu.Root>
+                          <button
+                            type="button"
+                            disabled={ccTesting}
+                            onClick={async () => {
+                              setCcTesting(true);
+                              setCcTestResult(null);
+                              try {
+                                const result = await testClaudeCode(config.claudeCode?.model);
+                                setCcTestResult(result);
+                              } catch (err) {
+                                setCcTestResult({ success: false, latencyMs: 0, error: String(err) });
+                              } finally {
+                                setCcTesting(false);
+                              }
+                            }}
+                            className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-sm hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {ccTesting ? "测试中..." : "测试连通性"}
+                          </button>
+                        </div>
+                        <span className="text-xs text-[var(--color-text-muted)]">
+                          选择预设或输入自定义 model ID，留空使用默认模型。
+                        </span>
+                      </label>
+                      {ccTestResult && (
+                        <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg border ${ccTestResult.success ? "border-green-300 bg-green-50 text-green-700 dark:border-green-700 dark:bg-green-900/20 dark:text-green-400" : "border-red-300 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-400"}`}>
+                          <span>{ccTestResult.success ? "\u2713" : "\u2717"}</span>
+                          <span>
+                            {ccTestResult.success
+                              ? `连接成功 — ${ccTestResult.model}, ${ccTestResult.latencyMs}ms`
+                              : `连接失败 — ${ccTestResult.error}`
+                            }
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <label className="flex flex-col gap-1 text-sm text-[var(--color-text)]">
+                      <span>默认最大轮次</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={config.claudeCode?.maxTurns ?? 15}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          claudeCode: { ...config.claudeCode, enabled: true, maxTurns: Math.max(1, parseInt(e.target.value, 10) || 15) }
+                        })}
+                        className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] w-32"
+                      />
+                      <span className="text-xs text-[var(--color-text-muted)]">Claude Code 执行的最大轮次（工具调用循环），默认 15</span>
+                    </label>
+
+                    <div className="space-y-2">
+                      <span className="text-sm text-[var(--color-text)]">允许的工具</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {["Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit"].map((t) => {
+                          const current = config.claudeCode?.allowedTools ?? ["Read", "Edit", "Write", "Bash", "Glob", "Grep"];
+                          const checked = current.includes(t);
+                          return (
+                            <label key={t} className="flex items-center gap-2 cursor-pointer text-sm text-[var(--color-text)]">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked ? current.filter(x => x !== t) : [...current, t];
+                                  setConfig({
+                                    ...config,
+                                    claudeCode: { ...config.claudeCode, enabled: true, allowedTools: next }
+                                  });
+                                }}
+                                className="border-[var(--color-border)]"
+                              />
+                              {t}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <span className="text-xs text-[var(--color-text-muted)]">
+                        选择 Claude Code 可以使用的工具。建议至少保留 Read 和 Edit。
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      提示：在 Team 模式中，每个子 Agent 还可以单独控制是否启用 Claude Code（在 Agent 管理面板中设置）。全局关闭时，所有子 Agent 的 Claude Code 能力都会被禁用。
+                    </p>
+                  </div>
                 )}
               </section>
             )}

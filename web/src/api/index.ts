@@ -594,3 +594,22 @@ export async function getCachedValidations(): Promise<Record<string, ModelValida
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+// ─── Claude Code Test ────────────────────────────────
+export interface ClaudeCodeTestResult {
+  success: boolean;
+  latencyMs: number;
+  model?: string;
+  result?: string;
+  error?: string;
+}
+
+export async function testClaudeCode(model?: string): Promise<ClaudeCodeTestResult> {
+  const r = await fetch(`${BASE}/claude-code/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
