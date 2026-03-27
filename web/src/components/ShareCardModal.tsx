@@ -16,6 +16,76 @@ interface Props {
   theme: "light" | "dark";
 }
 
+function resolveVar(el: HTMLElement, prop: string): string {
+  return getComputedStyle(el).getPropertyValue(prop).trim();
+}
+
+function inlineComputedStyles(root: HTMLElement) {
+  const walk = (el: HTMLElement) => {
+    const cs = getComputedStyle(el);
+
+    el.style.color = cs.color;
+    el.style.backgroundColor = cs.backgroundColor;
+    el.style.fontSize = cs.fontSize;
+    el.style.fontWeight = cs.fontWeight;
+    el.style.fontFamily = cs.fontFamily;
+    el.style.lineHeight = cs.lineHeight;
+    el.style.letterSpacing = cs.letterSpacing;
+    el.style.textAlign = cs.textAlign;
+
+    el.style.margin = cs.margin;
+    el.style.padding = cs.padding;
+
+    el.style.borderTop = cs.borderTop;
+    el.style.borderRight = cs.borderRight;
+    el.style.borderBottom = cs.borderBottom;
+    el.style.borderLeft = cs.borderLeft;
+    el.style.borderRadius = cs.borderRadius;
+
+    el.style.display = cs.display;
+    if (cs.display.includes("flex")) {
+      el.style.flexDirection = cs.flexDirection;
+      el.style.alignItems = cs.alignItems;
+      el.style.justifyContent = cs.justifyContent;
+      el.style.gap = cs.gap;
+      el.style.flexWrap = cs.flexWrap;
+      el.style.flexShrink = cs.flexShrink;
+      el.style.flexGrow = cs.flexGrow;
+    }
+
+    el.style.width = cs.width;
+    el.style.minWidth = cs.minWidth;
+    el.style.maxWidth = cs.maxWidth;
+    el.style.height = cs.height;
+    el.style.minHeight = cs.minHeight;
+    el.style.overflow = cs.overflow;
+    el.style.overflowX = cs.overflowX;
+    el.style.overflowY = cs.overflowY;
+    el.style.boxSizing = cs.boxSizing;
+    el.style.whiteSpace = cs.whiteSpace;
+    el.style.wordBreak = cs.wordBreak;
+    el.style.textOverflow = cs.textOverflow;
+    el.style.textDecoration = cs.textDecoration;
+
+    if (cs.listStyleType !== "none") {
+      el.style.listStyleType = cs.listStyleType;
+      el.style.listStylePosition = cs.listStylePosition;
+    }
+
+    if (cs.position === "relative" || cs.position === "absolute") {
+      el.style.position = cs.position;
+    }
+
+    for (let i = 0; i < el.children.length; i++) {
+      const child = el.children[i];
+      if (child instanceof HTMLElement) {
+        walk(child);
+      }
+    }
+  };
+  walk(root);
+}
+
 export default function ShareCardModal({
   open,
   onOpenChange,
@@ -31,11 +101,6 @@ export default function ShareCardModal({
   const [saving, setSaving] = useState(false);
   const [sharing, setSharing] = useState(false);
 
-  /**
-   * Capture the same DOM node as the preview. A previous approach cloned the
-   * card off-screen and inlined computed styles; that diverged from the real
-   * layout (flex vertical alignment, list markers) in html2canvas output.
-   */
   const captureCard = useCallback(async (): Promise<HTMLCanvasElement | null> => {
     const src = cardRef.current;
     if (!src) return null;
@@ -45,23 +110,39 @@ export default function ShareCardModal({
     }
     await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 
-    // html2canvas 把 DOM「重画」到 canvas 上，不是系统截屏，因此与浏览器原生排版/抗锯齿
-    // 可能有细微差别（字体、渐变、阴影、列表 marker、圆角等）。scale: 2 也会与 1x 屏显观感略不同。
-    // 若需更接近矢量效果可试 foreignObjectRendering: true（部分环境/跨域图可能异常）。
     return html2canvas(src, {
       backgroundColor: null,
       scale: 2,
       useCORS: true,
       logging: false,
-      onclone: (_doc, root) => {
-        root.querySelectorAll("pre").forEach((el) => {
+      onclone: (_doc, clonedRoot) => {
+        inlineComputedStyles(clonedRoot);
+
+        clonedRoot.querySelectorAll("pre").forEach((el) => {
           const p = el as HTMLElement;
           p.style.overflow = "visible";
           p.style.maxHeight = "none";
+          p.style.whiteSpace = "pre-wrap";
+          p.style.wordBreak = "break-all";
         });
+
+        clonedRoot.querySelectorAll("code").forEach((el) => {
+          const c = el as HTMLElement;
+          c.style.whiteSpace = "pre-wrap";
+          c.style.wordBreak = "break-all";
+        });
+
+        const rootBg = resolveVar(src, "--color-bg") || (theme === "light" ? "#f8fafc" : "#0f172a");
+        clonedRoot.style.setProperty("--color-bg", rootBg);
+        clonedRoot.style.setProperty("--color-surface", resolveVar(src, "--color-surface") || (theme === "light" ? "#ffffff" : "#1e293b"));
+        clonedRoot.style.setProperty("--color-surface-hover", resolveVar(src, "--color-surface-hover") || (theme === "light" ? "#f1f5f9" : "#334155"));
+        clonedRoot.style.setProperty("--color-border", resolveVar(src, "--color-border") || (theme === "light" ? "#e2e8f0" : "#334155"));
+        clonedRoot.style.setProperty("--color-text", resolveVar(src, "--color-text") || (theme === "light" ? "#0f172a" : "#f1f5f9"));
+        clonedRoot.style.setProperty("--color-text-muted", resolveVar(src, "--color-text-muted") || (theme === "light" ? "#64748b" : "#94a3b8"));
+        clonedRoot.style.setProperty("--color-accent", resolveVar(src, "--color-accent") || (theme === "light" ? "#0d9488" : "#14b8a6"));
       },
     });
-  }, []);
+  }, [theme]);
 
   const handleSaveImage = async () => {
     setSaving(true);

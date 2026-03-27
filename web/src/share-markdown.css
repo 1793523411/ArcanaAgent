@@ -1,54 +1,175 @@
-/* ShareCard only — MarkdownContent variant="share" */
+/* ShareCard only — MarkdownContent variant="share"
+ *
+ * All visual styles use concrete hex values (not CSS variables) so that
+ * html2canvas can render them correctly in the cloned DOM.
+ *
+ * Tailwind utility classes are stripped from share-variant components in
+ * MarkdownContent.tsx, so ALL visual styling comes from this file.
+ */
 
-/* GFM often renders <li><p>…</p></li>; block <p> breaks marker alignment — first line flows with marker */
+/* ──── Root ──── */
+.share-markdown.markdown-content {
+  font-size: 13.5px;
+  line-height: 1.8;
+  color: #334155;
+  word-break: break-word;
+}
+
+/* ──── Headings ──── */
+.share-markdown.markdown-content h1,
+.share-markdown.markdown-content h2,
+.share-markdown.markdown-content h3,
+.share-markdown.markdown-content h4,
+.share-markdown.markdown-content h5,
+.share-markdown.markdown-content h6 {
+  font-weight: 600;
+  line-height: 1.45;
+  color: #1e293b;
+  margin-bottom: 0.45em;
+}
+
+.share-markdown.markdown-content h1 {
+  font-size: 1.2em;
+  margin-top: 1.4em;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.share-markdown.markdown-content h2 {
+  font-size: 1.1em;
+  margin-top: 1.25em;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.share-markdown.markdown-content h3 {
+  font-size: 1em;
+  margin-top: 1em;
+}
+
+.share-markdown.markdown-content h4 {
+  font-size: 0.95em;
+  margin-top: 0.85em;
+  color: #475569;
+}
+
+.share-markdown.markdown-content h1:first-child,
+.share-markdown.markdown-content h2:first-child,
+.share-markdown.markdown-content h3:first-child,
+.share-markdown.markdown-content h4:first-child {
+  margin-top: 0;
+}
+
+/* ──── Paragraphs ──── */
+.share-markdown.markdown-content p {
+  margin-top: 0;
+  margin-bottom: 0.55em;
+}
+
+.share-markdown.markdown-content p:last-child {
+  margin-bottom: 0;
+}
+
+/* ──── Lists ──── */
 .share-markdown.markdown-content li.share-md-li > p:first-of-type {
   display: inline;
 }
 
 .share-markdown.markdown-content li.share-md-li > p:not(:first-of-type) {
   display: block;
-  margin-top: 0.5em;
+  margin-top: 0.35em;
 }
 
 .share-markdown.markdown-content li.share-md-li > p {
-  margin-bottom: 0.45em;
+  margin-bottom: 0.3em;
 }
 
 .share-markdown.markdown-content li.share-md-li > p:last-child {
   margin-bottom: 0;
 }
 
-/* Room for two-digit markers; outside so wrap aligns with text start */
 .share-markdown.markdown-content ol.share-md-list-ol {
+  list-style-type: decimal;
   list-style-position: outside;
-  padding-left: 1.85rem;
+  padding-left: 1.6em;
   margin-left: 0;
+  margin-top: 0.3em;
+  margin-bottom: 0.5em;
 }
 
 .share-markdown.markdown-content ul.share-md-list-ul {
+  list-style-type: disc;
   list-style-position: outside;
-  padding-left: 1.5rem;
+  padding-left: 1.4em;
   margin-left: 0;
+  margin-top: 0.3em;
+  margin-bottom: 0.5em;
 }
 
 .share-markdown.markdown-content li.share-md-li {
-  padding-left: 0.35rem;
+  padding-left: 0.2em;
+  margin-bottom: 0.2em;
+  line-height: 1.7;
 }
 
 .share-markdown.markdown-content li.share-md-li ol,
 .share-markdown.markdown-content li.share-md-li ul {
-  margin-top: 0.35em;
+  margin-top: 0.15em;
+  margin-bottom: 0.15em;
 }
 
-/* Code: padding on pre; code fills width; extra bottom space for descenders / html2canvas */
+/* ──── Inline code ──── */
+.share-markdown.markdown-content code:not(pre code) {
+  font-size: 0.84em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background-color: #f1f5f9 !important;
+  color: #0f766e !important;
+  border: none !important;
+  font-family: ui-monospace, 'SF Mono', Monaco, 'Cascadia Code', monospace;
+}
+
+/* ──── Code blocks ──── */
+.share-markdown .relative.group.my-3 {
+  margin-top: 0.6em;
+  margin-bottom: 0.6em;
+}
+
+/* Language bar */
+.share-markdown .relative.group.my-3 > div:first-child {
+  background-color: #f1f5f9 !important;
+  border: 1px solid #e2e8f0 !important;
+  border-bottom: none !important;
+  border-radius: 6px 6px 0 0 !important;
+  padding: 3px 12px !important;
+}
+
+.share-markdown .relative.group.my-3 > div:first-child span {
+  color: #94a3b8 !important;
+  font-size: 10px !important;
+}
+
+/* Hide copy button in image */
+.share-markdown .relative.group.my-3 > button {
+  display: none !important;
+}
+
 .share-markdown pre.share-card-pre,
 .share-markdown pre {
   width: 100%;
   max-width: 100%;
   min-width: 0;
   box-sizing: border-box;
-  line-height: 1.65;
+  line-height: 1.6;
   overflow-y: visible;
+  overflow-x: auto;
+  margin-top: 0;
+  margin-bottom: 0;
+  padding: 12px 14px !important;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0 !important;
+  background-color: #f8fafc !important;
+  font-size: 12.5px;
 }
 
 .share-markdown pre code.hljs,
@@ -58,6 +179,194 @@
   max-width: 100%;
   box-sizing: border-box;
   margin: 0;
-  padding: 0.15em 0 0.35em !important;
+  padding: 0 !important;
   line-height: inherit;
+  background: transparent !important;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ──── Blockquote ──── */
+.share-markdown.markdown-content blockquote {
+  margin-top: 0.55em;
+  margin-bottom: 0.55em;
+  padding: 8px 0 8px 14px;
+  border-left: 3px solid #0d9488 !important;
+  border-top: none !important;
+  border-right: none !important;
+  border-bottom: none !important;
+  background-color: transparent !important;
+  border-radius: 0;
+  color: #475569 !important;
+  font-style: normal;
+  font-size: 0.93em;
+}
+
+.share-markdown.markdown-content blockquote p {
+  margin-bottom: 0.25em;
+}
+
+/* ──── Tables ──── */
+.share-markdown.markdown-content .overflow-x-auto {
+  border: 1px solid #e2e8f0 !important;
+  border-radius: 6px;
+  overflow: hidden;
+  margin-top: 0.5em;
+  margin-bottom: 0.5em;
+}
+
+.share-markdown.markdown-content table {
+  font-size: 0.86em;
+  border-collapse: collapse;
+  width: 100%;
+}
+
+.share-markdown.markdown-content thead {
+  background-color: #f8fafc !important;
+}
+
+.share-markdown.markdown-content th {
+  font-weight: 600;
+  padding: 6px 10px;
+  text-align: left;
+  color: #1e293b;
+  white-space: nowrap;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.share-markdown.markdown-content td {
+  padding: 6px 10px;
+  text-align: left;
+  color: #334155;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.share-markdown.markdown-content tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* ──── Checkbox ──── */
+.share-markdown.markdown-content input[type="checkbox"] {
+  margin-right: 5px;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+  width: 13px;
+  height: 13px;
+  accent-color: #0d9488;
+}
+
+/* ──── hr ──── */
+.share-markdown.markdown-content hr {
+  border: none;
+  border-top: 1px solid #f1f5f9;
+  margin: 0.75em 0;
+}
+
+/* ──── Strong ──── */
+.share-markdown.markdown-content strong {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+/* ──── Links ──── */
+.share-markdown.markdown-content a {
+  color: #0d9488;
+  text-decoration: none;
+}
+
+/* ──── del ──── */
+.share-markdown.markdown-content del {
+  color: #94a3b8;
+}
+
+/* ──── Images ──── */
+.share-markdown.markdown-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+
+/* ═══════════════════════════════════════════════════
+ * Dark theme
+ * ═══════════════════════════════════════════════════ */
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content {
+  color: #cbd5e1;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h1,
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h2,
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h3,
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h4,
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h5,
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h6 {
+  color: #f1f5f9;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h1 {
+  border-bottom-color: #1e293b;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content h4 {
+  color: #94a3b8;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content strong {
+  color: #f1f5f9;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content code:not(pre code) {
+  background-color: #1e293b !important;
+  color: #2dd4bf !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown pre.share-card-pre,
+.share-card-root:not(.share-card-hljs-light) .share-markdown pre {
+  background-color: #0f172a !important;
+  border-color: #1e293b !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown .relative.group.my-3 > div:first-child {
+  background-color: #1e293b !important;
+  border-color: #334155 !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown .relative.group.my-3 > div:first-child span {
+  color: #64748b !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content blockquote {
+  border-left-color: #14b8a6 !important;
+  color: #94a3b8 !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content .overflow-x-auto {
+  border-color: #1e293b !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content thead {
+  background-color: #0f172a !important;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content th {
+  color: #f1f5f9;
+  border-bottom-color: #1e293b;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content td {
+  color: #cbd5e1;
+  border-bottom-color: #1e293b;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content hr {
+  border-top-color: #1e293b;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content a {
+  color: #14b8a6;
+}
+
+.share-card-root:not(.share-card-hljs-light) .share-markdown.markdown-content del {
+  color: #64748b;
 }

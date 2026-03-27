@@ -38,6 +38,7 @@ interface Props {
   } | null;
   onCompress?: () => void;
   compressing?: boolean;
+  onStop?: () => void;
   indexStatus?: {
     active: { strategy: string; ready: boolean; fileCount: number };
     strategies: Record<string, { strategy: string; ready: boolean; fileCount: number; available: boolean; missing: string[]; lastUpdated?: string; error?: string }>;
@@ -81,6 +82,7 @@ export default function ChatInputBar({
   contextUsage = null,
   onCompress,
   compressing = false,
+  onStop,
   indexStatus = null,
   indexBuilding = null,
   onIndexBuild,
@@ -572,17 +574,30 @@ export default function ChatInputBar({
                 )}
               </div>
             )}
-            <button
-              type="submit"
-              disabled={loading || disabled || (!value.trim() && files.length === 0)}
-              aria-label={loading || disabled ? "发送中" : "发送"}
-              className="p-2 rounded-full bg-[var(--color-accent)] text-white border-none hover:not-disabled:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="19" x2="12" y2="5" />
-                <polyline points="5 12 12 5 19 12" />
-              </svg>
-            </button>
+            {loading && onStop ? (
+              <button
+                type="button"
+                onClick={onStop}
+                aria-label="停止"
+                className="p-2 rounded-full bg-[var(--color-accent)] text-white border-none hover:bg-[var(--color-accent-hover)] transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <rect x="4" y="4" width="16" height="16" rx="2" />
+                </svg>
+              </button>
+            ) : (
+              <button
+                type="submit"
+                disabled={loading || disabled || (!value.trim() && files.length === 0)}
+                aria-label={loading || disabled ? "发送中" : "发送"}
+                className="p-2 rounded-full bg-[var(--color-accent)] text-white border-none hover:not-disabled:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="12" y1="19" x2="12" y2="5" />
+                  <polyline points="5 12 12 5 19 12" />
+                </svg>
+              </button>
+            )}
           </div>
         </div>
       </div>

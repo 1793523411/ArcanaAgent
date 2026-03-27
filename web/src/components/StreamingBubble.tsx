@@ -325,7 +325,7 @@ export default function StreamingBubble({
               onScroll={handleReasoningScroll}
               className="mt-1.5 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)] text-sm text-[var(--color-text)] whitespace-pre-wrap break-words max-h-[280px] overflow-auto"
             >
-              {hasReasoning ? <MarkdownContent transformImageUrl={transformImageUrl}>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
+              {hasReasoning ? <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{reasoning}</MarkdownContent> : <span className="text-[var(--color-text-muted)]">（思考中…）</span>}
             </div>
           )}
         </div>
@@ -471,7 +471,7 @@ export default function StreamingBubble({
                       </button>
                       {!reasoningCollapsed && (
                         <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
-                          <MarkdownContent transformImageUrl={transformImageUrl}>{s.reasoning}</MarkdownContent>
+                          <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{s.reasoning}</MarkdownContent>
                         </div>
                       )}
                     </div>
@@ -509,7 +509,7 @@ export default function StreamingBubble({
                       </button>
                       {!subContentCollapsed && (
                         <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-[12px]">
-                          <MarkdownContent transformImageUrl={transformImageUrl}>{s.content}</MarkdownContent>
+                          <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{s.content}</MarkdownContent>
                         </div>
                       )}
                     </div>
@@ -567,7 +567,7 @@ export default function StreamingBubble({
         </div>
       )}
       {content ? (
-        <MarkdownContent transformImageUrl={transformImageUrl}>{content}</MarkdownContent>
+        <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{content}</MarkdownContent>
       ) : (
         <div className="flex items-center gap-2 text-[var(--color-text-muted)]">
           <span className="loading-dots" />

@@ -76,6 +76,17 @@ export const defaultApprovalRules: ApprovalRule[] = [
 
 export type CodeIndexStrategy = "none" | "repomap" | "vector";
 
+export interface ClaudeCodeConfig {
+  /** 全局开关，默认 false */
+  enabled: boolean;
+  /** 使用的模型，如 "sonnet", "opus", "claude-sonnet-4-6" */
+  model?: string;
+  /** 默认最大轮次 */
+  maxTurns?: number;
+  /** 限制 Claude Code 可用工具 */
+  allowedTools?: string[];
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -86,6 +97,8 @@ export interface UserConfig {
   approvalRules?: ApprovalRule[];
   /** Code index strategy. undefined = auto-detect recommended */
   codeIndexStrategy?: CodeIndexStrategy;
+  /** Claude Code 集成配置 */
+  claudeCode?: ClaudeCodeConfig;
 }
 
 const defaultContext: ContextStrategyConfig = {
@@ -97,7 +110,7 @@ const defaultContext: ContextStrategyConfig = {
 };
 
 const defaultConfig: UserConfig = {
-  enabledToolIds: ["calculator", "get_time", "echo", "run_command", "read_file"],
+  enabledToolIds: ["get_time", "run_command", "read_file"],
   mcpServers: [],
   context: defaultContext,
   planning: {
@@ -175,6 +188,17 @@ export function loadUserConfig(): UserConfig {
         const val = (parsed as Record<string, unknown>).codeIndexStrategy;
         if (val === "none" || val === "repomap" || val === "vector") return val;
         return undefined;
+      })(),
+      claudeCode: (() => {
+        const raw = (parsed as Record<string, unknown>).claudeCode;
+        if (!raw || typeof raw !== "object") return undefined;
+        const cc = raw as Record<string, unknown>;
+        return {
+          enabled: typeof cc.enabled === "boolean" ? cc.enabled : false,
+          model: typeof cc.model === "string" ? cc.model : undefined,
+          maxTurns: typeof cc.maxTurns === "number" ? cc.maxTurns : undefined,
+          allowedTools: Array.isArray(cc.allowedTools) ? cc.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+        };
       })(),
     };
   } catch {

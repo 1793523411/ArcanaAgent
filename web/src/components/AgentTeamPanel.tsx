@@ -31,6 +31,7 @@ interface AgentFormData {
   color: string;
   systemPrompt: string;
   allowedTools: string[];
+  claudeCodeEnabled?: boolean;
 }
 
 const emptyAgentForm: AgentFormData = {
@@ -40,6 +41,7 @@ const emptyAgentForm: AgentFormData = {
   color: "#6B7280",
   systemPrompt: "",
   allowedTools: ["*"],
+  claudeCodeEnabled: false,
 };
 
 function AgentForm({
@@ -162,6 +164,22 @@ function AgentForm({
             </label>
           ))}
         </div>
+      </div>
+
+      {/* Claude Code toggle */}
+      <div>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={form.claudeCodeEnabled ?? false}
+            onChange={(e) => setForm({ ...form, claudeCodeEnabled: e.target.checked })}
+            className="border-[var(--color-border)]"
+          />
+          <span className="text-sm" style={{ color: "var(--color-text)" }}>启用 Claude Code 能力</span>
+        </label>
+        <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
+          允许该 Agent 使用 Claude Code 进行自主编码（需全局开启 Claude Code）
+        </p>
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
@@ -526,6 +544,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                       color: editingAgent.color,
                       systemPrompt: editingAgent.systemPrompt,
                       allowedTools: editingAgent.allowedTools,
+                      claudeCodeEnabled: editingAgent.claudeCodeEnabled ?? false,
                     } : aiGeneratedData ?? undefined}
                     onSave={handleSaveAgent}
                     onCancel={() => { setEditingAgentId(null); setCreatingAgent(false); setAiGeneratedData(null); }}

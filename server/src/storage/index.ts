@@ -20,6 +20,8 @@ export interface ToolLog {
   name: string;
   input: string;
   output: string;
+  /** Claude Code 实时执行子日志 */
+  subLogs?: Array<{ type: string; content: string }>;
 }
 
 export interface PlanLog {

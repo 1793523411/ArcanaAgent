@@ -1,7 +1,8 @@
 import { useState, useEffect } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
-import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, type SkillMeta, type IndexStatusResponse } from "../api";
+import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
+import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, restartMcpServer, testClaudeCode, type SkillMeta, type IndexStatusResponse, type ClaudeCodeTestResult } from "../api";
 import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
 import { useToast } from "./Toast";
 
@@ -27,13 +28,17 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex" | "claudeCode">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
   const [deleteSkillTarget, setDeleteSkillTarget] = useState<string | null>(null);
   const [indexStatus, setIndexStatus] = useState<IndexStatusResponse | null>(null);
   const [indexStatusLoading, setIndexStatusLoading] = useState(false);
+
+  // Claude Code test state
+  const [ccTesting, setCcTesting] = useState(false);
+  const [ccTestResult, setCcTestResult] = useState<ClaudeCodeTestResult | null>(null);
 
   // MCP form state
   const [showMcpForm, setShowMcpForm] = useState(false);
@@ -46,6 +51,8 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const [mcpHeaders, setMcpHeaders] = useState("");
   const [mcpAdding, setMcpAdding] = useState(false);
   const [mcpStatus, setMcpStatus] = useState<McpStatusItem[]>([]);
+  const [mcpRestarting, setMcpRestarting] = useState<string | null>(null);
+  const [mcpExpanded, setMcpExpanded] = useState<Set<string>>(new Set());
 
   // Approval rule form state
   const [showApprovalForm, setShowApprovalForm] = useState(false);
@@ -105,6 +112,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         mcpServers: config.mcpServers,
         approvalRules: config.approvalRules,
         codeIndexStrategy: config.codeIndexStrategy ?? null,
+        claudeCode: config.claudeCode,
       } as Partial<UserConfig>);
       setMcpStatus(updated.mcpStatus ?? []);
       toast("设置已保存", "success");
@@ -209,6 +217,23 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     }
   };
 
+  const handleRestartMcpServer = async (name: string) => {
+    setMcpRestarting(name);
+    try {
+      const result = await restartMcpServer(name);
+      setMcpStatus(result.mcpStatus ?? []);
+      if (result.connected) {
+        toast(`${name} 重启成功，已加载 ${result.toolCount} 个工具`, "success");
+      } else {
+        toast(`${name} 连接失败: ${result.error ?? "未知错误"}`, "error");
+      }
+    } catch (e) {
+      toast(`重启失败: ${e instanceof Error ? e.message : String(e)}`, "error");
+    } finally {
+      setMcpRestarting(null);
+    }
+  };
+
   const getServerStatus = (name: string): McpStatusItem | undefined => {
     return mcpStatus.find((s) => s.name === name);
   };
@@ -219,6 +244,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
     { id: "approval" as const, label: "审批规则" },
+    { id: "claudeCode" as const, label: "Claude Code" },
   ] as const;
 
   return (
@@ -501,39 +527,110 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                 <div className="flex flex-col gap-2">
                   {config.mcpServers.map((server) => {
                     const status = getServerStatus(server.name);
+                    const hasFailed = status && !status.connected;
+                    const isExpanded = mcpExpanded.has(server.name);
+                    const hasTools = status?.connected && status.tools && status.tools.length > 0;
                     return (
                       <div
                         key={server.name}
-                        className="flex items-start justify-between gap-3 p-3 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
+                        className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]"
                       >
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium text-[var(--color-text)]">{server.name}</span>
-                            {status ? (
-                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-                                {status.toolCount} tool{status.toolCount !== 1 ? "s" : ""}
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
-                                <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
-                                未连接
-                              </span>
+                        <div className="flex items-start justify-between gap-3 p-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium text-[var(--color-text)]">{server.name}</span>
+                              {status?.connected ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setMcpExpanded((prev) => {
+                                      const next = new Set(prev);
+                                      next.has(server.name) ? next.delete(server.name) : next.add(server.name);
+                                      return next;
+                                    });
+                                  }}
+                                  className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border-none cursor-pointer hover:bg-emerald-500/25 transition-colors"
+                                >
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+                                  {status.toolCount} tool{status.toolCount !== 1 ? "s" : ""}
+                                  <svg
+                                    width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                                    className={`transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                                  >
+                                    <polyline points="6 9 12 15 18 9" />
+                                  </svg>
+                                </button>
+                              ) : hasFailed ? (
+                                <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-red-500/15 text-red-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
+                                  连接失败
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded-full bg-yellow-500/15 text-yellow-400">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-yellow-400" />
+                                  未连接
+                                </span>
+                              )}
+                            </div>
+                            <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
+                              {server.transport === "streamablehttp"
+                                ? server.url
+                                : `${server.command} ${server.args.join(" ")}`}
+                            </p>
+                            {hasFailed && status.error && (
+                              <p className="m-0 mt-1 text-[12px] text-red-400 break-all">
+                                {status.error}
+                              </p>
                             )}
                           </div>
-                          <p className="m-0 mt-1 text-[12px] text-[var(--color-text-muted)] font-mono">
-                            {server.transport === "streamablehttp"
-                              ? server.url
-                              : `${server.command} ${server.args.join(" ")}`}
-                          </p>
+                          <div className="shrink-0 flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => handleRestartMcpServer(server.name)}
+                              disabled={mcpRestarting === server.name}
+                              className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-accent)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                              title="重启"
+                            >
+                              {mcpRestarting === server.name ? (
+                                <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                                </svg>
+                              ) : (
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <path d="M21 2v6h-6" />
+                                  <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                                  <path d="M3 22v-6h6" />
+                                  <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+                                </svg>
+                              )}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveMcpServer(server.name)}
+                              className="px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
+                            >
+                              删除
+                            </button>
+                          </div>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRemoveMcpServer(server.name)}
-                          className="shrink-0 px-2 py-1 text-[13px] text-[var(--color-text-muted)] hover:text-[var(--color-error-text)] border border-transparent hover:border-[var(--color-border)] rounded transition-colors"
-                        >
-                          删除
-                        </button>
+                        {isExpanded && hasTools && (
+                          <div className="px-3 pb-3 pt-0">
+                            <div className="flex flex-col gap-1 p-2 rounded-md bg-[var(--color-surface)] border border-[var(--color-border)]">
+                              {status.tools!.map((t) => (
+                                <div key={t.name} className="flex items-center gap-2 text-[12px] min-w-0" title={t.description || undefined}>
+                                  <code className="shrink-0 px-1.5 py-0.5 rounded bg-[var(--color-accent)]/10 text-[var(--color-accent)] font-mono text-[11px]">
+                                    {t.name}
+                                  </code>
+                                  {t.description && (
+                                    <span className="text-[var(--color-text-muted)] truncate">
+                                      {t.description}
+                                    </span>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -925,6 +1022,168 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     </svg>
                     添加审批规则
                   </button>
+                )}
+              </section>
+            )}
+            {activeSection === "claudeCode" && (
+              <section aria-labelledby="claudecode-heading" className="space-y-4">
+                <h2 id="claudecode-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  Claude Code
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  集成 Claude Code Agent SDK，让 Agent 拥有强大的自主编码能力（文件编辑、终端执行、代码搜索等）。需要安装 <code>@anthropic-ai/claude-agent-sdk</code>。
+                </p>
+
+                <fieldset className="space-y-3">
+                  <label className="flex items-center gap-3 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={config.claudeCode?.enabled ?? false}
+                      onChange={(e) => setConfig({ ...config, claudeCode: { ...config.claudeCode, enabled: e.target.checked } })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <div>
+                      <span className="text-sm font-medium text-[var(--color-text)]">启用 Claude Code 能力</span>
+                      <p className="text-xs text-[var(--color-text-muted)] m-0 mt-0.5">
+                        全局开关。关闭后所有 Agent（包括 Team 模式子 Agent）都无法使用 Claude Code。
+                      </p>
+                    </div>
+                  </label>
+                </fieldset>
+
+                {(config.claudeCode?.enabled) && (
+                  <div className="space-y-3 pl-1">
+                    <div className="space-y-2">
+                      <label className="flex flex-col gap-1 text-sm text-[var(--color-text)]">
+                        <span>模型</span>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            placeholder="默认（Sonnet）"
+                            value={config.claudeCode?.model ?? ""}
+                            onChange={(e) => setConfig({
+                              ...config,
+                              claudeCode: { ...config.claudeCode, enabled: true, model: e.target.value || undefined }
+                            })}
+                            className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] w-48"
+                          />
+                          <DropdownMenu.Root modal={false}>
+                            <DropdownMenu.Trigger asChild>
+                              <button
+                                type="button"
+                                className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-sm shrink-0 flex items-center gap-1 hover:bg-[var(--color-bg-secondary)]"
+                              >
+                                预设
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                              </button>
+                            </DropdownMenu.Trigger>
+                              <DropdownMenu.Content
+                                side="bottom"
+                                sideOffset={4}
+                                align="start"
+                                className="min-w-[180px] bg-[var(--color-surface)] border border-[var(--color-border)] rounded-xl shadow-lg p-1.5 z-[100]"
+                              >
+                                {["sonnet", "opus", "haiku", "claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"].map((m) => (
+                                  <DropdownMenu.Item
+                                    key={m}
+                                    onSelect={() => setConfig({
+                                      ...config,
+                                      claudeCode: { ...config.claudeCode, enabled: true, model: m }
+                                    })}
+                                    className="w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none hover:bg-[var(--color-bg-secondary)] text-[var(--color-text)]"
+                                  >
+                                    {m}
+                                  </DropdownMenu.Item>
+                                ))}
+                              </DropdownMenu.Content>
+                          </DropdownMenu.Root>
+                          <button
+                            type="button"
+                            disabled={ccTesting}
+                            onClick={async () => {
+                              setCcTesting(true);
+                              setCcTestResult(null);
+                              try {
+                                const result = await testClaudeCode(config.claudeCode?.model);
+                                setCcTestResult(result);
+                              } catch (err) {
+                                setCcTestResult({ success: false, latencyMs: 0, error: String(err) });
+                              } finally {
+                                setCcTesting(false);
+                              }
+                            }}
+                            className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] text-sm hover:bg-[var(--color-bg-secondary)] disabled:opacity-50 whitespace-nowrap"
+                          >
+                            {ccTesting ? "测试中..." : "测试连通性"}
+                          </button>
+                        </div>
+                        <span className="text-xs text-[var(--color-text-muted)]">
+                          选择预设或输入自定义 model ID，留空使用默认模型。
+                        </span>
+                      </label>
+                      {ccTestResult && (
+                        <div className={`flex items-center gap-2 text-sm px-3 py-2 rounded-lg border ${ccTestResult.success ? "border-green-300 bg-green-50 text-green-700 dark:border-green-700 dark:bg-green-900/20 dark:text-green-400" : "border-red-300 bg-red-50 text-red-700 dark:border-red-700 dark:bg-red-900/20 dark:text-red-400"}`}>
+                          <span>{ccTestResult.success ? "\u2713" : "\u2717"}</span>
+                          <span>
+                            {ccTestResult.success
+                              ? `连接成功 — ${ccTestResult.model}, ${ccTestResult.latencyMs}ms`
+                              : `连接失败 — ${ccTestResult.error}`
+                            }
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    <label className="flex flex-col gap-1 text-sm text-[var(--color-text)]">
+                      <span>默认最大轮次</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={config.claudeCode?.maxTurns ?? 15}
+                        onChange={(e) => setConfig({
+                          ...config,
+                          claudeCode: { ...config.claudeCode, enabled: true, maxTurns: Math.max(1, parseInt(e.target.value, 10) || 15) }
+                        })}
+                        className="px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] w-32"
+                      />
+                      <span className="text-xs text-[var(--color-text-muted)]">Claude Code 执行的最大轮次（工具调用循环），默认 15</span>
+                    </label>
+
+                    <div className="space-y-2">
+                      <span className="text-sm text-[var(--color-text)]">允许的工具</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {["Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit"].map((t) => {
+                          const current = config.claudeCode?.allowedTools ?? ["Read", "Edit", "Write", "Bash", "Glob", "Grep"];
+                          const checked = current.includes(t);
+                          return (
+                            <label key={t} className="flex items-center gap-2 cursor-pointer text-sm text-[var(--color-text)]">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => {
+                                  const next = checked ? current.filter(x => x !== t) : [...current, t];
+                                  setConfig({
+                                    ...config,
+                                    claudeCode: { ...config.claudeCode, enabled: true, allowedTools: next }
+                                  });
+                                }}
+                                className="border-[var(--color-border)]"
+                              />
+                              {t}
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <span className="text-xs text-[var(--color-text-muted)]">
+                        选择 Claude Code 可以使用的工具。建议至少保留 Read 和 Edit。
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[var(--color-text-muted)]">
+                      提示：在 Team 模式中，每个子 Agent 还可以单独控制是否启用 Claude Code（在 Agent 管理面板中设置）。全局关闭时，所有子 Agent 的 Claude Code 能力都会被禁用。
+                    </p>
+                  </div>
                 )}
               </section>
             )}

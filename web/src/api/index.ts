@@ -80,6 +80,21 @@ export interface Attachment {
   data: string;
 }
 
+/** Explicitly abort server-side agent execution for a conversation */
+export async function abortConversation(conversationId: string, partialMessage?: {
+  content?: string;
+  reasoningContent?: string;
+  toolLogs?: unknown[];
+  plan?: unknown;
+  subagents?: unknown[];
+}): Promise<void> {
+  await fetch(`${BASE}/conversations/${conversationId}/abort`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ partialMessage }),
+  });
+}
+
 export async function sendMessageStream(
   conversationId: string,
   text: string,
@@ -236,6 +251,16 @@ export async function putConfig(config: Partial<UserConfig>): Promise<UserConfig
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function restartMcpServer(serverName: string): Promise<{ connected: boolean; toolCount: number; error?: string; mcpStatus: import("../types").McpStatusItem[] }> {
+  const r = await fetch(`${BASE}/mcp/restart`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ serverName }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
@@ -566,6 +591,25 @@ export async function validateAllModels(): Promise<ModelValidationResult[]> {
 
 export async function getCachedValidations(): Promise<Record<string, ModelValidationResult>> {
   const r = await fetch(`${BASE}/models/validations`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Claude Code Test ────────────────────────────────
+export interface ClaudeCodeTestResult {
+  success: boolean;
+  latencyMs: number;
+  model?: string;
+  result?: string;
+  error?: string;
+}
+
+export async function testClaudeCode(model?: string): Promise<ClaudeCodeTestResult> {
+  const r = await fetch(`${BASE}/claude-code/test`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model }),
+  });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

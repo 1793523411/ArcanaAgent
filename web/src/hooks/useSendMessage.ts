@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { sendMessageStream, getMessages, getConversation, type Attachment } from "../api";
+import { sendMessageStream, getMessages, getConversation, abortConversation, type Attachment } from "../api";
 import type { AgentRole, ConversationMeta, ConversationMode, StoredMessage, StreamingStatus, ToolLog } from "../types";
 import type { FileWithData } from "../components/ChatInputBar";
 
@@ -156,15 +156,28 @@ export function useSendMessage(options: {
     });
   }, []);
 
-  const abortStreaming = useCallback((convId?: string) => {
+  const abortStreaming = useCallback((convId?: string, partialMessage?: {
+    content?: string;
+    reasoningContent?: string;
+    toolLogs?: unknown[];
+    plan?: unknown;
+    subagents?: unknown[];
+  }) => {
     const targetId = convId ?? currentConversationIdRef.current;
     if (!targetId) return;
+    // Guard: no-op if not currently streaming
+    const state = conversationStatesRef.current[targetId];
+    if (!state?.loading) return;
     const controller = abortControllersRef.current[targetId];
     if (controller) {
       controller.abort();
       delete abortControllersRef.current[targetId];
     }
-  }, []);
+    // Immediately clear loading/streaming state so the UI resets
+    clearConversationState(targetId);
+    // Explicitly tell the server to abort agent execution and save partial content
+    abortConversation(targetId, partialMessage).catch((e) => console.warn("abortConversation failed:", e));
+  }, [clearConversationState]);
 
   const clearStreaming = useCallback((convId?: string) => {
     const targetId = convId ?? currentConversationIdRef.current;
@@ -317,6 +330,40 @@ export function useSendMessage(options: {
                 streamingToolLogs: logs,
               };
             });
+            return;
+          }
+          if (obj.type === "claude_code_log" && obj.log) {
+            const log = obj.log as { type: string; toolName?: string; elapsed?: number; content?: string };
+            let content = "";
+            if (log.type === "tool_progress") {
+              content = `[${log.toolName ?? "tool"}] ${log.elapsed ?? 0}s`;
+            } else if (log.type === "tool_summary") {
+              content = log.content ?? "";
+            } else if (log.type === "text") {
+              content = log.content ?? "";
+            } else if (log.type === "tool_use") {
+              content = `$ ${log.toolName ?? "tool"}: ${log.content ?? ""}`;
+            } else if (log.type === "tool_result") {
+              content = log.content ?? "";
+            } else if (log.type === "result" || log.type === "error") {
+              content = `[${log.type}] ${log.content ?? ""}`;
+            } else if (log.type === "system") {
+              content = log.content ?? "";
+            }
+            if (content) {
+              setConversationState(convId, (prev) => {
+                const logs = [...prev.streamingToolLogs];
+                let idx = -1;
+                for (let i = logs.length - 1; i >= 0; i--) {
+                  if (logs[i].name === "claude_code" && !logs[i].output) { idx = i; break; }
+                }
+                if (idx >= 0) {
+                  const entry = logs[idx];
+                  logs[idx] = { ...entry, subLogs: [...(entry.subLogs ?? []), { type: log.type, content }] };
+                }
+                return { ...prev, streamingToolLogs: logs };
+              });
+            }
             return;
           }
           if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
@@ -547,6 +594,11 @@ export function useSendMessage(options: {
         },
         (err) => {
           delete abortControllersRef.current[convId];
+          // If aborted by user, state is already cleared — don't re-set error
+          if (controller.signal.aborted) {
+            clearConversationState(convId);
+            return;
+          }
           setConversationState(convId, (prev) => ({
             ...prev,
             loading: false,

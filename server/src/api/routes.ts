@@ -43,10 +43,11 @@ import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
+import { claudeCodeEmitter, type ClaudeCodeLogEvent } from "../tools/claude_code.js";
 import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
 import { validateModel, validateModels as validateModelsBatch, validateAllModels, loadValidationResults, clearProviderValidations } from "../llm/validate.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
-import { connectToMcpServers, getMcpStatus } from "../mcp/client.js";
+import { connectToMcpServers, getMcpStatus, restartMcpServer } from "../mcp/client.js";
 import {
   getConversationLogger,
   logConversation,
@@ -57,6 +58,9 @@ import {
 } from "../lib/logger.js";
 import { estimateBaseMessageTokens, estimateTextTokens } from "../lib/tokenizer.js";
 
+
+/** Global registry of active streaming abort controllers per conversation */
+const activeAbortControllers = new Map<string, AbortController>();
 
 function convId(req: Request): string {
   const id = req.params.id;
@@ -520,10 +524,12 @@ export async function postConversationMessage(req: Request, res: Response): Prom
 
   // S6: Handle client disconnect — cancel pending approvals and abort agent execution
   const abortController = new AbortController();
+  activeAbortControllers.set(id, abortController);
   let clientDisconnected = false;
   req.on("close", () => {
     clientDisconnected = true;
     abortController.abort();
+    activeAbortControllers.delete(id);
     approvalManager.cancelConversation(id);
   });
 
@@ -573,7 +579,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   const workspacePath = ensureWorkspace(id);
   const collectedStored: StoredMessage[] = [];
   const isAnthropicApi = (() => { try { return loadModelConfig(config.modelId).api === "anthropic-messages"; } catch { return false; } })();
-  const pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
+  const pendingToolLogs: Array<{ name: string; input: string; output: string; subLogs?: Array<{ type: string; content: string }> }> = [];
+  // Claude Code 实时日志转发
+  let claudeCodeLogListener: ((evt: ClaudeCodeLogEvent) => void) | null = null;
   let streamedContent = "";
   let lastReasoning: string | undefined;
   let llmCallCount = 0;
@@ -693,6 +701,31 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             const input = typeof tc.args === "string" ? tc.args : JSON.stringify(tc.args ?? {});
             writeImmediate("data: " + JSON.stringify({ type: "tool_call", name: tc.name, input }) + "\n\n");
             pendingToolLogs.push({ name: tc.name, input, output: "" });
+            // 注册 claude_code 实时日志监听
+            if (tc.name === "claude_code" && !claudeCodeLogListener) {
+              claudeCodeLogListener = (evt: ClaudeCodeLogEvent) => {
+                try {
+                  writeImmediate("data: " + JSON.stringify({ type: "claude_code_log", log: evt }) + "\n\n");
+                  // 同时累积到 pendingToolLogs 以便持久化
+                  const ccEntry = pendingToolLogs.filter((tl) => tl.name === "claude_code" && !tl.output).pop();
+                  if (ccEntry) {
+                    if (!ccEntry.subLogs) ccEntry.subLogs = [];
+                    let content = "";
+                    if (evt.type === "tool_progress") {
+                      content = `[${evt.toolName ?? "tool"}] ${evt.elapsed ?? 0}s`;
+                    } else if (evt.type === "tool_use") {
+                      content = `$ ${evt.toolName ?? "tool"}: ${evt.content ?? ""}`;
+                    } else {
+                      content = evt.content ?? "";
+                    }
+                    if (content) {
+                      ccEntry.subLogs.push({ type: evt.type, content });
+                    }
+                  }
+                } catch { /* stream may be closed */ }
+              };
+              claudeCodeEmitter.on("log", claudeCodeLogListener);
+            }
           }
         }
       }
@@ -705,6 +738,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
             const pending = pendingToolLogs.filter((tl) => tl.name === toolMsg.name && !tl.output);
             if (pending.length > 0) pending[0].output = output;
             writeImmediate("data: " + JSON.stringify({ type: "tool_result", name: toolMsg.name, output }) + "\n\n");
+            // 移除 claude_code 日志监听
+            if (toolMsg.name === "claude_code" && claudeCodeLogListener) {
+              claudeCodeEmitter.removeListener("log", claudeCodeLogListener);
+              claudeCodeLogListener = null;
+            }
 
             // 记录工具调用
             logToolCall(id, {
@@ -814,7 +852,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         promptTokens: contextPromptTokens,
       };
     }
-    if (toStore.length > 0) {
+    if (toStore.length > 0 && !abortController.signal.aborted) {
       compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
     }
@@ -832,15 +870,29 @@ export async function postConversationMessage(req: Request, res: Response): Prom
     });
   } catch (e) {
     flushNow();
+    const isAborted = abortController.signal.aborted;
     const errMsg = e instanceof Error ? e.message : String(e);
-    logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
-    // 保存已完成的部分结果，避免刷新后消息丢失
-    try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
-    res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
+    if (!isAborted) {
+      logError(id, e instanceof Error ? e : String(e), { stage: "stream_agent" });
+      // 保存已完成的部分结果，避免刷新后消息丢失
+      try { saveCollectedResults(errMsg); } catch { /* ignore save errors */ }
+      res.write("data: " + JSON.stringify(buildStreamErrorPayload(errMsg)) + "\n\n");
+    }
+    // When aborted, partial content is saved by the abort endpoint — skip duplicate save
   } finally {
+    activeAbortControllers.delete(id);
+    // 清理 claude_code 日志监听（防止泄漏）
+    if (claudeCodeLogListener) {
+      claudeCodeEmitter.removeListener("log", claudeCodeLogListener);
+      claudeCodeLogListener = null;
+    }
     if (flushTimer !== null) clearTimeout(flushTimer);
-    res.write("data: [DONE]\n\n");
-    res.end();
+    if (!clientDisconnected) {
+      try {
+        res.write("data: [DONE]\n\n");
+        res.end();
+      } catch { /* client gone */ }
+    }
   }
 }
 
@@ -1044,6 +1096,59 @@ export async function postValidateAllModels(_req: Request, res: Response): Promi
   }
 }
 
+// ─── Claude Code Test ────────────────────────────────
+export async function postClaudeCodeTest(req: Request, res: Response): Promise<void> {
+  const body = req.body as { model?: string };
+  const model = typeof body.model === "string" && body.model.trim() ? body.model.trim() : undefined;
+
+  let queryFn: typeof import("@anthropic-ai/claude-agent-sdk").query;
+  try {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    queryFn = sdk.query;
+  } catch {
+    res.json({ success: false, latencyMs: 0, error: "@anthropic-ai/claude-agent-sdk is not installed" });
+    return;
+  }
+
+  const start = Date.now();
+  const abortController = new AbortController();
+  const timeout = setTimeout(() => abortController.abort(), 30_000);
+
+  try {
+    const conversation = queryFn({
+      prompt: "Say hello in one word.",
+      options: {
+        model,
+        maxTurns: 1,
+        allowedTools: [],
+        permissionMode: "bypassPermissions",
+        abortController,
+        persistSession: false,
+      },
+    });
+
+    let resultText = "";
+    for await (const message of conversation) {
+      if (message.type === "result") {
+        resultText = message.subtype === "success" ? (message.result || "ok") : (message.errors?.join("; ") || "unknown error");
+      }
+    }
+
+    const latencyMs = Date.now() - start;
+    res.json({ success: true, latencyMs, model: model || "default", result: resultText.slice(0, 200) });
+  } catch (err: unknown) {
+    const latencyMs = Date.now() - start;
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("abort")) {
+      res.json({ success: false, latencyMs, error: "Timeout (30s)" });
+    } else {
+      res.json({ success: false, latencyMs, error: msg });
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function createTemplateId(): string {
   return `tpl_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 }
@@ -1188,6 +1293,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     templates?: PromptTemplate[];
     approvalRules?: ApprovalRule[];
     codeIndexStrategy?: string;
+    claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; allowedTools?: string[] };
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -1217,6 +1323,14 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
   } else if (body.codeIndexStrategy === "" || body.codeIndexStrategy === null) {
     config.codeIndexStrategy = undefined;
   }
+  if (body.claudeCode && typeof body.claudeCode === "object") {
+    config.claudeCode = {
+      enabled: typeof body.claudeCode.enabled === "boolean" ? body.claudeCode.enabled : false,
+      model: typeof body.claudeCode.model === "string" && body.claudeCode.model.trim() ? body.claudeCode.model.trim() : undefined,
+      maxTurns: typeof body.claudeCode.maxTurns === "number" ? body.claudeCode.maxTurns : undefined,
+      allowedTools: Array.isArray(body.claudeCode.allowedTools) ? body.claudeCode.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+    };
+  }
   saveUserConfig(config);
 
   // MCP 连接在后台异步执行，不阻塞响应（npx 下载包可能很慢）
@@ -1228,6 +1342,60 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
 
   const mcpStatus = getMcpStatus();
   res.json({ ...config, mcpStatus });
+}
+
+// ─── Abort streaming ─────────────────────────────────────────
+
+export function postAbortConversation(req: Request, res: Response): void {
+  const id = convId(req);
+  const meta = getConversation(id);
+  if (!meta) { res.status(404).json({ error: "Conversation not found" }); return; }
+
+  const controller = activeAbortControllers.get(id);
+  if (controller) {
+    controller.abort();
+    activeAbortControllers.delete(id);
+    approvalManager.cancelConversation(id);
+  }
+  // Save partial content sent from the frontend.
+  // Note: don't gate on `controller` — req.on("close") from the SSE stream may have
+  // already deleted it from the map before this POST arrives (race condition).
+  // The frontend's `!state?.loading` guard prevents spurious calls.
+  const { partialMessage } = req.body as { partialMessage?: { content?: string; reasoningContent?: string; toolLogs?: unknown[]; plan?: unknown; subagents?: unknown[] } };
+  if (partialMessage) {
+    const msg: StoredMessage = {
+      type: "ai",
+      content: partialMessage.content || "(已停止)",
+    };
+    if (partialMessage.reasoningContent) msg.reasoningContent = partialMessage.reasoningContent;
+    if (partialMessage.toolLogs && (partialMessage.toolLogs as unknown[]).length > 0) msg.toolLogs = partialMessage.toolLogs as StoredMessage["toolLogs"];
+    if (partialMessage.plan) msg.plan = partialMessage.plan as StoredMessage["plan"];
+    if (partialMessage.subagents && (partialMessage.subagents as unknown[]).length > 0) msg.subagents = partialMessage.subagents as StoredMessage["subagents"];
+    try {
+      appendMessages(id, [msg]);
+    } catch (e) {
+      logError(id, e instanceof Error ? e : String(e), { stage: "abort_save_partial" });
+    }
+  }
+  res.json({ ok: true });
+}
+
+// ─── MCP restart ─────────────────────────────────────────────
+
+export async function postMcpRestart(req: Request, res: Response): Promise<void> {
+  const { serverName } = req.body as { serverName?: string };
+  if (!serverName || typeof serverName !== "string") {
+    res.status(400).json({ error: "serverName is required" });
+    return;
+  }
+  const config = loadUserConfig();
+  try {
+    const result = await restartMcpServer(serverName, config.mcpServers);
+    const mcpStatus = getMcpStatus();
+    res.json({ ...result, mcpStatus });
+  } catch (e) {
+    res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 // ─── Artifact (workspace) routes ─────────────────────────────
@@ -1539,6 +1707,7 @@ const agentDefBody = z.object({
   color: z.string().max(20).default("#6B7280"),
   systemPrompt: z.string().max(5000).default(""),
   allowedTools: z.array(z.string()).default(["*"]),
+  claudeCodeEnabled: z.boolean().optional().default(false),
 });
 
 export function postAgents(req: Request, res: Response): void {

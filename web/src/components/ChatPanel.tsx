@@ -10,6 +10,7 @@ interface Props {
   input: string;
   onInputChange: (value: string) => void;
   onSend: () => void;
+  onStop?: () => void;
   loading: boolean;
   streamingContent: string;
   streamingReasoning: string;
@@ -107,6 +108,7 @@ export default function ChatPanel({
   input,
   onInputChange,
   onSend,
+  onStop,
   loading,
   streamingContent,
   streamingReasoning,
@@ -274,35 +276,59 @@ export default function ChatPanel({
     <div className="flex-1 flex flex-col min-h-0 min-w-0 relative">
       <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 min-h-0 overflow-auto p-6 flex flex-col gap-4">
         {(() => {
-          // 合并中间 AI 消息的 reasoning 到后续有内容的 AI 消息，与流式展示保持一致
+          // 合并同一轮对话中多条 AI 消息为一条展示消息：
+          // - 携带 tool_calls 的 AI 消息视为"中间消息"，其 reasoning 和 toolLogs 向后合并
+          // - 某些模型（如 doubao）在每次工具调用时会输出中间说明文字，一并收集
+          // - 最终展示的是同一轮里最后一条"终态"AI 消息，附带累积的 reasoning 和 toolLogs
           const raw = messages ?? [];
           const merged: Array<{ display: StoredMessage; serverIndex: number }> = [];
           let pendingReasoning: string[] = [];
+          let pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
+          let pendingContent: string[] = [];
 
           for (let serverIndex = 0; serverIndex < raw.length; serverIndex++) {
             const m = raw[serverIndex];
             if (m.type === "tool") continue;
 
+            // 只要 AI 消息携带 tool_calls 就视为中间调度消息，合并到后续终态消息
             const isDispatchOnly = m.type === "ai"
-              && (!m.content || !m.content.trim())
               && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
 
             if (isDispatchOnly) {
+              if (typeof m.content === "string" && m.content.trim()) pendingContent.push(m.content.trim());
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
+              if (Array.isArray(m.toolLogs)) pendingToolLogs.push(...m.toolLogs);
               continue;
             }
 
-            if (m.type === "ai" && pendingReasoning.length > 0) {
+            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0)) {
               const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
-              merged.push({ display: { ...m, reasoningContent: combined }, serverIndex });
+              const combinedToolLogs = [...pendingToolLogs, ...(m.toolLogs ?? [])];
+              const combinedContent = [...pendingContent, ...(typeof m.content === "string" && m.content.trim() ? [m.content.trim()] : [])].join("\n\n");
+              merged.push({
+                display: {
+                  ...m,
+                  content: combinedContent || m.content,
+                  reasoningContent: combined || m.reasoningContent,
+                  toolLogs: combinedToolLogs.length > 0 ? combinedToolLogs : m.toolLogs,
+                },
+                serverIndex,
+              });
               pendingReasoning = [];
+              pendingToolLogs = [];
+              pendingContent = [];
             } else {
               merged.push({ display: m, serverIndex });
             }
           }
-          if (pendingReasoning.length > 0) {
+          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0) {
             merged.push({
-              display: { type: "ai", content: "", reasoningContent: pendingReasoning.join("\n\n---\n\n") } as StoredMessage,
+              display: {
+                type: "ai",
+                content: pendingContent.join("\n\n"),
+                reasoningContent: pendingReasoning.join("\n\n---\n\n"),
+                toolLogs: pendingToolLogs.length > 0 ? pendingToolLogs : undefined,
+              } as StoredMessage,
               serverIndex: -1,
             });
           }
@@ -374,6 +400,7 @@ export default function ChatPanel({
               value={input}
               onChange={onInputChange}
               onSend={onSend}
+              onStop={loading ? onStop : undefined}
               loading={loading || isTaskExecuting}
               compact
               placeholder={isTaskExecuting ? "定时任务执行中，请稍候..." : "输入消息…"}

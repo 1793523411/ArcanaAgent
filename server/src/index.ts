@@ -15,11 +15,13 @@ import {
   getConversationExport,
   postConversationMessage,
   postConversationMessageSync,
+  postAbortConversation,
   postConversationCompress,
   deleteConversationById,
   postChat,
   getConfig,
   putConfig,
+  postMcpRestart,
   getModels,
   getHealth,
   getIndexStatus,
@@ -54,6 +56,7 @@ import {
   postValidateModels,
   postValidateAllModels,
   getValidationResults,
+  postClaudeCodeTest,
 } from "./api/routes.js";
 import { connectToMcpServers } from "./mcp/client.js";
 import { loadUserConfig } from "./config/userConfig.js";
@@ -105,6 +108,7 @@ app.get("/api/conversations/:id/attachments/:filename", getConversationAttachmen
 app.get("/api/conversations/:id/artifacts", getConversationArtifacts);
 app.get("/api/conversations/:id/artifacts/*", getConversationArtifactFile);
 app.post("/api/conversations/:id/messages", postConversationMessage);
+app.post("/api/conversations/:id/abort", postAbortConversation);
 app.post("/api/conversations/:id/compress", postConversationCompress);
 app.get("/api/conversations/:id/approvals", getApprovals);
 app.post("/api/conversations/:id/approvals/:requestId", postApprovalDecision);
@@ -113,6 +117,7 @@ app.post("/api/conversations/:id/messages/sync", postConversationMessageSync);
 app.post("/api/chat", postChat);
 app.get("/api/config", getConfig);
 app.put("/api/config", putConfig);
+app.post("/api/mcp/restart", postMcpRestart);
 app.get("/api/models", getModels);
 app.get("/api/models/providers", getModelProviders);
 app.post("/api/models/providers", postModelProvider);
@@ -120,6 +125,7 @@ app.put("/api/models/providers/:name", putModelProvider);
 app.delete("/api/models/providers/:name", deleteModelProvider);
 app.post("/api/models/validate", postValidateModels);
 app.post("/api/models/validate-all", postValidateAllModels);
+app.post("/api/claude-code/test", postClaudeCodeTest);
 app.get("/api/models/validations", getValidationResults);
 app.get("/api/skills", getSkillsList);
 app.post("/api/skills/upload", upload.single("zip"), postSkillsUpload);
