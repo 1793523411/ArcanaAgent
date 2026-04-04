@@ -3,7 +3,7 @@ import * as Dialog from "@radix-ui/react-dialog";
 import * as AlertDialog from "@radix-ui/react-alert-dialog";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { getConfig, putConfig, getSkills, uploadSkillZip, deleteSkill, getIndexStatus, restartMcpServer, testClaudeCode, type SkillMeta, type IndexStatusResponse, type ClaudeCodeTestResult } from "../api";
-import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule } from "../types";
+import type { UserConfig, ContextStrategyConfig, McpServerConfig, McpStatusItem, PlanningConfig, ApprovalRule, ExecutionEnhancementsConfig } from "../types";
 import { useToast } from "./Toast";
 
 const DEFAULT_CONTEXT: ContextStrategyConfig = {
@@ -19,6 +19,18 @@ const DEFAULT_PLANNING: PlanningConfig = {
   streamProgress: true,
 };
 
+const DEFAULT_ENHANCEMENTS: ExecutionEnhancementsConfig = {
+  evalGuard: false,
+  loopDetection: false,
+  replan: false,
+  autoApproveReplan: false,
+  outerRetry: false,
+  maxReplanAttempts: 3,
+  maxOuterRetries: 2,
+  loopWindowSize: 6,
+  loopSimilarityThreshold: 0.7,
+};
+
 interface Props {
   onClose: () => void;
   onSaved: () => void;
@@ -28,7 +40,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
   const { toast } = useToast();
   const [config, setConfig] = useState<UserConfig | null>(null);
   const [saving, setSaving] = useState(false);
-  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex" | "claudeCode">("context");
+  const [activeSection, setActiveSection] = useState<"context" | "mcp" | "skills" | "approval" | "codeIndex" | "claudeCode" | "enhancements">("context");
   const [skills, setSkills] = useState<SkillMeta[]>([]);
   const [skillUploading, setSkillUploading] = useState(false);
   const [skillUploadError, setSkillUploadError] = useState<string | null>(null);
@@ -85,6 +97,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   const ctx = config?.context ?? DEFAULT_CONTEXT;
   const planning = config?.planning ?? DEFAULT_PLANNING;
+  const enhancements = config?.enhancements ?? DEFAULT_ENHANCEMENTS;
 
   const setContext = (next: Partial<ContextStrategyConfig>) => {
     if (!config) return;
@@ -102,6 +115,14 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
     });
   };
 
+  const setEnhancements = (next: Partial<ExecutionEnhancementsConfig>) => {
+    if (!config) return;
+    setConfig({
+      ...config,
+      enhancements: { ...DEFAULT_ENHANCEMENTS, ...config.enhancements, ...next },
+    });
+  };
+
   const handleSave = async () => {
     if (!config) return;
     setSaving(true);
@@ -113,6 +134,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
         approvalRules: config.approvalRules,
         codeIndexStrategy: config.codeIndexStrategy ?? null,
         claudeCode: config.claudeCode,
+        enhancements: config.enhancements,
       } as Partial<UserConfig>);
       setMcpStatus(updated.mcpStatus ?? []);
       toast("设置已保存", "success");
@@ -240,6 +262,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
 
   const sections = [
     { id: "context" as const, label: "上下文策略" },
+    { id: "enhancements" as const, label: "执行增强" },
     { id: "codeIndex" as const, label: "代码索引" },
     { id: "mcp" as const, label: "MCP Servers" },
     { id: "skills" as const, label: "Skills" },
@@ -408,6 +431,145 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     )}
                   </div>
                 </div>
+              </section>
+            )}
+            {activeSection === "enhancements" && (
+              <section aria-labelledby="enhancements-heading" className="space-y-4">
+                <h2 id="enhancements-heading" className="text-base font-semibold text-[var(--color-text)] m-0">
+                  执行增强
+                </h2>
+                <p className="text-[13px] text-[var(--color-text-muted)]">
+                  为任何模式添加执行质量监控。各特性独立开关，可自由组合。
+                </p>
+                <fieldset className="space-y-3">
+                  <legend className="text-sm text-[var(--color-text)] font-medium">核心特性</legend>
+                  <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                    <input
+                      type="checkbox"
+                      checked={enhancements.loopDetection}
+                      onChange={(e) => setEnhancements({ loopDetection: e.target.checked })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <span>循环检测</span>
+                    <span className="text-[11px] text-[var(--color-text-muted)] ml-1">（零 token 成本）</span>
+                  </label>
+                  <p className="text-xs text-[var(--color-text-muted)] ml-6 -mt-1.5">
+                    纯算法检测 agent 陷入工具调用循环（精确重复 + 语义停滞），自动提示换策略。
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                    <input
+                      type="checkbox"
+                      checked={enhancements.evalGuard}
+                      onChange={(e) => setEnhancements({ evalGuard: e.target.checked })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <span>步骤验证</span>
+                    <span className="text-[11px] text-[var(--color-text-muted)] ml-1">（每步 1 次 LLM 调用）</span>
+                  </label>
+                  <p className="text-xs text-[var(--color-text-muted)] ml-6 -mt-1.5">
+                    计划步骤完成后用 LLM 评估证据质量，防止"假完成"。
+                  </p>
+                  <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
+                    <input
+                      type="checkbox"
+                      checked={enhancements.replan}
+                      onChange={(e) => setEnhancements({ replan: e.target.checked })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <span>动态重规划</span>
+                    <span className="text-[11px] text-[var(--color-text-muted)] ml-1">（触发时 1 次 LLM 调用）</span>
+                  </label>
+                  <p className="text-xs text-[var(--color-text-muted)] ml-6 -mt-1.5">
+                    验证失败或循环检测触发时，自动生成修订后的执行计划。
+                  </p>
+                  {enhancements.replan && (
+                    <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)] ml-6">
+                      <input
+                        type="checkbox"
+                        checked={enhancements.autoApproveReplan}
+                        onChange={(e) => setEnhancements({ autoApproveReplan: e.target.checked })}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span>自动批准重规划</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] ml-1">开启后直接替换计划，关闭则仅作为建议</span>
+                    </label>
+                  )}
+                  <label className={`flex items-center gap-2 cursor-pointer text-[var(--color-text)] ${!(enhancements.evalGuard || enhancements.loopDetection || enhancements.replan) ? "opacity-50" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={enhancements.outerRetry}
+                      disabled={!(enhancements.evalGuard || enhancements.loopDetection || enhancements.replan)}
+                      onChange={(e) => setEnhancements({ outerRetry: e.target.checked })}
+                      className="border-[var(--color-border)]"
+                    />
+                    <span>外层重试</span>
+                  </label>
+                  <p className="text-xs text-[var(--color-text-muted)] ml-6 -mt-1.5">
+                    整轮执行失败后，注入失败摘要并重新执行，尝试不同策略。需要至少启用一项核心特性。
+                  </p>
+                </fieldset>
+                <fieldset className="space-y-3 mt-4">
+                  <legend className="text-sm text-[var(--color-text)] font-medium">高级参数</legend>
+                  <p className="text-xs text-[var(--color-text-muted)] -mt-1">调整执行监控的灵敏度与重试策略，一般保持默认即可。</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--color-text)]">最大重规划次数</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] block">单轮执行中允许触发重规划的上限</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={10}
+                        value={enhancements.maxReplanAttempts}
+                        onChange={(e) => setEnhancements({ maxReplanAttempts: Math.max(1, parseInt(e.target.value) || 3) })}
+                        disabled={!enhancements.replan}
+                        className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--color-text)]">外层最大重试次数</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] block">整轮失败后从头重试的最大次数</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={5}
+                        value={enhancements.maxOuterRetries}
+                        onChange={(e) => setEnhancements({ maxOuterRetries: Math.max(1, parseInt(e.target.value) || 2) })}
+                        disabled={!enhancements.outerRetry}
+                        className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--color-text)]">循环检测窗口大小</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] block">检查最近 N 次工具调用是否重复</span>
+                      <input
+                        type="number"
+                        min={3}
+                        max={20}
+                        value={enhancements.loopWindowSize}
+                        onChange={(e) => setEnhancements({ loopWindowSize: Math.max(3, parseInt(e.target.value) || 6) })}
+                        disabled={!enhancements.loopDetection}
+                        className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--color-text)]">相似度阈值</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] block">工具调用相似度超过此值视为重复，越低越敏感</span>
+                      <input
+                        type="number"
+                        min={0.1}
+                        max={1.0}
+                        step={0.05}
+                        value={enhancements.loopSimilarityThreshold}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          if (v > 0 && v <= 1) setEnhancements({ loopSimilarityThreshold: v });
+                        }}
+                        disabled={!enhancements.loopDetection}
+                        className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
+                      />
+                    </label>
+                  </div>
+                </fieldset>
               </section>
             )}
             {activeSection === "codeIndex" && (

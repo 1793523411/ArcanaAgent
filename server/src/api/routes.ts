@@ -39,11 +39,11 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
-import { DEFAULT_HARNESS_CONFIG } from "../agent/harness/types.js";
 import { streamHarnessAgent } from "../agent/harness/harnessDriver.js";
+import type { HarnessConfig } from "../agent/harness/types.js";
 import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
+import { loadUserConfig, saveUserConfig, hasAnyEnhancement, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { claudeCodeEmitter, type ClaudeCodeLogEvent } from "../tools/claude_code.js";
 import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
@@ -260,13 +260,27 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
   return Array.from(map.values());
 }
 
-const conversationModeSchema = z.enum(["default", "team", "harness"]);
+const conversationModeSchema = z.enum(["default", "team"]);
 const createConversationBodySchema = {
   title: z.string().max(500).optional(),
   mode: conversationModeSchema.optional(),
   teamId: z.string().max(100).optional(),
 };
 const createConversationBody = z.object(createConversationBodySchema);
+
+/** 从用户配置构建 HarnessConfig（仅在有增强启用时返回非 undefined） */
+function buildHarnessConfigFromEnhancements(e?: ExecutionEnhancementsConfig): HarnessConfig | undefined {
+  if (!e || !hasAnyEnhancement(e)) return undefined;
+  return {
+    evalEnabled: e.evalGuard,
+    loopDetectionEnabled: e.loopDetection,
+    replanEnabled: e.replan,
+    autoApproveReplan: e.autoApproveReplan,
+    maxReplanAttempts: e.maxReplanAttempts,
+    loopWindowSize: e.loopWindowSize,
+    loopSimilarityThreshold: e.loopSimilarityThreshold,
+  };
+}
 
 /**
  * Compress task tool messages in-place before persisting to history.
@@ -613,17 +627,22 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
+    // Helper: prefer the last AI message with content; fallback to last AI overall
+    const findBestAiTarget = () => {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      return withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+    };
     if (latestPlan?.steps?.length) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") target.plan = latestPlan;
     }
     const subagentLogs = buildSubagentLogs(subagentEvents);
     if (subagentLogs.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") target.subagents = subagentLogs;
     }
     if (harnessEvents.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
     }
     const toStore = collectedStored.filter((m) => {
@@ -664,6 +683,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   try {
+    const enhancements = config.enhancements;
+    const harnessConfig = buildHarnessConfigFromEnhancements(enhancements);
+    const useOuterRetry = enhancements?.outerRetry && harnessConfig;
     const streamOptions = {
         conversationMode,
         conversationId: id,
@@ -672,7 +694,8 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         workspacePath,
         abortSignal: abortController.signal,
         planProgressEnabled: config.planning?.streamProgress ?? true,
-        ...(conversationMode === "harness" ? { harnessConfig: DEFAULT_HARNESS_CONFIG } : {}),
+        enhancements,
+        ...(harnessConfig ? { harnessConfig } : {}),
         onPlanEvent: (event: PlanStreamEvent) => {
           latestPlan = { ...event };
           writeImmediate("data: " + JSON.stringify({ type: "plan", ...event }) + "\n\n");
@@ -687,10 +710,11 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         },
     };
 
-    const agentStream = conversationMode === "harness"
+    const agentStream = useOuterRetry
       ? streamHarnessAgent(
           lcMessages, onToken, config.modelId, onReasoningToken, skillContext,
-          streamOptions, undefined,
+          streamOptions,
+          { maxOuterRetries: enhancements!.maxOuterRetries, harnessConfig: harnessConfig! },
           (driverEvent) => {
             harnessDriverEvents.push(driverEvent);
             writeImmediate("data: " + JSON.stringify({ type: "harness_driver", ...driverEvent }) + "\n\n");
@@ -824,21 +848,26 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
+    // Helper: prefer the last AI message with content; fallback to last AI overall
+    const findBestAiTarget = () => {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      return withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+    };
     if (latestPlan?.steps?.length) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") {
         target.plan = latestPlan;
       }
     }
     const subagentLogs = buildSubagentLogs(subagentEvents);
     if (subagentLogs.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") {
         target.subagents = subagentLogs;
       }
     }
     if (harnessEvents.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") {
         target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
       }
@@ -983,6 +1012,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
       teamId: meta.teamId,
       planningEnabled: config.planning?.enabled ?? true,
       workspacePath,
+      enhancements: config.enhancements,
     });
     const newStored: StoredMessage[] = resultMessages.map((m) => {
       const s = langChainToStored(m);
@@ -1326,6 +1356,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     approvalRules?: ApprovalRule[];
     codeIndexStrategy?: string;
     claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; allowedTools?: string[] };
+    enhancements?: Partial<ExecutionEnhancementsConfig>;
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -1342,6 +1373,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.context.trimToLast === "number" && body.context.trimToLast > 0) config.context.trimToLast = body.context.trimToLast;
     if (typeof body.context.tokenThresholdPercent === "number" && body.context.tokenThresholdPercent > 0 && body.context.tokenThresholdPercent <= 100) config.context.tokenThresholdPercent = body.context.tokenThresholdPercent;
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
+    if (typeof body.context.saveToolMessages === "boolean") config.context.saveToolMessages = body.context.saveToolMessages;
   }
   if (body.planning && typeof body.planning === "object") {
     config.planning = config.planning ?? { enabled: true, streamProgress: true };
@@ -1361,6 +1393,22 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       model: typeof body.claudeCode.model === "string" && body.claudeCode.model.trim() ? body.claudeCode.model.trim() : undefined,
       maxTurns: typeof body.claudeCode.maxTurns === "number" ? body.claudeCode.maxTurns : undefined,
       allowedTools: Array.isArray(body.claudeCode.allowedTools) ? body.claudeCode.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+    };
+  }
+  if (body.enhancements && typeof body.enhancements === "object") {
+    const { defaultEnhancements } = await import("../config/userConfig.js");
+    const prev = config.enhancements ?? { ...defaultEnhancements };
+    const e = body.enhancements;
+    config.enhancements = {
+      evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : prev.evalGuard,
+      loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : prev.loopDetection,
+      replan: typeof e.replan === "boolean" ? e.replan : prev.replan,
+      autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : prev.autoApproveReplan,
+      outerRetry: typeof e.outerRetry === "boolean" ? e.outerRetry : prev.outerRetry,
+      maxReplanAttempts: typeof e.maxReplanAttempts === "number" && e.maxReplanAttempts > 0 ? e.maxReplanAttempts : prev.maxReplanAttempts,
+      maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : prev.maxOuterRetries,
+      loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : prev.loopWindowSize,
+      loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : prev.loopSimilarityThreshold,
     };
   }
   saveUserConfig(config);

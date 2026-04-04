@@ -1,5 +1,4 @@
 import { HumanMessage } from "@langchain/core/messages";
-import type { BaseMessage } from "@langchain/core/messages";
 import type { ModelAdapter } from "../../llm/adapter.js";
 import type { RuntimePlanStep } from "../planTracker.js";
 import { extractPlanSteps, type PlanStep } from "../planning.js";
@@ -19,11 +18,12 @@ const REPLAN_PROMPT_TEMPLATE = `You are a plan revision assistant. The current e
 ## Instructions
 Generate a revised plan for the REMAINING (uncompleted) steps only. Keep completed steps as-is.
 Focus on alternative approaches to avoid repeating the same failure.
+Output step titles and acceptance checks in Chinese (中文).
 
 Output format (same as original plan):
 PLAN:
-1. <step title> | 验收: <check A>; <check B>
-2. <step title> | 验收: <check A>
+1. <步骤标题> | 验收: <验收标准A>; <验收标准B>
+2. <步骤标题> | 验收: <验收标准A>
 
 Rules:
 - Only output the NEW steps to replace uncompleted ones
@@ -86,10 +86,10 @@ export async function generateReplan(
     }
 
     return {
-      shouldReplan: config.autoApprove,
+      shouldReplan: true,
       trigger,
       revisedSteps: newSteps,
-      ...(!config.autoApprove ? { pendingApproval: true } : {}),
+      pendingApproval: !config.autoApprove,
     };
   } catch {
     // LLM 调用失败时不重规划，让原 plan 继续执行

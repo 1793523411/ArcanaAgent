@@ -1,4 +1,4 @@
-export type ConversationMode = "default" | "team" | "harness";
+export type ConversationMode = "default" | "team";
 export type AgentRole = string;
 
 export interface AgentDef {
@@ -193,6 +193,18 @@ export interface ClaudeCodeConfig {
   allowedTools?: string[];
 }
 
+export interface ExecutionEnhancementsConfig {
+  evalGuard: boolean;
+  loopDetection: boolean;
+  replan: boolean;
+  autoApproveReplan: boolean;
+  outerRetry: boolean;
+  maxReplanAttempts: number;
+  maxOuterRetries: number;
+  loopWindowSize: number;
+  loopSimilarityThreshold: number;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -207,6 +219,8 @@ export interface UserConfig {
   codeIndexStrategy?: CodeIndexStrategy;
   /** Claude Code 集成配置 */
   claudeCode?: ClaudeCodeConfig;
+  /** 执行增强配置 */
+  enhancements?: ExecutionEnhancementsConfig;
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;
@@ -217,7 +231,7 @@ export interface HarnessEvalEvent {
   kind: "eval";
   data: {
     stepIndex: number;
-    verdict: "pass" | "weak" | "fail";
+    verdict: "pass" | "weak" | "fail" | "inconclusive";
     reason: string;
   };
   timestamp: string;
@@ -252,6 +266,7 @@ export interface HarnessDriverEvent {
   phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached";
   iteration: number;
   maxRetries: number;
+  harnessEventsInIteration?: HarnessEvent[];
   timestamp: string;
 }
 

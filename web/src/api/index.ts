@@ -151,8 +151,9 @@ export async function sendMessageStream(
       const lines = buf.split("\n");
       buf = lines.pop() ?? "";
       for (const line of lines) {
-        if (line.startsWith("data: ")) {
-          const data = line.slice(6);
+        const trimmed = line.replace(/\r$/, "").trimEnd();
+        if (trimmed.startsWith("data: ")) {
+          const data = trimmed.slice(6).trimEnd();
           if (data === "[DONE]") {
             settle(onDone);
             return;
@@ -167,8 +168,9 @@ export async function sendMessageStream(
         }
       }
     }
-    if (buf.startsWith("data: ")) {
-      const data = buf.slice(6);
+    const tail = buf.replace(/\r$/, "").trimEnd();
+    if (tail.startsWith("data: ")) {
+      const data = tail.slice(6).trimEnd();
       if (data !== "[DONE]") {
         try {
           const parsed = JSON.parse(data);

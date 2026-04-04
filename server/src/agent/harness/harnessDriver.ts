@@ -140,11 +140,14 @@ export async function* streamHarnessAgent(
     const eventsAfterReplan = lastReplanIdx >= 0
       ? iterationHarnessEvents.slice(lastReplanIdx + 1)
       : [];
-    const replanResolved = lastReplanIdx >= 0 && !eventsAfterReplan.some((e) => {
-      if (e.kind === "eval" && "verdict" in e.data) return e.data.verdict === "fail";
-      if (e.kind === "loop_detection" && "detected" in e.data) return e.data.detected === true;
-      return false;
-    });
+    // replan 必须有后续事件证明其生效，否则不算已解决
+    const replanResolved = lastReplanIdx >= 0
+      && eventsAfterReplan.length > 0
+      && !eventsAfterReplan.some((e) => {
+        if (e.kind === "eval" && "verdict" in e.data) return e.data.verdict === "fail";
+        if (e.kind === "loop_detection" && "detected" in e.data) return e.data.detected === true;
+        return false;
+      });
 
     if (!hasUnresolvedFailure || replanResolved) {
       // 执行成功或内层已解决

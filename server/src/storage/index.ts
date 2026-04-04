@@ -115,7 +115,7 @@ export interface ConversationContextSnapshot {
   compressKeepRecent?: number;
 }
 
-export type ConversationMode = "default" | "team" | "harness";
+export type ConversationMode = "default" | "team";
 
 export interface ConversationMeta {
   id: string;

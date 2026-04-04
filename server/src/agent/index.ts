@@ -107,7 +107,7 @@ export async function runAgent(
   options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
   const tools = buildRuntimeTools(options, { modelId, skillContext, options });
-  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath));
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements));
   const adapter = getModelAdapter(modelId);
   const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -171,7 +171,7 @@ export async function* streamAgentWithTokens(
   skillContext?: string,
   options?: StreamAgentOptions
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
-  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath);
+  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements);
   const systemMessage = new SystemMessage(systemPromptText);
   const adapter = getModelAdapter(modelId);
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
@@ -590,15 +590,15 @@ export async function* streamAgentWithTokens(
       new ToolMessage({ content: out.result, tool_call_id: out.id, name: out.name })
     ));
     if (runtimePlanSteps.length > 0) {
-      const toolOutputs: Array<{ name?: string; content: string }> = [];
+      const planEvidence: Array<{ name?: string; content: string }> = [];
       for (const m of toolMessages) {
         if (m._getType() !== "tool") continue;
-        toolOutputs.push({
+        planEvidence.push({
           name: (m as { name?: string }).name,
           content: typeof m.content === "string" ? m.content : "",
         });
       }
-      for (const out of toolOutputs) {
+      for (const out of planEvidence) {
         runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(out.name, out.content));
       }
       planCurrentStep = computeCurrentStep(runtimePlanSteps);

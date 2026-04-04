@@ -43,7 +43,7 @@ function trigrams(str: string): Set<string> {
  * 计算两个集合的 Jaccard 相似度
  */
 function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
-  if (a.size === 0 && b.size === 0) return 1;
+  if (a.size === 0 && b.size === 0) return 0;
   let intersection = 0;
   for (const item of a) {
     if (b.has(item)) intersection++;
@@ -76,7 +76,7 @@ export class LoopDetector {
     this.window.push({
       toolName,
       resultHash: hashString(result),
-      resultSnippet: result.slice(0, 200),
+      resultSnippet: result.slice(0, 500),
     });
     if (this.window.length > this.windowSize * 2) {
       this.window.splice(0, this.window.length - this.windowSize * 2);

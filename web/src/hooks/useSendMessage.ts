@@ -50,6 +50,8 @@ type ConversationStreamState = {
   } | null;
   streamingHarness: {
     events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    /** 与持久化消息一致，按序追加，用于从最后一项推导右上角 Driver 状态 */
+    driverEvents: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
     driverPhase: string | null;
     driverIteration: number;
     driverMaxRetries: number;
@@ -581,6 +583,7 @@ export function useSendMessage(options: {
             setConversationState(convId, (prev) => {
               const harness = prev.streamingHarness ?? {
                 events: [],
+                driverEvents: [],
                 driverPhase: null,
                 driverIteration: 0,
                 driverMaxRetries: 0,
@@ -602,14 +605,22 @@ export function useSendMessage(options: {
             setConversationState(convId, (prev) => {
               const harness = prev.streamingHarness ?? {
                 events: [],
+                driverEvents: [],
                 driverPhase: null,
                 driverIteration: 0,
                 driverMaxRetries: 0,
+              };
+              const nextDriver = {
+                phase: evt.phase,
+                iteration: evt.iteration,
+                maxRetries: evt.maxRetries,
+                timestamp: evt.timestamp,
               };
               return {
                 ...prev,
                 streamingHarness: {
                   ...harness,
+                  driverEvents: [...harness.driverEvents, nextDriver],
                   driverPhase: evt.phase,
                   driverIteration: evt.iteration,
                   driverMaxRetries: evt.maxRetries,

@@ -44,6 +44,22 @@ function cleanMermaidCode(code: string): string {
   return code.trim();
 }
 
+/** 从 ReactNode children 提取纯文本，用于生成标题 id */
+function extractText(node: React.ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    return extractText((node as React.ReactElement).props.children);
+  }
+  return "";
+}
+
+/** 生成标题 slug id，支持中文 */
+export function slugify(text: string): string {
+  return "heading-" + text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u4e00-\u9fff-]/g, "");
+}
+
 let mermaidCounter = 0;
 const svgCache = new Map<string, { svg?: string; error?: string }>();
 
@@ -72,7 +88,13 @@ function MermaidBlock({ code }: { code: string }) {
           setError(null);
         }
       } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
+        let errMsg = e instanceof Error ? e.message : String(e);
+        // 为常见问题提供更友好的提示
+        const isBeta = /^(architecture-beta|packet-beta|block-beta)/.test(cleaned);
+        const hasChinese = /[\u4e00-\u9fff]/.test(cleaned);
+        if (isBeta && hasChinese) {
+          errMsg = "该实验性图表类型暂不支持中文标签，请使用英文";
+        }
         svgCache.set(cleaned, { error: errMsg });
         if (!cancelled) {
           setSvgContent(null);
@@ -128,7 +150,7 @@ function MermaidBlock({ code }: { code: string }) {
         {showCode ? (
           <pre className="p-4 overflow-x-auto text-[13px] bg-[var(--color-bg)]"><code>{code}</code></pre>
         ) : svgContent ? (
-          <div dangerouslySetInnerHTML={{ __html: svgContent }} className="flex justify-center p-4 bg-[var(--color-bg)] overflow-x-auto [&>svg]:max-w-full" />
+          <div dangerouslySetInnerHTML={{ __html: svgContent }} className="flex justify-center p-4 bg-[var(--color-bg)] overflow-x-auto [&>svg]:max-w-full [&>svg]:min-w-[600px] [&>svg]:h-auto" />
         ) : (
           <div className="flex justify-center p-4 bg-[var(--color-bg)] text-[var(--color-text-muted)] text-xs">渲染中…</div>
         )}
@@ -275,10 +297,10 @@ export default function MarkdownContent({ children, className = "", transformIma
         components={{
           p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
 
-          h1: ({ children }) => <h1 className="text-xl font-bold mt-6 mb-3 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-lg font-semibold mt-5 mb-2 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h3>,
-          h4: ({ children }) => <h4 className="text-sm font-semibold mt-3 mb-1 first:mt-0">{children}</h4>,
+          h1: ({ children }) => <h1 id={slugify(extractText(children))} className="text-xl font-bold mt-6 mb-3 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h1>,
+          h2: ({ children }) => <h2 id={slugify(extractText(children))} className="text-lg font-semibold mt-5 mb-2 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h2>,
+          h3: ({ children }) => <h3 id={slugify(extractText(children))} className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h3>,
+          h4: ({ children }) => <h4 id={slugify(extractText(children))} className="text-sm font-semibold mt-3 mb-1 first:mt-0">{children}</h4>,
 
           ul: ({ children }) => (
             <ul

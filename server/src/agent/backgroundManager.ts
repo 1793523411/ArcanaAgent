@@ -126,11 +126,13 @@ class BackgroundManager {
 
   private static readonly STALE_TASK_AGE_MS = 10 * 60 * 1000;
 
-  /** 查找正在运行的相同命令 */
-  private findRunningByCommand(command: string): BackgroundTaskRecord | null {
+  /** 查找正在运行的相同命令（同一命令 + 同一工作目录才视为重复） */
+  private findRunningByCommand(command: string, cwd: string): BackgroundTaskRecord | null {
     const normalized = command.replace(/\s+/g, " ").trim();
     for (const task of this.tasks.values()) {
-      if (task.status === "running" && task.command.replace(/\s+/g, " ").trim() === normalized) {
+      if (task.status === "running"
+        && task.command.replace(/\s+/g, " ").trim() === normalized
+        && task.cwd === cwd) {
         return task;
       }
     }
@@ -178,8 +180,9 @@ class BackgroundManager {
     // 清理过期 task
     this.cleanupStaleTasks();
 
-    // 命令去重：相同命令已在运行，复用
-    const existing = this.findRunningByCommand(command);
+    // 命令去重：相同命令 + 同一目录已在运行，复用
+    const effectiveCwd = input.cwd && input.cwd.trim() && existsSync(input.cwd) ? input.cwd : process.cwd();
+    const existing = this.findRunningByCommand(command, effectiveCwd);
     if (existing) {
       return { ok: true, taskId: existing.id, deduplicated: true };
     }

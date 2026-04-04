@@ -15,6 +15,8 @@ import type { HarnessConfig, HarnessEvent, MiddlewareResult } from "./types.js";
  *
  * 当 harnessConfig 为 null 时不实例化此类，零开销。
  */
+const MAX_WEAK_RETRIES_PER_STEP = 2;
+
 export class HarnessMiddleware {
   private readonly config: HarnessConfig;
   private readonly adapter: ModelAdapter;
@@ -23,6 +25,9 @@ export class HarnessMiddleware {
 
   /** 追踪上一轮已完成的 step 索引，用于检测新完成的 step */
   private lastCompletedIndex = -1;
+
+  /** 每个步骤的连续 weak 计数，超过阈值自动接受 */
+  private weakCounts = new Map<number, number>();
 
   constructor(config: HarnessConfig, adapter: ModelAdapter) {
     this.config = config;
@@ -65,20 +70,37 @@ export class HarnessMiddleware {
           events.push({ kind: "eval", data: evalResult, timestamp: now() });
 
           if (evalResult.verdict === "weak") {
-            // 注入提示消息，提醒 agent 补充验证
-            this.lastCompletedIndex = currentCompleted;
+            const weakCount = (this.weakCounts.get(currentCompleted) ?? 0) + 1;
+            this.weakCounts.set(currentCompleted, weakCount);
+
+            if (weakCount > MAX_WEAK_RETRIES_PER_STEP) {
+              // 多次 weak 后自动接受，避免无限循环
+              this.lastCompletedIndex = currentCompleted;
+              return {
+                events,
+                injectMessages: [
+                  new HumanMessage(
+                    `[Harness Eval] Step "${justCompleted.title}" evidence remains weak after ${weakCount} attempts. Accepting and moving on.`
+                  ),
+                ],
+              };
+            }
+
+            const resetSteps = [...planSteps];
+            resetSteps[currentCompleted] = { ...justCompleted, completed: false };
+            this.lastCompletedIndex = currentCompleted - 1;
             return {
               events,
+              updatedPlanSteps: resetSteps,
               injectMessages: [
                 new HumanMessage(
-                  `[Harness Eval] Step "${justCompleted.title}" evidence is weak: ${evalResult.reason}. Please provide stronger evidence before continuing.`
+                  `[Harness Eval] Step "${justCompleted.title}" evidence is weak (attempt ${weakCount}/${MAX_WEAK_RETRIES_PER_STEP}): ${evalResult.reason}. Please run additional verification to strengthen the evidence.`
                 ),
               ],
             };
           }
 
           if (evalResult.verdict === "inconclusive") {
-            // 环境限制无法验证 — 接受为结构性完成，不触发 replan
             this.lastCompletedIndex = currentCompleted;
             return {
               events,
@@ -91,14 +113,30 @@ export class HarnessMiddleware {
           }
 
           if (evalResult.verdict === "fail") {
-            // Eval 失败 → 触发重规划（先更新 index 防止重复 eval）
-            this.lastCompletedIndex = currentCompleted;
-            const replanResult = await this.tryReplan(planSteps, "eval_fail", contextSummary, events);
+            // 克隆步骤数组，重置失败步骤
+            const resetSteps = [...planSteps];
+            resetSteps[currentCompleted] = { ...justCompleted, completed: false, evidences: [] };
+            this.lastCompletedIndex = currentCompleted - 1;
+
+            const replanResult = await this.tryReplan(resetSteps, "eval_fail", contextSummary, events);
             if (replanResult) {
-              this.loopDetector.reset(); // 重规划后重置检测器，避免新旧 plan 数据交叉误判
+              this.loopDetector.reset();
               return replanResult;
             }
+            return {
+              events,
+              updatedPlanSteps: resetSteps,
+              injectMessages: [
+                new HumanMessage(
+                  `[Harness Eval] Step "${justCompleted.title}" FAILED evaluation: ${evalResult.reason}. The step has been reset. Please try a different approach and collect new evidence.`
+                ),
+              ],
+            };
           }
+
+          // verdict === "pass" — 步骤通过验证，返回 eval 事件供前端展示
+          this.lastCompletedIndex = currentCompleted;
+          return { events };
         }
         this.lastCompletedIndex = currentCompleted;
       }
@@ -153,9 +191,23 @@ export class HarnessMiddleware {
     );
 
     events.push({ kind: "replan", data: decision, timestamp: new Date().toISOString() });
-    this.replanCount++; // LLM 调用即计数，无论是否 auto-approve
+    this.replanCount++;
 
     if (!decision.shouldReplan || !decision.revisedSteps) return null;
+
+    // pendingApproval: 不自动应用新计划，但仍需传回步骤重置（planSteps 已包含 reset）
+    if (decision.pendingApproval) {
+      const suggestion = decision.revisedSteps.map((s, i) => `${i + 1}. ${s.title}`).join("\n");
+      return {
+        events,
+        updatedPlanSteps: planSteps,
+        injectMessages: [
+          new HumanMessage(
+            `[Harness] Replan suggested (trigger: ${trigger}). Proposed new steps:\n${suggestion}\n\nThe current plan remains unchanged but the failed step has been reset. Consider adopting a different strategy based on the suggestion above.`
+          ),
+        ],
+      };
+    }
 
     const mergedSteps = mergeReplanIntoSteps(planSteps, decision.revisedSteps);
 

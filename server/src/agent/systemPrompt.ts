@@ -2,10 +2,10 @@ import { getMcpTools } from "../mcp/client.js";
 import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { getAgentConfig, getTeamAgents } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
-import { loadUserConfig } from "../config/userConfig.js";
-import { buildHarnessPrompt } from "./harness/harnessPrompt.js";
+import { loadUserConfig, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
+import { buildEnhancementsPrompt } from "./harness/harnessPrompt.js";
 
-export type ConversationMode = "default" | "team" | "harness";
+export type ConversationMode = "default" | "team";
 
 export const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
@@ -264,12 +264,11 @@ You have access to the \`claude_code\` tool — a powerful AI coding agent power
 - The tool has a 10-minute timeout and max turns limit`;
 }
 
-export function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
+export function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string, enhancements?: ExecutionEnhancementsConfig): string {
   const modePrompt = conversationMode === "team"
     ? buildTeamModePrompt(teamId ?? "default")
-    : conversationMode === "harness"
-      ? buildHarnessPrompt()
-      : "";
+    : "";
+  const enhancementsPrompt = enhancements ? buildEnhancementsPrompt(enhancements) : "";
   const workspaceSection = workspacePath
     ? `\n\n## Current Workspace\nYour workspace absolute path is: \`${workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${workspacePath}/filename.ext\`. Never write files to any other location.`
     : "";
@@ -278,7 +277,7 @@ export function buildSystemPrompt(skillContext?: string, conversationMode: Conve
   const indexSection = buildIndexStrategySection();
   const envSection = buildEnvironmentSection();
   const claudeCodeSection = buildClaudeCodeSection();
-  return BASE_SYSTEM_PROMPT + modePrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection + claudeCodeSection;
+  return BASE_SYSTEM_PROMPT + modePrompt + enhancementsPrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection + claudeCodeSection;
 }
 
 export function buildSubagentSystemPrompt(agentId: string, skillContext?: string, workspacePath?: string): string {

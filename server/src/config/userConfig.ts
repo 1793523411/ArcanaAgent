@@ -87,6 +87,39 @@ export interface ClaudeCodeConfig {
   allowedTools?: string[];
 }
 
+export interface ExecutionEnhancementsConfig {
+  /** LLM 评估 plan step 完成质量 */
+  evalGuard: boolean;
+  /** 纯算法检测工具调用循环 */
+  loopDetection: boolean;
+  /** 失败/循环时动态重规划 */
+  replan: boolean;
+  /** 自动批准重规划（false 时仅建议） */
+  autoApproveReplan: boolean;
+  /** 外层重试驱动 */
+  outerRetry: boolean;
+  /** 最大重规划次数 */
+  maxReplanAttempts: number;
+  /** 外层最大重试次数 */
+  maxOuterRetries: number;
+  /** 循环检测滑动窗口大小 */
+  loopWindowSize: number;
+  /** trigram Jaccard 相似度阈值（0-1） */
+  loopSimilarityThreshold: number;
+}
+
+export const defaultEnhancements: ExecutionEnhancementsConfig = {
+  evalGuard: false,
+  loopDetection: false,
+  replan: false,
+  autoApproveReplan: false,
+  outerRetry: false,
+  maxReplanAttempts: 3,
+  maxOuterRetries: 2,
+  loopWindowSize: 6,
+  loopSimilarityThreshold: 0.7,
+};
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -99,6 +132,8 @@ export interface UserConfig {
   codeIndexStrategy?: CodeIndexStrategy;
   /** Claude Code 集成配置 */
   claudeCode?: ClaudeCodeConfig;
+  /** 执行增强配置（eval、循环检测、重规划等） */
+  enhancements?: ExecutionEnhancementsConfig;
 }
 
 const defaultContext: ContextStrategyConfig = {
@@ -148,6 +183,7 @@ export function loadUserConfig(): UserConfig {
         trimToLast: typeof ctx.trimToLast === "number" && ctx.trimToLast > 0 ? ctx.trimToLast : defaultContext.trimToLast,
         tokenThresholdPercent: typeof ctx.tokenThresholdPercent === "number" && ctx.tokenThresholdPercent > 0 && ctx.tokenThresholdPercent <= 100 ? ctx.tokenThresholdPercent : defaultContext.tokenThresholdPercent,
         compressKeepRecent: typeof ctx.compressKeepRecent === "number" && ctx.compressKeepRecent > 0 ? ctx.compressKeepRecent : defaultContext.compressKeepRecent,
+        saveToolMessages: typeof ctx.saveToolMessages === "boolean" ? ctx.saveToolMessages : defaultContext.saveToolMessages,
       },
       planning: {
         enabled: typeof planningRaw?.enabled === "boolean" ? planningRaw.enabled : true,
@@ -200,6 +236,23 @@ export function loadUserConfig(): UserConfig {
           allowedTools: Array.isArray(cc.allowedTools) ? cc.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
         };
       })(),
+      enhancements: (() => {
+        const raw = (parsed as Record<string, unknown>).enhancements;
+        if (!raw || typeof raw !== "object") return undefined;
+        const e = raw as Record<string, unknown>;
+        const d = defaultEnhancements;
+        return {
+          evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : d.evalGuard,
+          loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : d.loopDetection,
+          replan: typeof e.replan === "boolean" ? e.replan : d.replan,
+          autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : d.autoApproveReplan,
+          outerRetry: typeof e.outerRetry === "boolean" ? e.outerRetry : d.outerRetry,
+          maxReplanAttempts: typeof e.maxReplanAttempts === "number" && e.maxReplanAttempts > 0 ? e.maxReplanAttempts : d.maxReplanAttempts,
+          maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : d.maxOuterRetries,
+          loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : d.loopWindowSize,
+          loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : d.loopSimilarityThreshold,
+        };
+      })(),
     };
   } catch {
     return { ...defaultConfig };
@@ -209,4 +262,10 @@ export function loadUserConfig(): UserConfig {
 export function saveUserConfig(config: UserConfig): void {
   ensureDataDir();
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+}
+
+/** 是否启用了任何执行增强功能 */
+export function hasAnyEnhancement(e?: ExecutionEnhancementsConfig): boolean {
+  if (!e) return false;
+  return e.evalGuard || e.loopDetection || e.replan;
 }
