@@ -8,15 +8,17 @@ import { approvalManager } from "./approvalManager.js";
 import type { ApprovalRule } from "../config/userConfig.js";
 import type { PlanStep } from "./planning.js";
 import type { ConversationMode } from "./systemPrompt.js";
+import type { HarnessConfig, HarnessEvent } from "./harness/types.js";
+import type { ExecutionEnhancementsConfig } from "../config/userConfig.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
 
 export interface PlanStreamEvent {
-  phase: "created" | "running" | "completed";
-  steps: Array<PlanStep & { evidences: string[]; completed: boolean }>;
-  currentStep: number;
-  toolName?: string;
+ phase: "created" | "running" | "completed";
+ steps: Array<PlanStep & { evidences: string[]; completed: boolean }>;
+ currentStep: number;
+ toolName?: string;
 }
 
 export interface AgentExecutionOptions {
@@ -33,11 +35,17 @@ export interface AgentExecutionOptions {
   onSubagentEvent?: (event: SubagentStreamEvent) => void;
   /** AbortSignal to cancel agent execution (e.g., on client disconnect) */
   abortSignal?: AbortSignal;
+  /** 执行增强配置（用于生成 system prompt 中的增强指令） */
+  enhancements?: ExecutionEnhancementsConfig;
 }
 
 export interface StreamAgentOptions extends AgentExecutionOptions {
   planProgressEnabled?: boolean;
   onPlanEvent?: (event: PlanStreamEvent) => void;
+  /** Harness 中间件配置（Eval、循环检测、重规划）。为 undefined 时不启用。 */
+  harnessConfig?: HarnessConfig;
+  /** Harness 事件回调（eval 结果、循环检测、重规划决策） */
+  onHarnessEvent?: (event: HarnessEvent) => void;
 }
 
 export type SubagentStreamEvent =

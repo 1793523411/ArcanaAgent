@@ -14,6 +14,29 @@ interface PendingApproval {
   details: Record<string, unknown>;
 }
 
+/** 与 MessageBubble 一致：以最后一帧 Driver 事件为准，避免仅依赖可能被批处理滞后的 driverPhase */
+function harnessDriverStatusLabel(harness: {
+  events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+  driverEvents?: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+  driverPhase: string | null;
+  driverIteration: number;
+  driverMaxRetries: number;
+}): string | null {
+  const last = harness.driverEvents?.length
+    ? harness.driverEvents[harness.driverEvents.length - 1]
+    : null;
+  const phase = last?.phase ?? harness.driverPhase;
+  if (!phase) return null;
+  const iter = last?.iteration ?? harness.driverIteration;
+  const maxR = last?.maxRetries ?? harness.driverMaxRetries;
+  if (phase === "started") return "启动中";
+  if (phase === "iteration_start") return `执行中 (第 ${iter + 1}/${maxR + 1} 轮)`;
+  if (phase === "iteration_end") return `本轮已结束 (第 ${iter + 1}/${maxR + 1} 轮)`;
+  if (phase === "completed") return "已完成";
+  if (phase === "max_retries_reached") return "已达最大重试";
+  return phase;
+}
+
 interface Props {
   content: string;
   reasoning?: string;
@@ -56,6 +79,13 @@ interface Props {
     currentStep: number;
     toolName?: string;
   };
+  harness?: {
+    events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    driverEvents?: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+    driverPhase: string | null;
+    driverIteration: number;
+    driverMaxRetries: number;
+  };
   pendingApprovals?: PendingApproval[];
   onApproval?: (requestId: string, approved: boolean) => void;
   processingApprovals?: Set<string>;
@@ -88,6 +118,7 @@ export default function StreamingBubble({
   toolLogs = [],
   subagents = [],
   plan,
+  harness,
   pendingApprovals = [],
   onApproval,
   processingApprovals: externalProcessing,
@@ -386,6 +417,56 @@ export default function StreamingBubble({
               )}
             </div>
           )}
+        </div>
+      )}
+      {/* ── Harness status card ── */}
+      {harness && harness.events.length > 0 && (
+        <div className="mb-3 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
+          <div className="text-xs text-[var(--color-text-muted)] mb-1.5 flex items-center justify-between">
+            <span>执行监控</span>
+            {(() => {
+              const driverLabel = harnessDriverStatusLabel(harness);
+              return driverLabel ? <span>{driverLabel}</span> : null;
+            })()}
+          </div>
+          <div className="space-y-1">
+            {harness.events.map((evt, idx) => {
+              if (evt.kind === "eval") {
+                const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
+                const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
+                const color = d.verdict === "pass"
+                  ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
+                  : d.verdict === "weak" || d.verdict === "inconclusive"
+                    ? "border-yellow-500/30 bg-yellow-500/5"
+                    : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+                return (
+                  <div key={idx} className={`text-[12px] px-2 py-1 rounded border ${color}`}>
+                    {icon} Step {(d.stepIndex ?? 0) + 1} 验证：{d.verdict} — {d.reason}
+                  </div>
+                );
+              }
+              if (evt.kind === "loop_detection") {
+                const d = evt.data as { detected?: boolean; description?: string };
+                if (!d.detected) return null;
+                return (
+                  <div key={idx} className="text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5">
+                    🔄 循环检测：{d.description}
+                  </div>
+                );
+              }
+              if (evt.kind === "replan") {
+                const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
+                if (!d.shouldReplan && !d.pendingApproval) return null;
+                return (
+                  <div key={idx} className="text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5">
+                    🔀 {d.pendingApproval ? "重规划建议（仅参考）" : "计划已重规划"}
+                    {d.trigger && <span className="opacity-70"> — 触发：{d.trigger === "eval_fail" ? "验证失败" : "循环检测"}</span>}
+                  </div>
+                );
+              }
+              return null;
+            })}
+          </div>
         </div>
       )}
       {hasToolLogs && <ToolCallBlock logs={toolLogs} />}

@@ -48,6 +48,14 @@ type ConversationStreamState = {
     currentStep: number;
     toolName?: string;
   } | null;
+  streamingHarness: {
+    events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    /** 与持久化消息一致，按序追加，用于从最后一项推导右上角 Driver 状态 */
+    driverEvents: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+    driverPhase: string | null;
+    driverIteration: number;
+    driverMaxRetries: number;
+  } | null;
   pendingApprovals: Array<{
     requestId: string;
     subagentId: string;
@@ -83,6 +91,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingToolLogs: [],
   streamingSubagents: [],
   streamingPlan: null,
+  streamingHarness: null,
   pendingApprovals: [],
   sendError: null,
   usage: null,
@@ -98,6 +107,7 @@ function createState(): ConversationStreamState {
     streamingToolLogs: [],
     streamingSubagents: [],
     streamingPlan: null,
+    streamingHarness: null,
     pendingApprovals: [],
     sendError: null,
     usage: null,
@@ -205,6 +215,7 @@ export function useSendMessage(options: {
         streamingToolLogs: [],
         streamingSubagents: [],
         streamingPlan: null,
+        streamingHarness: null,
         pendingApprovals: [],
         sendError: null,
         usage: null,
@@ -565,6 +576,59 @@ export function useSendMessage(options: {
             }));
             return;
           }
+
+          // ── Harness middleware events ──
+          if (obj.type === "harness" && typeof (obj as { kind?: string }).kind === "string") {
+            const evt = obj as { kind: string; data: Record<string, unknown>; timestamp: string };
+            setConversationState(convId, (prev) => {
+              const harness = prev.streamingHarness ?? {
+                events: [],
+                driverEvents: [],
+                driverPhase: null,
+                driverIteration: 0,
+                driverMaxRetries: 0,
+              };
+              return {
+                ...prev,
+                streamingHarness: {
+                  ...harness,
+                  events: [...harness.events, { kind: evt.kind, data: evt.data, timestamp: evt.timestamp }],
+                },
+              };
+            });
+            return;
+          }
+
+          // ── Harness driver lifecycle events ──
+          if (obj.type === "harness_driver" && typeof (obj as { phase?: string }).phase === "string") {
+            const evt = obj as { phase: string; iteration: number; maxRetries: number; timestamp: string };
+            setConversationState(convId, (prev) => {
+              const harness = prev.streamingHarness ?? {
+                events: [],
+                driverEvents: [],
+                driverPhase: null,
+                driverIteration: 0,
+                driverMaxRetries: 0,
+              };
+              const nextDriver = {
+                phase: evt.phase,
+                iteration: evt.iteration,
+                maxRetries: evt.maxRetries,
+                timestamp: evt.timestamp,
+              };
+              return {
+                ...prev,
+                streamingHarness: {
+                  ...harness,
+                  driverEvents: [...harness.driverEvents, nextDriver],
+                  driverPhase: evt.phase,
+                  driverIteration: evt.iteration,
+                  driverMaxRetries: evt.maxRetries,
+                },
+              };
+            });
+            return;
+          }
         },
         () => {
           delete abortControllersRef.current[convId];
@@ -645,6 +709,7 @@ export function useSendMessage(options: {
     streamingToolLogs: activeState.streamingToolLogs,
     streamingSubagents: activeState.streamingSubagents,
     streamingPlan: activeState.streamingPlan,
+    streamingHarness: activeState.streamingHarness,
     pendingApprovals: activeState.pendingApprovals,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,

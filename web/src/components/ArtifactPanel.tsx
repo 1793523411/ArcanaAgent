@@ -3,6 +3,7 @@ import type { ArtifactMeta } from "../types";
 import { getArtifacts, getArtifactUrl, getArtifactText } from "../api";
 import { filterVisibleArtifacts } from "../artifactFilters";
 import MarkdownContent from "./MarkdownContent";
+import { slugify } from "./MarkdownContent";
 import CodeBrowserPanel from "./CodeBrowserPanel";
 import {
   baseName,
@@ -284,6 +285,46 @@ function FileList({
 
 // ─── 文件预览组件 ────────────────────────────────
 
+interface TocItem {
+  level: number;
+  text: string;
+  id: string;
+}
+
+function extractToc(markdown: string): TocItem[] {
+  const items: TocItem[] = [];
+  const re = /^(#{1,6})\s+(.+)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(markdown)) !== null) {
+    const text = m[2].replace(/[*_`~\[\]]/g, "").trim();
+    items.push({ level: m[1].length, text, id: slugify(text) });
+  }
+  return items;
+}
+
+function TocPanel({ items, onSelect }: { items: TocItem[]; onSelect: (id: string) => void }) {
+  const minLevel = Math.min(...items.map((i) => i.level));
+  return (
+    <div className="absolute right-3 top-10 z-50 w-64 max-h-[60vh] overflow-y-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] shadow-lg">
+      <div className="px-3 py-2 border-b border-[var(--color-border)] text-xs font-medium text-[var(--color-text-muted)]">目录</div>
+      <nav className="py-1">
+        {items.map((item, i) => (
+          <button
+            key={`${item.id}-${i}`}
+            type="button"
+            onClick={() => onSelect(item.id)}
+            className="block w-full text-left px-3 py-1.5 text-[12px] text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors truncate"
+            style={{ paddingLeft: `${(item.level - minLevel) * 16 + 12}px` }}
+            title={item.text}
+          >
+            {item.text}
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
 function FilePreview({
   artifact,
   conversationId,
@@ -296,11 +337,16 @@ function FilePreview({
   loading: boolean;
 }) {
   const [viewMode, setViewMode] = useState<"preview" | "code">("preview");
+  const [tocOpen, setTocOpen] = useState(false);
   const url = getArtifactUrl(conversationId, artifact.path);
   const mime = artifact.mimeType;
   const codeLanguage = languageFromPath(artifact.path) || (mime === "application/json" ? "json" : "");
 
   const hasDualMode = mime === "text/html" || mime.startsWith("text/markdown");
+  const tocItems = useMemo(
+    () => (hasDualMode && mime.startsWith("text/markdown") && textContent ? extractToc(textContent) : []),
+    [textContent, hasDualMode, mime]
+  );
 
   if (loading) {
     return (
@@ -354,29 +400,57 @@ function FilePreview({
 
     return (
       <div className="flex flex-col h-full">
-        <div className="flex items-center gap-1 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] shrink-0">
-          <button
-            onClick={() => setViewMode("preview")}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-              viewMode === "preview"
-                ? "bg-[var(--color-accent)] text-white"
-                : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
-            }`}
-          >
-            预览
-          </button>
-          <button
-            onClick={() => setViewMode("code")}
-            className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
-              viewMode === "code"
-                ? "bg-[var(--color-accent)] text-white"
-                : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
-            }`}
-          >
-            源码
-          </button>
+        <div className="flex items-center justify-between px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-surface)] shrink-0">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setViewMode("preview")}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                viewMode === "preview"
+                  ? "bg-[var(--color-accent)] text-white"
+                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+              }`}
+            >
+              预览
+            </button>
+            <button
+              onClick={() => setViewMode("code")}
+              className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${
+                viewMode === "code"
+                  ? "bg-[var(--color-accent)] text-white"
+                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+              }`}
+            >
+              源码
+            </button>
+          </div>
+          {tocItems.length > 0 && viewMode === "preview" && (
+            <button
+              onClick={() => setTocOpen((v) => !v)}
+              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
+                tocOpen
+                  ? "bg-[var(--color-accent)] text-white"
+                  : "text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)]"
+              }`}
+              title="目录"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" />
+                <line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" />
+              </svg>
+              目录
+            </button>
+          )}
         </div>
-        <div className="flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden relative">
+          {tocOpen && tocItems.length > 0 && (
+            <TocPanel
+              items={tocItems}
+              onSelect={(id) => {
+                document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+                setTocOpen(false);
+              }}
+            />
+          )}
           {viewMode === "preview" ? previewView : codeView}
         </div>
       </div>

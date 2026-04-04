@@ -1,7 +1,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import mermaid from "mermaid";
 import "../share-markdown.css";
 
@@ -44,8 +44,114 @@ function cleanMermaidCode(code: string): string {
   return code.trim();
 }
 
+/** 从 ReactNode children 提取纯文本，用于生成标题 id */
+function extractText(node: React.ReactNode): string {
+  if (typeof node === "string") return node;
+  if (typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(extractText).join("");
+  if (node && typeof node === "object" && "props" in node) {
+    return extractText((node as React.ReactElement).props.children);
+  }
+  return "";
+}
+
+/** 生成标题 slug id，支持中文 */
+export function slugify(text: string): string {
+  return "heading-" + text.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^\w\u4e00-\u9fff-]/g, "");
+}
+
 let mermaidCounter = 0;
 const svgCache = new Map<string, { svg?: string; error?: string }>();
+
+// ─── 全局全屏查看器（脱离组件树，不受父组件重渲染影响） ─────
+let fullscreenRoot: HTMLDivElement | null = null;
+let fullscreenCleanup: (() => void) | null = null;
+
+function closeMermaidFullscreen() {
+  if (fullscreenRoot) {
+    fullscreenRoot.remove();
+    fullscreenRoot = null;
+  }
+  if (fullscreenCleanup) {
+    fullscreenCleanup();
+    fullscreenCleanup = null;
+  }
+}
+
+function openMermaidFullscreen(svgHtml: string) {
+  closeMermaidFullscreen();
+
+  const root = document.createElement("div");
+  root.style.cssText = "position:fixed;inset:0;z-index:9999;display:flex;flex-direction:column;background:rgba(0,0,0,0.7);backdrop-filter:blur(4px)";
+  document.body.appendChild(root);
+  fullscreenRoot = root;
+
+  let zoom = 1;
+  const svgContainer = document.createElement("div");
+
+  function render() {
+    svgContainer.style.transform = `scale(${zoom})`;
+    svgContainer.style.transformOrigin = "center center";
+    const pctBtn = root.querySelector<HTMLElement>("[data-zoom-pct]");
+    if (pctBtn) pctBtn.textContent = `${Math.round(zoom * 100)}%`;
+  }
+
+  // 工具栏
+  const toolbar = document.createElement("div");
+  toolbar.style.cssText = "display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:var(--color-bg);border-bottom:1px solid var(--color-border);flex-shrink:0";
+  toolbar.innerHTML = `
+    <span style="font-size:12px;color:var(--color-text-muted);font-family:monospace">mermaid</span>
+    <div style="display:flex;align-items:center;gap:4px">
+      <button data-zoom-out style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:4px;border:none;background:none;color:var(--color-text-muted);cursor:pointer;font-size:18px" title="缩小">−</button>
+      <button data-zoom-pct style="padding:0 8px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:4px;border:none;background:none;color:var(--color-text-muted);cursor:pointer;font-size:12px;font-family:monospace;min-width:48px" title="重置缩放">100%</button>
+      <button data-zoom-in style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:4px;border:none;background:none;color:var(--color-text-muted);cursor:pointer;font-size:18px" title="放大">+</button>
+      <div style="width:1px;height:20px;background:var(--color-border);margin:0 4px"></div>
+      <button data-close style="width:32px;height:32px;display:flex;align-items:center;justify-content:center;border-radius:4px;border:none;background:none;color:var(--color-text-muted);cursor:pointer;font-size:16px" title="关闭">✕</button>
+    </div>
+  `;
+  root.appendChild(toolbar);
+
+  // 内容区域
+  const content = document.createElement("div");
+  content.style.cssText = "flex:1;overflow:auto;display:flex;align-items:center;justify-content:center";
+  svgContainer.style.cssText = "transition:transform 0.1s;padding:32px";
+  svgContainer.innerHTML = svgHtml;
+  content.appendChild(svgContainer);
+  root.appendChild(content);
+
+  render();
+
+  // 事件处理
+  const onZoomOut = () => { zoom = Math.max(0.25, zoom - 0.25); render(); };
+  const onZoomIn = () => { zoom = Math.min(5, zoom + 0.25); render(); };
+  const onReset = () => { zoom = 1; render(); };
+  const onWheel = (e: WheelEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    zoom = Math.min(5, Math.max(0.25, zoom + (e.deltaY < 0 ? 0.1 : -0.1)));
+    render();
+  };
+  const onBackdropClick = (e: MouseEvent) => {
+    if (e.target === content || e.target === root) closeMermaidFullscreen();
+  };
+  const onKeydown = (e: KeyboardEvent) => {
+    if (e.key === "Escape") closeMermaidFullscreen();
+  };
+
+  toolbar.querySelector("[data-zoom-out]")!.addEventListener("click", onZoomOut);
+  toolbar.querySelector("[data-zoom-in]")!.addEventListener("click", onZoomIn);
+  toolbar.querySelector("[data-zoom-pct]")!.addEventListener("click", onReset);
+  toolbar.querySelector("[data-close]")!.addEventListener("click", closeMermaidFullscreen);
+  content.addEventListener("wheel", onWheel, { passive: false });
+  root.addEventListener("click", onBackdropClick);
+  document.addEventListener("keydown", onKeydown);
+
+  fullscreenCleanup = () => {
+    document.removeEventListener("keydown", onKeydown);
+  };
+}
+
+// ─── MermaidBlock ────────────────────────────────
 
 function MermaidBlock({ code }: { code: string }) {
   const cleaned = cleanMermaidCode(code);
@@ -53,8 +159,6 @@ function MermaidBlock({ code }: { code: string }) {
   const [svgContent, setSvgContent] = useState<string | null>(cached?.svg ?? null);
   const [error, setError] = useState<string | null>(cached?.error ?? null);
   const [showCode, setShowCode] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [zoom, setZoom] = useState(1);
 
   useEffect(() => {
     // 已有缓存，不再触发 setState（useState 初始值已从缓存读取）
@@ -72,7 +176,13 @@ function MermaidBlock({ code }: { code: string }) {
           setError(null);
         }
       } catch (e) {
-        const errMsg = e instanceof Error ? e.message : String(e);
+        let errMsg = e instanceof Error ? e.message : String(e);
+        // 为常见问题提供更友好的提示
+        const isBeta = /^(architecture-beta|packet-beta|block-beta)/.test(cleaned);
+        const hasChinese = /[\u4e00-\u9fff]/.test(cleaned);
+        if (isBeta && hasChinese) {
+          errMsg = "该实验性图表类型暂不支持中文标签，请使用英文";
+        }
         svgCache.set(cleaned, { error: errMsg });
         if (!cancelled) {
           setSvgContent(null);
@@ -98,15 +208,14 @@ function MermaidBlock({ code }: { code: string }) {
   }
 
   return (
-    <>
-      <div className="my-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
+    <div className="my-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
         <div className="flex items-center justify-between px-4 py-1.5 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
           <span className="text-[11px] text-[var(--color-text-muted)] font-mono">mermaid</span>
           <div className="flex items-center gap-2">
             {svgContent && !showCode && (
               <button
                 type="button"
-                onClick={() => setFullscreen(true)}
+                onClick={() => svgContent && openMermaidFullscreen(svgContent)}
                 className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
                 title="全屏查看"
               >
@@ -128,77 +237,11 @@ function MermaidBlock({ code }: { code: string }) {
         {showCode ? (
           <pre className="p-4 overflow-x-auto text-[13px] bg-[var(--color-bg)]"><code>{code}</code></pre>
         ) : svgContent ? (
-          <div dangerouslySetInnerHTML={{ __html: svgContent }} className="flex justify-center p-4 bg-[var(--color-bg)] overflow-x-auto [&>svg]:max-w-full" />
+          <div dangerouslySetInnerHTML={{ __html: svgContent }} className="flex justify-center p-4 bg-[var(--color-bg)] overflow-x-auto [&>svg]:max-w-full [&>svg]:h-auto [&>svg]:min-w-0" />
         ) : (
           <div className="flex justify-center p-4 bg-[var(--color-bg)] text-[var(--color-text-muted)] text-xs">渲染中…</div>
         )}
-      </div>
-
-      {/* 全屏遮罩 */}
-      {fullscreen && svgContent && (
-        <div
-          className="fixed inset-0 z-[9999] flex flex-col bg-black/70 backdrop-blur-sm"
-          onClick={() => { setFullscreen(false); setZoom(1); }}
-        >
-          {/* 工具栏 */}
-          <div className="flex items-center justify-between px-4 py-2 bg-[var(--color-bg)] border-b border-[var(--color-border)]" onClick={(e) => e.stopPropagation()}>
-            <span className="text-xs text-[var(--color-text-muted)] font-mono">mermaid</span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.max(0.25, z - 0.25))}
-                className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors"
-                title="缩小"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              </button>
-              <button
-                type="button"
-                onClick={() => setZoom(1)}
-                className="px-2 h-8 flex items-center justify-center rounded text-xs font-mono text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors min-w-[48px]"
-                title="重置缩放"
-              >
-                {Math.round(zoom * 100)}%
-              </button>
-              <button
-                type="button"
-                onClick={() => setZoom((z) => Math.min(5, z + 0.25))}
-                className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors"
-                title="放大"
-              >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
-              </button>
-              <div className="w-px h-5 bg-[var(--color-border)] mx-1" />
-              <button
-                type="button"
-                onClick={() => { setFullscreen(false); setZoom(1); }}
-                className="w-8 h-8 flex items-center justify-center rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-hover)] transition-colors"
-                title="关闭"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
-            </div>
-          </div>
-          {/* 图表内容 */}
-          <div
-            className="flex-1 overflow-auto flex items-center justify-center"
-            onClick={(e) => e.stopPropagation()}
-            onWheel={(e) => {
-              e.stopPropagation();
-              setZoom((z) => Math.min(5, Math.max(0.25, z + (e.deltaY < 0 ? 0.1 : -0.1))));
-            }}
-          >
-            <div
-              style={{ transform: `scale(${zoom})`, transformOrigin: "center center" }}
-              className="transition-transform duration-100 p-8"
-              dangerouslySetInnerHTML={{ __html: svgContent }}
-            />
-          </div>
-        </div>
-      )}
-    </>
+    </div>
   );
 }
 
@@ -265,6 +308,115 @@ function CodeBlock({
 
 export default function MarkdownContent({ children, className = "", transformImageUrl, variant = "default", disableMermaid = false }: Props) {
   const shareCls = variant === "share" ? "share-markdown" : "";
+
+  const components = useMemo(() => ({
+    p: ({ children }: { children?: React.ReactNode }) => <p className="mb-3 last:mb-0">{children}</p>,
+
+    h1: ({ children }: { children?: React.ReactNode }) => <h1 id={slugify(extractText(children))} className="text-xl font-bold mt-6 mb-3 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h1>,
+    h2: ({ children }: { children?: React.ReactNode }) => <h2 id={slugify(extractText(children))} className="text-lg font-semibold mt-5 mb-2 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h2>,
+    h3: ({ children }: { children?: React.ReactNode }) => <h3 id={slugify(extractText(children))} className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h3>,
+    h4: ({ children }: { children?: React.ReactNode }) => <h4 id={slugify(extractText(children))} className="text-sm font-semibold mt-3 mb-1 first:mt-0">{children}</h4>,
+
+    ul: ({ children }: { children?: React.ReactNode }) => (
+      <ul
+        className={
+          variant === "share"
+            ? "mb-3 list-disc share-md-list-ul"
+            : "mb-3 space-y-1 list-disc pl-5"
+        }
+      >
+        {children}
+      </ul>
+    ),
+    ol: ({ children }: { children?: React.ReactNode }) => (
+      <ol
+        className={
+          variant === "share"
+            ? "mb-3 list-decimal share-md-list-ol"
+            : "mb-3 space-y-1 list-decimal pl-5"
+        }
+      >
+        {children}
+      </ol>
+    ),
+    li: ({ children }: { children?: React.ReactNode }) => (
+      <li className={variant === "share" ? "share-md-li" : "leading-relaxed"}>{children}</li>
+    ),
+
+    strong: ({ children }: { children?: React.ReactNode }) => <strong className="font-semibold">{children}</strong>,
+    em: ({ children }: { children?: React.ReactNode }) => <em className="italic">{children}</em>,
+    del: ({ children }: { children?: React.ReactNode }) => <del className="line-through text-[var(--color-text-muted)]">{children}</del>,
+
+    // inline code vs block code
+    code: ({ className: c, children, ...props }: any) => {
+      const isBlock = !!props.node?.parent && props.node?.parent?.tagName === "pre";
+      if (isBlock) {
+        return <code className={c ?? ""}>{children}</code>;
+      }
+      return (
+        <code className="px-1.5 py-0.5 rounded bg-[var(--color-surface-hover)] text-[var(--color-accent)] text-[0.85em] font-mono border border-[var(--color-border)]">
+          {children}
+        </code>
+      );
+    },
+
+    pre: ({ children, ...props }: any) => {
+      const codeEl = (children as React.ReactElement<{ className?: string; children?: React.ReactNode }>);
+      const codeClass = codeEl?.props?.className ?? "";
+      const codeChildren = codeEl?.props?.children;
+      const lang = codeClass.match(/language-([\w-]+)/)?.[1];
+      if (lang === "mermaid" && !disableMermaid) {
+        const text = typeof codeChildren === "string" ? codeChildren : String(codeChildren ?? "");
+        if (isMermaidDiagram(text)) {
+          return <MermaidBlock code={text} />;
+        }
+      }
+      return (
+        <CodeBlock variant={variant} className={codeClass} {...props}>
+          {codeChildren}
+        </CodeBlock>
+      );
+    },
+
+    blockquote: ({ children }: { children?: React.ReactNode }) => (
+      <blockquote className="border-l-4 border-[var(--color-accent)] pl-4 my-3 text-[var(--color-text-muted)] italic bg-[var(--color-surface-hover)] rounded-r-lg py-2 pr-3">
+        {children}
+      </blockquote>
+    ),
+
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+      <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline underline-offset-2">
+        {children}
+      </a>
+    ),
+
+    img: ({ src, alt }: { src?: string; alt?: string }) => {
+      const resolved = src && transformImageUrl ? transformImageUrl(src) : src;
+      return <img src={resolved} alt={alt ?? ""} className="max-w-full rounded-lg my-3 border border-[var(--color-border)]" loading="lazy" />;
+    },
+
+    // GFM tables
+    table: ({ children }: { children?: React.ReactNode }) => (
+      <div className="overflow-x-auto my-3 rounded-lg border border-[var(--color-border)]">
+        <table className="w-full text-sm border-collapse">{children}</table>
+      </div>
+    ),
+    thead: ({ children }: { children?: React.ReactNode }) => <thead className="bg-[var(--color-surface-hover)]">{children}</thead>,
+    tbody: ({ children }: { children?: React.ReactNode }) => <tbody className="divide-y divide-[var(--color-border)]">{children}</tbody>,
+    tr: ({ children }: { children?: React.ReactNode }) => <tr className="divide-x divide-[var(--color-border)]">{children}</tr>,
+    th: ({ children }: { children?: React.ReactNode }) => <th className="px-4 py-2 text-left font-semibold text-[var(--color-text)] whitespace-nowrap">{children}</th>,
+    td: ({ children }: { children?: React.ReactNode }) => <td className="px-4 py-2 text-[var(--color-text)]">{children}</td>,
+
+    // GFM task list checkboxes
+    input: ({ type, checked }: { type?: string; checked?: boolean }) =>
+      type === "checkbox" ? (
+        <input type="checkbox" checked={checked} readOnly className="mr-1.5 accent-[var(--color-accent)] cursor-default" />
+      ) : null,
+
+    hr: () => <hr className="my-4 border-[var(--color-border)]" />,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [variant, disableMermaid, transformImageUrl]);
+
   return (
     <div
       className={["markdown-content", "break-words", "text-[var(--color-text)]", "text-sm", "leading-relaxed", shareCls, className].filter(Boolean).join(" ")}
@@ -272,116 +424,7 @@ export default function MarkdownContent({ children, className = "", transformIma
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
-        components={{
-          p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
-
-          h1: ({ children }) => <h1 className="text-xl font-bold mt-6 mb-3 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h1>,
-          h2: ({ children }) => <h2 className="text-lg font-semibold mt-5 mb-2 first:mt-0 pb-1 border-b border-[var(--color-border)]">{children}</h2>,
-          h3: ({ children }) => <h3 className="text-base font-semibold mt-4 mb-2 first:mt-0">{children}</h3>,
-          h4: ({ children }) => <h4 className="text-sm font-semibold mt-3 mb-1 first:mt-0">{children}</h4>,
-
-          ul: ({ children }) => (
-            <ul
-              className={
-                variant === "share"
-                  ? "mb-3 list-disc share-md-list-ul"
-                  : "mb-3 space-y-1 list-disc pl-5"
-              }
-            >
-              {children}
-            </ul>
-          ),
-          ol: ({ children }) => (
-            <ol
-              className={
-                variant === "share"
-                  ? "mb-3 list-decimal share-md-list-ol"
-                  : "mb-3 space-y-1 list-decimal pl-5"
-              }
-            >
-              {children}
-            </ol>
-          ),
-          li: ({ children }) => (
-            <li className={variant === "share" ? "share-md-li" : "leading-relaxed"}>{children}</li>
-          ),
-
-          strong: ({ children }) => <strong className="font-semibold">{children}</strong>,
-          em: ({ children }) => <em className="italic">{children}</em>,
-          del: ({ children }) => <del className="line-through text-[var(--color-text-muted)]">{children}</del>,
-
-          // inline code vs block code
-          code: ({ className: c, children, ...props }) => {
-            // block code (inside <pre>) is handled by the pre renderer below
-            const isBlock = !!(props as { node?: { parent?: { tagName?: string } } }).node?.parent &&
-              (props as { node?: { parent?: { tagName?: string } } }).node?.parent?.tagName === "pre";
-            if (isBlock) {
-              return <code className={c ?? ""}>{children}</code>;
-            }
-            return (
-              <code className="px-1.5 py-0.5 rounded bg-[var(--color-surface-hover)] text-[var(--color-accent)] text-[0.85em] font-mono border border-[var(--color-border)]">
-                {children}
-              </code>
-            );
-          },
-
-          pre: ({ children, ...props }) => {
-            // extract className and children from the nested <code>
-            const codeEl = (children as React.ReactElement<{ className?: string; children?: React.ReactNode }>);
-            const codeClass = codeEl?.props?.className ?? "";
-            const codeChildren = codeEl?.props?.children;
-            // Mermaid diagram rendering
-            const lang = codeClass.match(/language-([\w-]+)/)?.[1];
-            if (lang === "mermaid" && !disableMermaid) {
-              const text = typeof codeChildren === "string" ? codeChildren : String(codeChildren ?? "");
-              if (isMermaidDiagram(text)) {
-                return <MermaidBlock code={text} />;
-              }
-            }
-            return (
-              <CodeBlock variant={variant} className={codeClass} {...props}>
-                {codeChildren}
-              </CodeBlock>
-            );
-          },
-
-          blockquote: ({ children }) => (
-            <blockquote className="border-l-4 border-[var(--color-accent)] pl-4 my-3 text-[var(--color-text-muted)] italic bg-[var(--color-surface-hover)] rounded-r-lg py-2 pr-3">
-              {children}
-            </blockquote>
-          ),
-
-          a: ({ href, children }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline underline-offset-2">
-              {children}
-            </a>
-          ),
-
-          img: ({ src, alt }) => {
-            const resolved = src && transformImageUrl ? transformImageUrl(src) : src;
-            return <img src={resolved} alt={alt ?? ""} className="max-w-full rounded-lg my-3 border border-[var(--color-border)]" loading="lazy" />;
-          },
-
-          // GFM tables
-          table: ({ children }) => (
-            <div className="overflow-x-auto my-3 rounded-lg border border-[var(--color-border)]">
-              <table className="w-full text-sm border-collapse">{children}</table>
-            </div>
-          ),
-          thead: ({ children }) => <thead className="bg-[var(--color-surface-hover)]">{children}</thead>,
-          tbody: ({ children }) => <tbody className="divide-y divide-[var(--color-border)]">{children}</tbody>,
-          tr: ({ children }) => <tr className="divide-x divide-[var(--color-border)]">{children}</tr>,
-          th: ({ children }) => <th className="px-4 py-2 text-left font-semibold text-[var(--color-text)] whitespace-nowrap">{children}</th>,
-          td: ({ children }) => <td className="px-4 py-2 text-[var(--color-text)]">{children}</td>,
-
-          // GFM task list checkboxes
-          input: ({ type, checked }) =>
-            type === "checkbox" ? (
-              <input type="checkbox" checked={checked} readOnly className="mr-1.5 accent-[var(--color-accent)] cursor-default" />
-            ) : null,
-
-          hr: () => <hr className="my-4 border-[var(--color-border)]" />,
-        }}
+        components={components}
       >
         {children}
       </ReactMarkdown>

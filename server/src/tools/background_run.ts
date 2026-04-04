@@ -12,6 +12,17 @@ export const background_run = tool(
     if (!result.ok || !result.taskId) {
       return `[background_run]\nstatus: failed\nerror: ${result.error ?? "unknown error"}`;
     }
+    if (result.deduplicated) {
+      const task = backgroundManager.getTask(result.taskId);
+      return [
+        "[background_run]",
+        "status: deduplicated",
+        `task_id: ${result.taskId}`,
+        `command: ${input.command}`,
+        `cwd: ${task?.cwd ?? (input.working_directory ?? process.cwd())}`,
+        "note: This command is already running. Reusing existing task. Use background_check to query status.",
+      ].join("\n");
+    }
     const task = backgroundManager.getTask(result.taskId);
     return [
       "[background_run]",

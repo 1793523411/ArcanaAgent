@@ -56,6 +56,8 @@ interface StartTaskResult {
   ok: boolean;
   taskId?: string;
   error?: string;
+  /** 命令去重命中，返回已有 task */
+  deduplicated?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 300_000;
@@ -122,6 +124,49 @@ class BackgroundManager {
 
   private readonly notifications: BackgroundTaskNotification[] = [];
 
+  private static readonly STALE_TASK_AGE_MS = 10 * 60 * 1000;
+
+  /** 查找正在运行的相同命令（同一命令 + 同一工作目录才视为重复） */
+  private findRunningByCommand(command: string, cwd: string): BackgroundTaskRecord | null {
+    const normalized = command.replace(/\s+/g, " ").trim();
+    for (const task of this.tasks.values()) {
+      if (task.status === "running"
+        && task.command.replace(/\s+/g, " ").trim() === normalized
+        && task.cwd === cwd) {
+        return task;
+      }
+    }
+    return null;
+  }
+
+  /** 从命令字符串中提取端口号 */
+  private extractPort(command: string): number | null {
+    // 显式端口参数：--port 3000, -p 3000, PORT=3000
+    const explicitMatch = command.match(/(?:--port\s+|-p\s+|PORT=)(\d{2,5})\b/i);
+    if (explicitMatch) {
+      const port = parseInt(explicitMatch[1], 10);
+      if (port > 0 && port < 65536) return port;
+    }
+    // URL 形式：localhost:3000, 127.0.0.1:8080, 0.0.0.0:5173
+    const urlMatch = command.match(/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d{4,5})\b/);
+    if (urlMatch) {
+      const port = parseInt(urlMatch[1], 10);
+      if (port > 0 && port < 65536) return port;
+    }
+    return null;
+  }
+
+  /** 清理已终止超过 10 分钟的 task 记录，防止内存泄漏 */
+  private cleanupStaleTasks(): void {
+    const now = Date.now();
+    for (const [id, task] of this.tasks.entries()) {
+      if (isTerminalStatus(task.status) && task.finishedAt
+        && now - task.finishedAt > BackgroundManager.STALE_TASK_AGE_MS) {
+        this.tasks.delete(id);
+      }
+    }
+  }
+
   start(input: StartTaskInput): StartTaskResult {
     const command = typeof input.command === "string" ? input.command.trim() : "";
     if (!command) {
@@ -131,6 +176,30 @@ class BackgroundManager {
     if (blocked) {
       return { ok: false, error: blocked };
     }
+
+    // 清理过期 task
+    this.cleanupStaleTasks();
+
+    // 命令去重：相同命令 + 同一目录已在运行，复用
+    const effectiveCwd = input.cwd && input.cwd.trim() && existsSync(input.cwd) ? input.cwd : process.cwd();
+    const existing = this.findRunningByCommand(command, effectiveCwd);
+    if (existing) {
+      return { ok: true, taskId: existing.id, deduplicated: true };
+    }
+
+    // 端口冲突检测
+    const port = this.extractPort(command);
+    if (port !== null) {
+      for (const task of this.tasks.values()) {
+        if (task.status === "running" && this.extractPort(task.command) === port) {
+          return {
+            ok: false,
+            error: `Port ${port} already in use by task ${task.id} ("${task.command.slice(0, 80)}"). Cancel it first with background_cancel or use a different port.`,
+          };
+        }
+      }
+    }
+
     if (this.countRunningTasks() >= MAX_CONCURRENT_TASKS) {
       return { ok: false, error: `Too many running tasks. Limit is ${MAX_CONCURRENT_TASKS}.` };
     }

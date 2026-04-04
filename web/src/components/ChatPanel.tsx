@@ -53,6 +53,13 @@ interface Props {
     currentStep: number;
     toolName?: string;
   } | null;
+  streamingHarness?: {
+    events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    driverEvents?: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+    driverPhase: string | null;
+    driverIteration: number;
+    driverMaxRetries: number;
+  } | null;
   pendingApprovals?: Array<{
     requestId: string;
     subagentId: string;
@@ -116,6 +123,7 @@ export default function ChatPanel({
   streamingToolLogs,
   streamingSubagents,
   streamingPlan,
+  streamingHarness,
   pendingApprovals = [],
   onApproval,
   processingApprovals,
@@ -278,6 +286,7 @@ export default function ChatPanel({
         {(() => {
           // 合并同一轮对话中多条 AI 消息为一条展示消息：
           // - 携带 tool_calls 的 AI 消息视为"中间消息"，其 reasoning 和 toolLogs 向后合并
+          // - 同一轮（无 human 消息间隔）中非最后一条的"终态"AI 消息也视为中间消息（外层重试场景）
           // - 某些模型（如 doubao）在每次工具调用时会输出中间说明文字，一并收集
           // - 最终展示的是同一轮里最后一条"终态"AI 消息，附带累积的 reasoning 和 toolLogs
           const raw = messages ?? [];
@@ -285,23 +294,48 @@ export default function ChatPanel({
           let pendingReasoning: string[] = [];
           let pendingToolLogs: Array<{ name: string; input: string; output: string }> = [];
           let pendingContent: string[] = [];
+          let pendingHarness: StoredMessage["harness"] | undefined;
+          let pendingPlan: StoredMessage["plan"] | undefined;
+          let pendingSubagents: StoredMessage["subagents"] | undefined;
+          let pendingIterations: string[] = [];
 
           for (let serverIndex = 0; serverIndex < raw.length; serverIndex++) {
             const m = raw[serverIndex];
             if (m.type === "tool") continue;
 
             // 只要 AI 消息携带 tool_calls 就视为中间调度消息，合并到后续终态消息
-            const isDispatchOnly = m.type === "ai"
+            const hasToolCalls = m.type === "ai"
               && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
 
+            // 同一轮中非最后的终态 AI：后续还有 AI 消息且中间没有 human 消息
+            const isIntermediateFinal = m.type === "ai" && !hasToolCalls && (() => {
+              for (let j = serverIndex + 1; j < raw.length; j++) {
+                if (raw[j].type === "human") return false;
+                if (raw[j].type === "ai") return true;
+              }
+              return false;
+            })();
+
+            const isDispatchOnly = hasToolCalls || isIntermediateFinal;
+
             if (isDispatchOnly) {
-              if (typeof m.content === "string" && m.content.trim()) pendingContent.push(m.content.trim());
+              if (typeof m.content === "string" && m.content.trim()) {
+                // 外层重试产生的实质性中间回复（>100字符）收集为折叠轮次
+                if (isIntermediateFinal && m.content.trim().length > 100) {
+                  pendingIterations.push(m.content.trim());
+                } else {
+                  pendingContent.push(m.content.trim());
+                }
+              }
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
               if (Array.isArray(m.toolLogs)) pendingToolLogs.push(...m.toolLogs);
+              if (m.harness) pendingHarness = m.harness;
+              if (m.plan) pendingPlan = m.plan;
+              if (m.subagents?.length) pendingSubagents = m.subagents;
               continue;
             }
 
-            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0)) {
+            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents || pendingIterations.length > 0)) {
               const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
               const combinedToolLogs = [...pendingToolLogs, ...(m.toolLogs ?? [])];
               const combinedContent = [...pendingContent, ...(typeof m.content === "string" && m.content.trim() ? [m.content.trim()] : [])].join("\n\n");
@@ -311,23 +345,35 @@ export default function ChatPanel({
                   content: combinedContent || m.content,
                   reasoningContent: combined || m.reasoningContent,
                   toolLogs: combinedToolLogs.length > 0 ? combinedToolLogs : m.toolLogs,
+                  harness: m.harness ?? pendingHarness,
+                  plan: m.plan ?? pendingPlan,
+                  subagents: (m.subagents?.length ? m.subagents : undefined) ?? pendingSubagents,
+                  previousIterations: pendingIterations.length > 0 ? pendingIterations : undefined,
                 },
                 serverIndex,
               });
               pendingReasoning = [];
               pendingToolLogs = [];
               pendingContent = [];
+              pendingHarness = undefined;
+              pendingPlan = undefined;
+              pendingSubagents = undefined;
+              pendingIterations = [];
             } else {
               merged.push({ display: m, serverIndex });
             }
           }
-          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0) {
+          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents || pendingIterations.length > 0) {
             merged.push({
               display: {
                 type: "ai",
                 content: pendingContent.join("\n\n"),
                 reasoningContent: pendingReasoning.join("\n\n---\n\n"),
                 toolLogs: pendingToolLogs.length > 0 ? pendingToolLogs : undefined,
+                harness: pendingHarness,
+                plan: pendingPlan,
+                subagents: pendingSubagents,
+                previousIterations: pendingIterations.length > 0 ? pendingIterations : undefined,
               } as StoredMessage,
               serverIndex: -1,
             });
@@ -355,7 +401,7 @@ export default function ChatPanel({
             <span>定时任务正在执行中，Agent 正在处理您的请求...</span>
           </div>
         )}
-        {(loading || streamingContent || streamingReasoning || streamingToolLogs.length > 0 || streamingSubagents.length > 0) && (
+        {loading && (
           <StreamingBubble
           content={streamingContent}
           reasoning={streamingReasoning}
@@ -363,6 +409,7 @@ export default function ChatPanel({
           toolLogs={streamingToolLogs}
           subagents={streamingSubagents}
           plan={streamingPlan ?? undefined}
+          harness={streamingHarness ?? undefined}
           pendingApprovals={pendingApprovals}
           onApproval={onApproval}
           processingApprovals={processingApprovals}

@@ -104,6 +104,9 @@ export interface StoredMessage {
   toolLogs?: ToolLog[];
   plan?: PlanLog;
   subagents?: SubagentLog[];
+  harness?: HarnessLog;
+  /** 外层重试时前几轮的中间回复内容（仅前端 merge 产生，不持久化） */
+  previousIterations?: string[];
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -192,6 +195,18 @@ export interface ClaudeCodeConfig {
   allowedTools?: string[];
 }
 
+export interface ExecutionEnhancementsConfig {
+  evalGuard: boolean;
+  loopDetection: boolean;
+  replan: boolean;
+  autoApproveReplan: boolean;
+  outerRetry: boolean;
+  maxReplanAttempts: number;
+  maxOuterRetries: number;
+  loopWindowSize: number;
+  loopSimilarityThreshold: number;
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -206,9 +221,61 @@ export interface UserConfig {
   codeIndexStrategy?: CodeIndexStrategy;
   /** Claude Code 集成配置 */
   claudeCode?: ClaudeCodeConfig;
+  /** 执行增强配置 */
+  enhancements?: ExecutionEnhancementsConfig;
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;
+
+// ─── Harness Types ──────────────────────────────────
+
+export interface HarnessEvalEvent {
+  kind: "eval";
+  data: {
+    stepIndex: number;
+    verdict: "pass" | "weak" | "fail" | "inconclusive";
+    reason: string;
+  };
+  timestamp: string;
+}
+
+export interface HarnessLoopEvent {
+  kind: "loop_detection";
+  data: {
+    detected: boolean;
+    type?: "exact_cycle" | "semantic_stall";
+    description?: string;
+    windowSnapshot?: string[];
+  };
+  timestamp: string;
+}
+
+export interface HarnessReplanEvent {
+  kind: "replan";
+  data: {
+    shouldReplan: boolean;
+    trigger: "eval_fail" | "loop_detected" | "none";
+    revisedSteps?: Array<{ title: string; acceptance_checks: string[] }>;
+    pendingApproval?: boolean;
+  };
+  timestamp: string;
+}
+
+export type HarnessEvent = HarnessEvalEvent | HarnessLoopEvent | HarnessReplanEvent;
+
+export interface HarnessDriverEvent {
+  kind: "driver_lifecycle";
+  phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached";
+  iteration: number;
+  maxRetries: number;
+  harnessEventsInIteration?: HarnessEvent[];
+  timestamp: string;
+}
+
+export interface HarnessLog {
+  events: HarnessEvent[];
+  driverEvents: HarnessDriverEvent[];
+}
 
 export interface ArtifactMeta {
   name: string;

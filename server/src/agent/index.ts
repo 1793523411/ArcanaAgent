@@ -35,11 +35,15 @@ import {
   computeCurrentStep,
   forceCompletePlan,
 } from "./planTracker.js";
+import { HarnessMiddleware } from "./harness/middleware.js";
 import type { AgentExecutionOptions, StreamAgentOptions, PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
 export type { PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
+export type { HarnessConfig, HarnessEvent } from "./harness/types.js";
+export type { HarnessDriverConfig, HarnessDriverEvent } from "./harness/harnessDriver.js";
+export { streamHarnessAgent } from "./harness/harnessDriver.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
@@ -103,7 +107,7 @@ export async function runAgent(
   options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
   const tools = buildRuntimeTools(options, { modelId, skillContext, options });
-  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath));
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements));
   const adapter = getModelAdapter(modelId);
   const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -167,12 +171,16 @@ export async function* streamAgentWithTokens(
   skillContext?: string,
   options?: StreamAgentOptions
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
-  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath);
+  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements);
   const systemMessage = new SystemMessage(systemPromptText);
   const adapter = getModelAdapter(modelId);
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
   let runtimePlanSteps = createRuntimePlanSteps(planningPrelude.planSteps ?? []);
   let planCurrentStep = computeCurrentStep(runtimePlanSteps);
+  // Harness middleware: eval, loop detection, replanning (null-check only when not configured)
+  const harness = options?.harnessConfig
+    ? new HarnessMiddleware(options.harnessConfig, adapter)
+    : null;
   const emitCurrentPlan = (phase: "created" | "running" | "completed", toolName?: string) => {
     emitPlan({
       phase,
@@ -445,6 +453,24 @@ export async function* streamAgentWithTokens(
         conversationMessages = [...conversationMessages, ...toolMessages];
         if (runtimePlanSteps.length > 0) emitCurrentPlan("running", lastToolNameForPlan);
         yield { toolNode: { messages: toolMessages } };
+        // ── Harness middleware hook (reasoning stream path) ──
+        if (harness) {
+          const mwResult = await harness.afterToolResults(
+            runtimePlanSteps,
+            toolOutputs.map((o) => ({ name: o.name, result: o.result })),
+            conversationMessages.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
+          );
+          for (const evt of mwResult.events) options?.onHarnessEvent?.(evt);
+          if (mwResult.updatedPlanSteps) {
+            runtimePlanSteps = mwResult.updatedPlanSteps;
+            planCurrentStep = computeCurrentStep(runtimePlanSteps);
+            emitCurrentPlan("running");
+          }
+          if (mwResult.injectMessages?.length) {
+            conversationMessages = [...conversationMessages, ...mwResult.injectMessages];
+          }
+          if (mwResult.abort) break;
+        }
         if (round === maxRounds - 1) reachedMaxRounds = true;
       }
 
@@ -564,15 +590,15 @@ export async function* streamAgentWithTokens(
       new ToolMessage({ content: out.result, tool_call_id: out.id, name: out.name })
     ));
     if (runtimePlanSteps.length > 0) {
-      const toolOutputs: Array<{ name?: string; content: string }> = [];
+      const planEvidence: Array<{ name?: string; content: string }> = [];
       for (const m of toolMessages) {
         if (m._getType() !== "tool") continue;
-        toolOutputs.push({
+        planEvidence.push({
           name: (m as { name?: string }).name,
           content: typeof m.content === "string" ? m.content : "",
         });
       }
-      for (const out of toolOutputs) {
+      for (const out of planEvidence) {
         runtimePlanSteps = applyEvidenceToPlan(runtimePlanSteps, summarizeToolEvidence(out.name, out.content));
       }
       planCurrentStep = computeCurrentStep(runtimePlanSteps);
@@ -580,6 +606,24 @@ export async function* streamAgentWithTokens(
     }
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+    // ── Harness middleware hook (LangChain fallback path) ──
+    if (harness) {
+      const mwResult = await harness.afterToolResults(
+        runtimePlanSteps,
+        toolOutputs.map((o) => ({ name: o.name, result: o.result })),
+        state.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
+      );
+      for (const evt of mwResult.events) options?.onHarnessEvent?.(evt);
+      if (mwResult.updatedPlanSteps) {
+        runtimePlanSteps = mwResult.updatedPlanSteps;
+        planCurrentStep = computeCurrentStep(runtimePlanSteps);
+        emitCurrentPlan("running");
+      }
+      if (mwResult.injectMessages?.length) {
+        state = [...state, ...mwResult.injectMessages];
+      }
+      if (mwResult.abort) break;
+    }
     if (round === maxRounds - 1) reachedMaxRounds = true;
   }
 

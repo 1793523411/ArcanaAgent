@@ -39,9 +39,11 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
+import { streamHarnessAgent } from "../agent/harness/harnessDriver.js";
+import type { HarnessConfig } from "../agent/harness/types.js";
 import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
-import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
+import { loadUserConfig, saveUserConfig, hasAnyEnhancement, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
 import { claudeCodeEmitter, type ClaudeCodeLogEvent } from "../tools/claude_code.js";
 import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
@@ -265,6 +267,20 @@ const createConversationBodySchema = {
   teamId: z.string().max(100).optional(),
 };
 const createConversationBody = z.object(createConversationBodySchema);
+
+/** 从用户配置构建 HarnessConfig（仅在有增强启用时返回非 undefined） */
+function buildHarnessConfigFromEnhancements(e?: ExecutionEnhancementsConfig): HarnessConfig | undefined {
+  if (!e || !hasAnyEnhancement(e)) return undefined;
+  return {
+    evalEnabled: e.evalGuard,
+    loopDetectionEnabled: e.loopDetection,
+    replanEnabled: e.replan,
+    autoApproveReplan: e.autoApproveReplan,
+    maxReplanAttempts: e.maxReplanAttempts,
+    loopWindowSize: e.loopWindowSize,
+    loopSimilarityThreshold: e.loopSimilarityThreshold,
+  };
+}
 
 /**
  * Compress task tool messages in-place before persisting to history.
@@ -592,6 +608,8 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let lastPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
+  const harnessEvents: import("../agent/harness/types.js").HarnessEvent[] = [];
+  const harnessDriverEvents: import("../agent/harness/harnessDriver.js").HarnessDriverEvent[] = [];
   let resultsSaved = false;
 
   // 将收集到的消息持久化（正常完成和中途报错都会调用）
@@ -609,20 +627,30 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
+    // Helper: prefer the last AI message with content; fallback to last AI overall
+    const findBestAiTarget = () => {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      return withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+    };
     if (latestPlan?.steps?.length) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") target.plan = latestPlan;
     }
     const subagentLogs = buildSubagentLogs(subagentEvents);
     if (subagentLogs.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") target.subagents = subagentLogs;
+    }
+    if (harnessEvents.length > 0) {
+      const target = findBestAiTarget();
+      if (target && target.type === "ai") target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
     }
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (m.harness && m.harness.events.length > 0) return true;
       // Keep AI messages that carry tool_calls — dropping them would orphan
       // the corresponding ToolMessages and break the message sequence.
       if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
@@ -641,6 +669,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
         ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
         ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+        ...(harnessEvents.length > 0 ? { harness: { events: harnessEvents, driverEvents: harnessDriverEvents } } : {}),
       });
     } else if (errorMsg) {
       const lastAi = toStore.filter((m) => m.type === "ai").pop();
@@ -654,13 +683,10 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   try {
-    for await (const chunk of streamAgentWithTokens(
-      lcMessages,
-      onToken,
-      config.modelId,
-      onReasoningToken,
-      skillContext,
-      {
+    const enhancements = config.enhancements;
+    const harnessConfig = buildHarnessConfigFromEnhancements(enhancements);
+    const useOuterRetry = enhancements?.outerRetry && harnessConfig;
+    const streamOptions = {
         conversationMode,
         conversationId: id,
         teamId: meta.teamId,
@@ -668,16 +694,38 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         workspacePath,
         abortSignal: abortController.signal,
         planProgressEnabled: config.planning?.streamProgress ?? true,
-        onPlanEvent: (event) => {
+        enhancements,
+        ...(harnessConfig ? { harnessConfig } : {}),
+        onPlanEvent: (event: PlanStreamEvent) => {
           latestPlan = { ...event };
           writeImmediate("data: " + JSON.stringify({ type: "plan", ...event }) + "\n\n");
         },
-        onSubagentEvent: (event) => {
+        onSubagentEvent: (event: SubagentStreamEvent) => {
           subagentEvents.push(event);
           writeImmediate("data: " + JSON.stringify({ type: "subagent", ...event }) + "\n\n");
         },
-      }
-    )) {
+        onHarnessEvent: (event: import("../agent/harness/types.js").HarnessEvent) => {
+          harnessEvents.push(event);
+          writeImmediate("data: " + JSON.stringify({ type: "harness", ...event }) + "\n\n");
+        },
+    };
+
+    const agentStream = useOuterRetry
+      ? streamHarnessAgent(
+          lcMessages, onToken, config.modelId, onReasoningToken, skillContext,
+          streamOptions,
+          { maxOuterRetries: enhancements!.maxOuterRetries, harnessConfig: harnessConfig! },
+          (driverEvent) => {
+            harnessDriverEvents.push(driverEvent);
+            writeImmediate("data: " + JSON.stringify({ type: "harness_driver", ...driverEvent }) + "\n\n");
+          }
+        )
+      : streamAgentWithTokens(
+          lcMessages, onToken, config.modelId, onReasoningToken, skillContext,
+          streamOptions
+        );
+
+    for await (const chunk of agentStream) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }>)[key] : undefined;
       if (key === "usage" && part && typeof part === "object" && "prompt_tokens" in part) {
@@ -800,17 +848,28 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         }
       }
     }
+    // Helper: prefer the last AI message with content; fallback to last AI overall
+    const findBestAiTarget = () => {
+      const withContent = collectedStored.filter((m) => m.type === "ai" && typeof m.content === "string" && m.content.trim());
+      return withContent.pop() ?? collectedStored.filter((m) => m.type === "ai").pop();
+    };
     if (latestPlan?.steps?.length) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") {
         target.plan = latestPlan;
       }
     }
     const subagentLogs = buildSubagentLogs(subagentEvents);
     if (subagentLogs.length > 0) {
-      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      const target = findBestAiTarget();
       if (target && target.type === "ai") {
         target.subagents = subagentLogs;
+      }
+    }
+    if (harnessEvents.length > 0) {
+      const target = findBestAiTarget();
+      if (target && target.type === "ai") {
+        target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
       }
     }
     const toStore = collectedStored.filter((m) => {
@@ -818,6 +877,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (m.harness && m.harness.events.length > 0) return true;
       if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
@@ -830,6 +890,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
         ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
         ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+        ...(harnessEvents.length > 0 ? { harness: { events: harnessEvents, driverEvents: harnessDriverEvents } } : {}),
       });
     }
     // usageTokens: 本轮对话的总 token 消耗（所有 LLM 调用的累加），用于计费统计
@@ -951,6 +1012,7 @@ export async function postConversationMessageSync(req: Request, res: Response): 
       teamId: meta.teamId,
       planningEnabled: config.planning?.enabled ?? true,
       workspacePath,
+      enhancements: config.enhancements,
     });
     const newStored: StoredMessage[] = resultMessages.map((m) => {
       const s = langChainToStored(m);
@@ -1294,6 +1356,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     approvalRules?: ApprovalRule[];
     codeIndexStrategy?: string;
     claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; allowedTools?: string[] };
+    enhancements?: Partial<ExecutionEnhancementsConfig>;
   };
   const config = loadUserConfig();
   if (Array.isArray(body.enabledToolIds)) config.enabledToolIds = body.enabledToolIds;
@@ -1310,6 +1373,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     if (typeof body.context.trimToLast === "number" && body.context.trimToLast > 0) config.context.trimToLast = body.context.trimToLast;
     if (typeof body.context.tokenThresholdPercent === "number" && body.context.tokenThresholdPercent > 0 && body.context.tokenThresholdPercent <= 100) config.context.tokenThresholdPercent = body.context.tokenThresholdPercent;
     if (typeof body.context.compressKeepRecent === "number" && body.context.compressKeepRecent > 0) config.context.compressKeepRecent = body.context.compressKeepRecent;
+    if (typeof body.context.saveToolMessages === "boolean") config.context.saveToolMessages = body.context.saveToolMessages;
   }
   if (body.planning && typeof body.planning === "object") {
     config.planning = config.planning ?? { enabled: true, streamProgress: true };
@@ -1329,6 +1393,22 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       model: typeof body.claudeCode.model === "string" && body.claudeCode.model.trim() ? body.claudeCode.model.trim() : undefined,
       maxTurns: typeof body.claudeCode.maxTurns === "number" ? body.claudeCode.maxTurns : undefined,
       allowedTools: Array.isArray(body.claudeCode.allowedTools) ? body.claudeCode.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+    };
+  }
+  if (body.enhancements && typeof body.enhancements === "object") {
+    const { defaultEnhancements } = await import("../config/userConfig.js");
+    const prev = config.enhancements ?? { ...defaultEnhancements };
+    const e = body.enhancements;
+    config.enhancements = {
+      evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : prev.evalGuard,
+      loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : prev.loopDetection,
+      replan: typeof e.replan === "boolean" ? e.replan : prev.replan,
+      autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : prev.autoApproveReplan,
+      outerRetry: typeof e.outerRetry === "boolean" ? e.outerRetry : prev.outerRetry,
+      maxReplanAttempts: typeof e.maxReplanAttempts === "number" && e.maxReplanAttempts > 0 ? e.maxReplanAttempts : prev.maxReplanAttempts,
+      maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : prev.maxOuterRetries,
+      loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : prev.loopWindowSize,
+      loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : prev.loopSimilarityThreshold,
     };
   }
   saveUserConfig(config);

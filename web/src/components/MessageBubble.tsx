@@ -77,6 +77,17 @@ export default function MessageBubble({ message, conversationId, models = [], te
   const subagents = message.subagents ?? [];
   const plan = message.type === "ai" ? message.plan : undefined;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  const harness = message.type === "ai" ? message.harness : undefined;
+  const hasHarness = Array.isArray(harness?.events) && harness.events.length > 0;
+  const lastDriverPhase = harness?.driverEvents?.length
+    ? harness.driverEvents[harness.driverEvents.length - 1].phase
+    : undefined;
+  const driverRoundCount =
+    harness?.driverEvents?.length && harness.driverEvents.length > 0
+      ? Math.max(...harness.driverEvents.map((e) => e.iteration)) + 1
+      : 0;
+  const [harnessCollapsed, setHarnessCollapsed] = useState(true);
+  const [iterationsCollapsed, setIterationsCollapsed] = useState(true);
   const hasSubagents = message.type === "ai" && subagents.length > 0;
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
@@ -291,6 +302,73 @@ export default function MessageBubble({ message, conversationId, models = [], te
             )}
           </div>
         )}
+        {hasHarness && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setHarnessCollapsed((c) => !c)}
+              className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            >
+              <span className="select-none">{harnessCollapsed ? "▶" : "▼"}</span>
+              <span>执行监控事件</span>
+              <span className="text-[10px] opacity-70">({harness!.events.length})</span>
+            </button>
+            {!harnessCollapsed && (
+              <div className="mt-1.5 space-y-1.5">
+                {harness!.driverEvents && harness!.driverEvents.length > 0 && (
+                  <div className="text-[11px] px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                    Driver:{" "}
+                    {lastDriverPhase === "completed"
+                      ? "已完成"
+                      : lastDriverPhase === "max_retries_reached"
+                        ? "已达最大重试"
+                        : "已终止"}
+                    {" "}(共 {driverRoundCount} 轮)
+                  </div>
+                )}
+                {harness!.events.map((evt, idx) => {
+                  if (evt.kind === "eval") {
+                    const v = evt.data.verdict;
+                    const borderCls = v === "pass"
+                      ? "border-[var(--color-success-border)]"
+                      : v === "weak" || v === "inconclusive"
+                        ? "border-yellow-500/60"
+                        : "border-[var(--color-error-text)]/60";
+                    const icon = v === "pass" ? "✅" : v === "weak" ? "⚠️" : v === "inconclusive" ? "ℹ️" : "❌";
+                    return (
+                      <div key={`h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border ${borderCls} bg-[var(--color-bg)]`}>
+                        <div>{icon} 步骤 {evt.data.stepIndex + 1} 评估: <span className="font-medium">{v}</span></div>
+                        <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.reason}</div>
+                      </div>
+                    );
+                  }
+                  if (evt.kind === "loop_detection" && evt.data.detected) {
+                    return (
+                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-yellow-500/60 bg-[var(--color-bg)]">
+                        <div>🔄 循环检测: {evt.data.type === "exact_cycle" ? "精确循环" : "语义停滞"}</div>
+                        {evt.data.description && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.description}</div>}
+                      </div>
+                    );
+                  }
+                  if (evt.kind === "replan" && evt.data.shouldReplan) {
+                    return (
+                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-blue-500/60 bg-[var(--color-bg)]">
+                        <div>🔀 {evt.data.pendingApproval ? "重规划建议" : "已重规划"} (触发: {evt.data.trigger === "eval_fail" ? "评估失败" : "循环检测"})</div>
+                        {evt.data.pendingApproval && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">仅作为参考建议，未自动应用</div>}
+                        {evt.data.revisedSteps && (
+                          <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
+                            新步骤: {evt.data.revisedSteps.map(s => s.title).join(" → ")}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
+              </div>
+            )}
+          </div>
+        )}
         {toolLogs.length > 0 && <ToolCallBlock logs={toolLogs} defaultCollapsed />}
         {hasSubagents && (
           <div className="mb-3 p-2.5 rounded-lg bg-[var(--color-bg)] border border-[var(--color-border)]">
@@ -429,7 +507,33 @@ export default function MessageBubble({ message, conversationId, models = [], te
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (
-          text ? <MarkdownContent transformImageUrl={transformImageUrl}>{text}</MarkdownContent> : null
+          <>
+            {message.previousIterations && message.previousIterations.length > 0 && (
+              <div className="mb-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setIterationsCollapsed((v) => !v)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors"
+                >
+                  <span className="transition-transform" style={{ transform: iterationsCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▼</span>
+                  {message.previousIterations.length} 轮中间结果（非最终输出）
+                </button>
+                {!iterationsCollapsed && (
+                  <div className="border-t border-[var(--color-border)]">
+                    {message.previousIterations.map((iter, idx) => (
+                      <div key={idx} className="px-4 py-3 border-b border-[var(--color-border)] last:border-b-0">
+                        <div className="text-[11px] text-[var(--color-text-muted)] mb-2 font-medium">第 {idx + 1} 轮</div>
+                        <div className="text-sm opacity-70">
+                          <MarkdownContent transformImageUrl={transformImageUrl}>{iter}</MarkdownContent>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {text ? <MarkdownContent transformImageUrl={transformImageUrl}>{text}</MarkdownContent> : null}
+          </>
         )}
       </div>
     </div>
