@@ -297,6 +297,7 @@ export default function ChatPanel({
           let pendingHarness: StoredMessage["harness"] | undefined;
           let pendingPlan: StoredMessage["plan"] | undefined;
           let pendingSubagents: StoredMessage["subagents"] | undefined;
+          let pendingIterations: string[] = [];
 
           for (let serverIndex = 0; serverIndex < raw.length; serverIndex++) {
             const m = raw[serverIndex];
@@ -318,7 +319,14 @@ export default function ChatPanel({
             const isDispatchOnly = hasToolCalls || isIntermediateFinal;
 
             if (isDispatchOnly) {
-              if (typeof m.content === "string" && m.content.trim()) pendingContent.push(m.content.trim());
+              if (typeof m.content === "string" && m.content.trim()) {
+                // 外层重试产生的实质性中间回复（>100字符）收集为折叠轮次
+                if (isIntermediateFinal && m.content.trim().length > 100) {
+                  pendingIterations.push(m.content.trim());
+                } else {
+                  pendingContent.push(m.content.trim());
+                }
+              }
               if (m.reasoningContent?.trim()) pendingReasoning.push(m.reasoningContent.trim());
               if (Array.isArray(m.toolLogs)) pendingToolLogs.push(...m.toolLogs);
               if (m.harness) pendingHarness = m.harness;
@@ -327,7 +335,7 @@ export default function ChatPanel({
               continue;
             }
 
-            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents)) {
+            if (m.type === "ai" && (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents || pendingIterations.length > 0)) {
               const combined = [...pendingReasoning, ...(m.reasoningContent?.trim() ? [m.reasoningContent.trim()] : [])].join("\n\n---\n\n");
               const combinedToolLogs = [...pendingToolLogs, ...(m.toolLogs ?? [])];
               const combinedContent = [...pendingContent, ...(typeof m.content === "string" && m.content.trim() ? [m.content.trim()] : [])].join("\n\n");
@@ -340,6 +348,7 @@ export default function ChatPanel({
                   harness: m.harness ?? pendingHarness,
                   plan: m.plan ?? pendingPlan,
                   subagents: (m.subagents?.length ? m.subagents : undefined) ?? pendingSubagents,
+                  previousIterations: pendingIterations.length > 0 ? pendingIterations : undefined,
                 },
                 serverIndex,
               });
@@ -349,11 +358,12 @@ export default function ChatPanel({
               pendingHarness = undefined;
               pendingPlan = undefined;
               pendingSubagents = undefined;
+              pendingIterations = [];
             } else {
               merged.push({ display: m, serverIndex });
             }
           }
-          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents) {
+          if (pendingReasoning.length > 0 || pendingToolLogs.length > 0 || pendingContent.length > 0 || pendingHarness || pendingPlan || pendingSubagents || pendingIterations.length > 0) {
             merged.push({
               display: {
                 type: "ai",
@@ -363,6 +373,7 @@ export default function ChatPanel({
                 harness: pendingHarness,
                 plan: pendingPlan,
                 subagents: pendingSubagents,
+                previousIterations: pendingIterations.length > 0 ? pendingIterations : undefined,
               } as StoredMessage,
               serverIndex: -1,
             });

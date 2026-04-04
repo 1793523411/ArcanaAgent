@@ -87,6 +87,7 @@ export default function MessageBubble({ message, conversationId, models = [], te
       ? Math.max(...harness.driverEvents.map((e) => e.iteration)) + 1
       : 0;
   const [harnessCollapsed, setHarnessCollapsed] = useState(true);
+  const [iterationsCollapsed, setIterationsCollapsed] = useState(true);
   const hasSubagents = message.type === "ai" && subagents.length > 0;
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
@@ -506,7 +507,33 @@ export default function MessageBubble({ message, conversationId, models = [], te
         {isHuman ? (
           text ? <div className="whitespace-pre-wrap break-words">{text}</div> : null
         ) : (
-          text ? <MarkdownContent transformImageUrl={transformImageUrl}>{text}</MarkdownContent> : null
+          <>
+            {message.previousIterations && message.previousIterations.length > 0 && (
+              <div className="mb-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => setIterationsCollapsed((v) => !v)}
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors"
+                >
+                  <span className="transition-transform" style={{ transform: iterationsCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▼</span>
+                  {message.previousIterations.length} 轮中间结果（非最终输出）
+                </button>
+                {!iterationsCollapsed && (
+                  <div className="border-t border-[var(--color-border)]">
+                    {message.previousIterations.map((iter, idx) => (
+                      <div key={idx} className="px-4 py-3 border-b border-[var(--color-border)] last:border-b-0">
+                        <div className="text-[11px] text-[var(--color-text-muted)] mb-2 font-medium">第 {idx + 1} 轮</div>
+                        <div className="text-sm opacity-70">
+                          <MarkdownContent transformImageUrl={transformImageUrl}>{iter}</MarkdownContent>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {text ? <MarkdownContent transformImageUrl={transformImageUrl}>{text}</MarkdownContent> : null}
+          </>
         )}
       </div>
     </div>

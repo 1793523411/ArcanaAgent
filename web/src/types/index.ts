@@ -105,6 +105,8 @@ export interface StoredMessage {
   plan?: PlanLog;
   subagents?: SubagentLog[];
   harness?: HarnessLog;
+  /** 外层重试时前几轮的中间回复内容（仅前端 merge 产生，不持久化） */
+  previousIterations?: string[];
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
