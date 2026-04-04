@@ -8,6 +8,7 @@ import { approvalManager } from "./approvalManager.js";
 import type { ApprovalRule } from "../config/userConfig.js";
 import type { PlanStep } from "./planning.js";
 import type { ConversationMode } from "./systemPrompt.js";
+import type { HarnessConfig, HarnessEvent } from "./harness/types.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
@@ -38,6 +39,10 @@ export interface AgentExecutionOptions {
 export interface StreamAgentOptions extends AgentExecutionOptions {
   planProgressEnabled?: boolean;
   onPlanEvent?: (event: PlanStreamEvent) => void;
+  /** Harness 中间件配置（Eval、循环检测、重规划）。为 undefined 时不启用。 */
+  harnessConfig?: HarnessConfig;
+  /** Harness 事件回调（eval 结果、循环检测、重规划决策） */
+  onHarnessEvent?: (event: HarnessEvent) => void;
 }
 
 export type SubagentStreamEvent =

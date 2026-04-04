@@ -30,6 +30,50 @@ const DANGEROUS_PATTERNS = [
   /\bformat\s+[cCdD]:/,
 ];
 
+/** 长驻进程模式：这些命令永远不会自行退出，必须用 background_run */
+const LONG_LIVED_PATTERNS = [
+  /\bnpm\s+run\s+dev\b/,
+  /\bnpm\s+run\s+start\b/,
+  /\bnpm\s+start\b/,
+  /\bpnpm\s+(run\s+)?dev\b/,
+  /\bpnpm\s+(run\s+)?start\b/,
+  /\byarn\s+(run\s+)?dev\b/,
+  /\byarn\s+start\b/,
+  /\bnpx\s+vite\b/,
+  /\bnext\s+dev\b/,
+  /\bnuxt\s+dev\b/,
+  /\bvite\s*$/,
+  /\bvite\s+--/,
+  /\bwebpack\s+serve\b/,
+  /\bwebpack-dev-server\b/,
+  /\bpython\s+-m\s+http\.server\b/,
+  /\bdocker\s+compose\s+up\b/,
+  /\bhttp-server\b/,
+  /\blive-server\b/,
+  /\bserve\s+-s\b/,
+];
+
+/** 进程管理命令前缀 — 这些命令本身不是长驻进程，不应被拦截 */
+const PROCESS_MGMT_PREFIXES = [
+  /^(pkill|kill|killall)\b/,
+  /^(ps|pgrep|lsof|fuser)\b/,
+  /^(nohup|timeout|xargs)\s.*\b(kill|pkill|killall)\b/,
+];
+
+function isLongLivedProcess(command: string): boolean {
+  const trimmed = command.trim();
+  // 拆分 shell 链式操作符，逐段检查
+  const segments = trimmed.split(/\s*(?:&&|\|\||;)\s*/);
+  for (const seg of segments) {
+    const s = seg.trim();
+    if (!s) continue;
+    // 跳过进程管理命令段（如 pkill -f "npm start"）
+    if (PROCESS_MGMT_PREFIXES.some((p) => p.test(s))) continue;
+    if (LONG_LIVED_PATTERNS.some((p) => p.test(s))) return true;
+  }
+  return false;
+}
+
 function isDangerous(command: string): string | null {
   const trimmed = command.trim();
   for (const pattern of DANGEROUS_PATTERNS) {
@@ -107,6 +151,16 @@ export const run_command = tool(
         command: input.command,
         cwd,
         note: blocked,
+      });
+    }
+
+    // 长驻进程检测：自动拦截并提示使用 background_run
+    if (isLongLivedProcess(input.command)) {
+      return formatRunCommandResult({
+        status: "blocked",
+        command: input.command,
+        cwd,
+        note: "This is a long-lived process (dev server) that never exits. Use `background_run` instead of `run_command`, then use `background_check` to verify it started successfully.",
       });
     }
 

@@ -1,6 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, existsSync, renameSync, openSync, fsyncSync, closeSync, rmSync } from "fs";
 import { join, resolve } from "path";
 import type { ContextStrategyConfig } from "../config/userConfig.js";
+import type { HarnessEvent } from "../agent/harness/types.js";
+import type { HarnessDriverEvent } from "../agent/harness/harnessDriver.js";
 import { closeConversationLogger } from "../lib/logger.js";
 
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
@@ -84,6 +86,11 @@ export interface StoredMessage {
   plan?: PlanLog;
   /** 子代理执行详情（仅 ai），用于会话结束后回看 */
   subagents?: SubagentLog[];
+  /** Harness 中间件事件日志（仅 ai + harness 模式） */
+  harness?: {
+    events: HarnessEvent[];
+    driverEvents: HarnessDriverEvent[];
+  };
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -108,7 +115,7 @@ export interface ConversationContextSnapshot {
   compressKeepRecent?: number;
 }
 
-export type ConversationMode = "default" | "team";
+export type ConversationMode = "default" | "team" | "harness";
 
 export interface ConversationMeta {
   id: string;

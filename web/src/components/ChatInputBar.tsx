@@ -136,7 +136,7 @@ export default function ChatInputBar({
   };
 
   const currentModel = models.find((m) => m.id === modelId) ?? models[0];
-  const modeLabel = mode === "team" ? "Team Mode" : "默认模式";
+  const modeLabel = mode === "team" ? "Team Mode" : mode === "harness" ? "Harness Mode" : "默认模式";
   const currentTeam = teams.find((t) => t.id === teamId);
   const supportsImage = currentModel?.supportsImage !== false;
 
@@ -376,6 +376,16 @@ export default function ChatInputBar({
                         `}
                       >
                         Team Mode
+                      </DropdownMenu.Item>
+                      <DropdownMenu.Item
+                        onSelect={() => onModeChange("harness")}
+                        className={`
+                          w-full text-left px-3 py-2 rounded-md text-sm cursor-pointer outline-none
+                          data-[highlighted]:bg-[var(--color-accent-alpha)]
+                          ${mode === "harness" ? "bg-[var(--color-accent-alpha)]" : ""}
+                        `}
+                      >
+                        Harness Mode
                       </DropdownMenu.Item>
                     </DropdownMenu.Content>
                   </DropdownMenu.Portal>

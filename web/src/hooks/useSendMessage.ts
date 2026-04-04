@@ -48,6 +48,12 @@ type ConversationStreamState = {
     currentStep: number;
     toolName?: string;
   } | null;
+  streamingHarness: {
+    events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    driverPhase: string | null;
+    driverIteration: number;
+    driverMaxRetries: number;
+  } | null;
   pendingApprovals: Array<{
     requestId: string;
     subagentId: string;
@@ -83,6 +89,7 @@ const EMPTY_STATE: ConversationStreamState = {
   streamingToolLogs: [],
   streamingSubagents: [],
   streamingPlan: null,
+  streamingHarness: null,
   pendingApprovals: [],
   sendError: null,
   usage: null,
@@ -98,6 +105,7 @@ function createState(): ConversationStreamState {
     streamingToolLogs: [],
     streamingSubagents: [],
     streamingPlan: null,
+    streamingHarness: null,
     pendingApprovals: [],
     sendError: null,
     usage: null,
@@ -205,6 +213,7 @@ export function useSendMessage(options: {
         streamingToolLogs: [],
         streamingSubagents: [],
         streamingPlan: null,
+        streamingHarness: null,
         pendingApprovals: [],
         sendError: null,
         usage: null,
@@ -565,6 +574,50 @@ export function useSendMessage(options: {
             }));
             return;
           }
+
+          // ── Harness middleware events ──
+          if (obj.type === "harness" && typeof (obj as { kind?: string }).kind === "string") {
+            const evt = obj as { kind: string; data: Record<string, unknown>; timestamp: string };
+            setConversationState(convId, (prev) => {
+              const harness = prev.streamingHarness ?? {
+                events: [],
+                driverPhase: null,
+                driverIteration: 0,
+                driverMaxRetries: 0,
+              };
+              return {
+                ...prev,
+                streamingHarness: {
+                  ...harness,
+                  events: [...harness.events, { kind: evt.kind, data: evt.data, timestamp: evt.timestamp }],
+                },
+              };
+            });
+            return;
+          }
+
+          // ── Harness driver lifecycle events ──
+          if (obj.type === "harness_driver" && typeof (obj as { phase?: string }).phase === "string") {
+            const evt = obj as { phase: string; iteration: number; maxRetries: number; timestamp: string };
+            setConversationState(convId, (prev) => {
+              const harness = prev.streamingHarness ?? {
+                events: [],
+                driverPhase: null,
+                driverIteration: 0,
+                driverMaxRetries: 0,
+              };
+              return {
+                ...prev,
+                streamingHarness: {
+                  ...harness,
+                  driverPhase: evt.phase,
+                  driverIteration: evt.iteration,
+                  driverMaxRetries: evt.maxRetries,
+                },
+              };
+            });
+            return;
+          }
         },
         () => {
           delete abortControllersRef.current[convId];
@@ -645,6 +698,7 @@ export function useSendMessage(options: {
     streamingToolLogs: activeState.streamingToolLogs,
     streamingSubagents: activeState.streamingSubagents,
     streamingPlan: activeState.streamingPlan,
+    streamingHarness: activeState.streamingHarness,
     pendingApprovals: activeState.pendingApprovals,
     sendError: activeState.sendError,
     usageTokens: activeState.usage,

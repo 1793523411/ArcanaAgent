@@ -1,4 +1,4 @@
-export type ConversationMode = "default" | "team";
+export type ConversationMode = "default" | "team" | "harness";
 export type AgentRole = string;
 
 export interface AgentDef {
@@ -104,6 +104,7 @@ export interface StoredMessage {
   toolLogs?: ToolLog[];
   plan?: PlanLog;
   subagents?: SubagentLog[];
+  harness?: HarnessLog;
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
@@ -209,6 +210,55 @@ export interface UserConfig {
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;
+
+// ─── Harness Types ──────────────────────────────────
+
+export interface HarnessEvalEvent {
+  kind: "eval";
+  data: {
+    stepIndex: number;
+    verdict: "pass" | "weak" | "fail";
+    reason: string;
+  };
+  timestamp: string;
+}
+
+export interface HarnessLoopEvent {
+  kind: "loop_detection";
+  data: {
+    detected: boolean;
+    type?: "exact_cycle" | "semantic_stall";
+    description?: string;
+    windowSnapshot?: string[];
+  };
+  timestamp: string;
+}
+
+export interface HarnessReplanEvent {
+  kind: "replan";
+  data: {
+    shouldReplan: boolean;
+    trigger: "eval_fail" | "loop_detected" | "none";
+    revisedSteps?: Array<{ title: string; acceptance_checks: string[] }>;
+    pendingApproval?: boolean;
+  };
+  timestamp: string;
+}
+
+export type HarnessEvent = HarnessEvalEvent | HarnessLoopEvent | HarnessReplanEvent;
+
+export interface HarnessDriverEvent {
+  kind: "driver_lifecycle";
+  phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached";
+  iteration: number;
+  maxRetries: number;
+  timestamp: string;
+}
+
+export interface HarnessLog {
+  events: HarnessEvent[];
+  driverEvents: HarnessDriverEvent[];
+}
 
 export interface ArtifactMeta {
   name: string;

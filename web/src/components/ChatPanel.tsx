@@ -53,6 +53,12 @@ interface Props {
     currentStep: number;
     toolName?: string;
   } | null;
+  streamingHarness?: {
+    events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
+    driverPhase: string | null;
+    driverIteration: number;
+    driverMaxRetries: number;
+  } | null;
   pendingApprovals?: Array<{
     requestId: string;
     subagentId: string;
@@ -116,6 +122,7 @@ export default function ChatPanel({
   streamingToolLogs,
   streamingSubagents,
   streamingPlan,
+  streamingHarness,
   pendingApprovals = [],
   onApproval,
   processingApprovals,
@@ -278,6 +285,7 @@ export default function ChatPanel({
         {(() => {
           // 合并同一轮对话中多条 AI 消息为一条展示消息：
           // - 携带 tool_calls 的 AI 消息视为"中间消息"，其 reasoning 和 toolLogs 向后合并
+          // - 同一轮（无 human 消息间隔）中非最后一条的"终态"AI 消息也视为中间消息（harness driver 重试场景）
           // - 某些模型（如 doubao）在每次工具调用时会输出中间说明文字，一并收集
           // - 最终展示的是同一轮里最后一条"终态"AI 消息，附带累积的 reasoning 和 toolLogs
           const raw = messages ?? [];
@@ -291,8 +299,19 @@ export default function ChatPanel({
             if (m.type === "tool") continue;
 
             // 只要 AI 消息携带 tool_calls 就视为中间调度消息，合并到后续终态消息
-            const isDispatchOnly = m.type === "ai"
+            const hasToolCalls = m.type === "ai"
               && Array.isArray(m.tool_calls) && m.tool_calls.length > 0;
+
+            // 同一轮中非最后的终态 AI：后续还有 AI 消息且中间没有 human 消息
+            const isIntermediateFinal = m.type === "ai" && !hasToolCalls && (() => {
+              for (let j = serverIndex + 1; j < raw.length; j++) {
+                if (raw[j].type === "human") return false;
+                if (raw[j].type === "ai") return true;
+              }
+              return false;
+            })();
+
+            const isDispatchOnly = hasToolCalls || isIntermediateFinal;
 
             if (isDispatchOnly) {
               if (typeof m.content === "string" && m.content.trim()) pendingContent.push(m.content.trim());
@@ -363,6 +382,7 @@ export default function ChatPanel({
           toolLogs={streamingToolLogs}
           subagents={streamingSubagents}
           plan={streamingPlan ?? undefined}
+          harness={streamingHarness ?? undefined}
           pendingApprovals={pendingApprovals}
           onApproval={onApproval}
           processingApprovals={processingApprovals}

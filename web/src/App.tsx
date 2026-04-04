@@ -88,6 +88,7 @@ export default function App() {
     streamingToolLogs,
     streamingSubagents,
     streamingPlan,
+    streamingHarness,
     pendingApprovals,
     sendError,
     usageTokens,
@@ -484,6 +485,7 @@ export default function App() {
               streamingToolLogs={streamingToolLogs}
               streamingSubagents={streamingSubagents}
               streamingPlan={streamingPlan}
+              streamingHarness={streamingHarness}
               pendingApprovals={pendingApprovals}
               onApproval={handleApproval}
               processingApprovals={processingApprovals}

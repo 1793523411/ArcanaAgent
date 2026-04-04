@@ -77,6 +77,9 @@ export default function MessageBubble({ message, conversationId, models = [], te
   const subagents = message.subagents ?? [];
   const plan = message.type === "ai" ? message.plan : undefined;
   const hasPlan = Array.isArray(plan?.steps) && plan.steps.length > 0;
+  const harness = message.type === "ai" ? message.harness : undefined;
+  const hasHarness = Array.isArray(harness?.events) && harness.events.length > 0;
+  const [harnessCollapsed, setHarnessCollapsed] = useState(true);
   const hasSubagents = message.type === "ai" && subagents.length > 0;
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
   const planPhaseLabel = plan?.phase === "completed" ? "已完成" : plan?.phase === "running" ? "执行中" : "初始化中";
@@ -287,6 +290,68 @@ export default function MessageBubble({ message, conversationId, models = [], te
                     最近工具：{plan.toolName}
                   </div>
                 )}
+              </div>
+            )}
+          </div>
+        )}
+        {hasHarness && (
+          <div className="mb-3">
+            <button
+              type="button"
+              onClick={() => setHarnessCollapsed((c) => !c)}
+              className="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            >
+              <span className="select-none">{harnessCollapsed ? "▶" : "▼"}</span>
+              <span>Harness 事件</span>
+              <span className="text-[10px] opacity-70">({harness!.events.length})</span>
+            </button>
+            {!harnessCollapsed && (
+              <div className="mt-1.5 space-y-1.5">
+                {harness!.driverEvents && harness!.driverEvents.length > 0 && (
+                  <div className="text-[11px] px-2 py-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-[var(--color-text-muted)]">
+                    Driver: {harness!.driverEvents[harness!.driverEvents.length - 1].phase === "completed" ? "已完成" : "已终止"}
+                    {" "}(共 {Math.max(...harness!.driverEvents.map(e => e.iteration)) + 1} 轮)
+                  </div>
+                )}
+                {harness!.events.map((evt, idx) => {
+                  if (evt.kind === "eval") {
+                    const v = evt.data.verdict;
+                    const borderCls = v === "pass"
+                      ? "border-[var(--color-success-border)]"
+                      : v === "weak"
+                        ? "border-yellow-500/60"
+                        : "border-[var(--color-error-text)]/60";
+                    const icon = v === "pass" ? "✅" : v === "weak" ? "⚠️" : "❌";
+                    return (
+                      <div key={`h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border ${borderCls} bg-[var(--color-bg)]`}>
+                        <div>{icon} 步骤 {evt.data.stepIndex + 1} 评估: <span className="font-medium">{v}</span></div>
+                        <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.reason}</div>
+                      </div>
+                    );
+                  }
+                  if (evt.kind === "loop_detection" && evt.data.detected) {
+                    return (
+                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-yellow-500/60 bg-[var(--color-bg)]">
+                        <div>🔄 循环检测: {evt.data.type === "exact_cycle" ? "精确循环" : "语义停滞"}</div>
+                        {evt.data.description && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.description}</div>}
+                      </div>
+                    );
+                  }
+                  if (evt.kind === "replan" && evt.data.shouldReplan) {
+                    return (
+                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-blue-500/60 bg-[var(--color-bg)]">
+                        <div>🔀 重规划 (触发: {evt.data.trigger === "eval_fail" ? "评估失败" : "循环检测"})</div>
+                        {evt.data.pendingApproval && <div className="text-[11px] text-yellow-600 mt-0.5">等待审批</div>}
+                        {evt.data.revisedSteps && (
+                          <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
+                            新步骤: {evt.data.revisedSteps.map(s => s.title).join(" → ")}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                  return null;
+                })}
               </div>
             )}
           </div>

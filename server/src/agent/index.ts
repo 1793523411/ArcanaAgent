@@ -35,11 +35,15 @@ import {
   computeCurrentStep,
   forceCompletePlan,
 } from "./planTracker.js";
+import { HarnessMiddleware } from "./harness/middleware.js";
 import type { AgentExecutionOptions, StreamAgentOptions, PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
 export type { PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
+export type { HarnessConfig, HarnessEvent } from "./harness/types.js";
+export type { HarnessDriverConfig, HarnessDriverEvent } from "./harness/harnessDriver.js";
+export { streamHarnessAgent } from "./harness/harnessDriver.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
 
@@ -173,6 +177,10 @@ export async function* streamAgentWithTokens(
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
   let runtimePlanSteps = createRuntimePlanSteps(planningPrelude.planSteps ?? []);
   let planCurrentStep = computeCurrentStep(runtimePlanSteps);
+  // Harness middleware: eval, loop detection, replanning (null-check only when not configured)
+  const harness = options?.harnessConfig
+    ? new HarnessMiddleware(options.harnessConfig, adapter)
+    : null;
   const emitCurrentPlan = (phase: "created" | "running" | "completed", toolName?: string) => {
     emitPlan({
       phase,
@@ -445,6 +453,24 @@ export async function* streamAgentWithTokens(
         conversationMessages = [...conversationMessages, ...toolMessages];
         if (runtimePlanSteps.length > 0) emitCurrentPlan("running", lastToolNameForPlan);
         yield { toolNode: { messages: toolMessages } };
+        // ── Harness middleware hook (reasoning stream path) ──
+        if (harness) {
+          const mwResult = await harness.afterToolResults(
+            runtimePlanSteps,
+            toolOutputs.map((o) => ({ name: o.name, result: o.result })),
+            conversationMessages.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
+          );
+          for (const evt of mwResult.events) options?.onHarnessEvent?.(evt);
+          if (mwResult.updatedPlanSteps) {
+            runtimePlanSteps = mwResult.updatedPlanSteps;
+            planCurrentStep = computeCurrentStep(runtimePlanSteps);
+            emitCurrentPlan("running");
+          }
+          if (mwResult.injectMessages?.length) {
+            conversationMessages = [...conversationMessages, ...mwResult.injectMessages];
+          }
+          if (mwResult.abort) break;
+        }
         if (round === maxRounds - 1) reachedMaxRounds = true;
       }
 
@@ -580,6 +606,24 @@ export async function* streamAgentWithTokens(
     }
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+    // ── Harness middleware hook (LangChain fallback path) ──
+    if (harness) {
+      const mwResult = await harness.afterToolResults(
+        runtimePlanSteps,
+        toolOutputs.map((o) => ({ name: o.name, result: o.result })),
+        state.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
+      );
+      for (const evt of mwResult.events) options?.onHarnessEvent?.(evt);
+      if (mwResult.updatedPlanSteps) {
+        runtimePlanSteps = mwResult.updatedPlanSteps;
+        planCurrentStep = computeCurrentStep(runtimePlanSteps);
+        emitCurrentPlan("running");
+      }
+      if (mwResult.injectMessages?.length) {
+        state = [...state, ...mwResult.injectMessages];
+      }
+      if (mwResult.abort) break;
+    }
     if (round === maxRounds - 1) reachedMaxRounds = true;
   }
 

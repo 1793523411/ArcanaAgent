@@ -39,6 +39,8 @@ import type { BaseMessage } from "@langchain/core/messages";
 import { runAgent, streamAgentWithTokens } from "../agent/index.js";
 import type { PlanStreamEvent } from "../agent/index.js";
 import type { SubagentStreamEvent } from "../agent/index.js";
+import { DEFAULT_HARNESS_CONFIG } from "../agent/harness/types.js";
+import { streamHarnessAgent } from "../agent/harness/harnessDriver.js";
 import { approvalManager } from "../agent/approvalManager.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule } from "../config/userConfig.js";
@@ -258,7 +260,7 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
   return Array.from(map.values());
 }
 
-const conversationModeSchema = z.enum(["default", "team"]);
+const conversationModeSchema = z.enum(["default", "team", "harness"]);
 const createConversationBodySchema = {
   title: z.string().max(500).optional(),
   mode: conversationModeSchema.optional(),
@@ -592,6 +594,8 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   let lastPromptTokensForContext: number | null = null;
   let latestPlan: PlanStreamEvent | undefined;
   const subagentEvents: SubagentStreamEvent[] = [];
+  const harnessEvents: import("../agent/harness/types.js").HarnessEvent[] = [];
+  const harnessDriverEvents: import("../agent/harness/harnessDriver.js").HarnessDriverEvent[] = [];
   let resultsSaved = false;
 
   // 将收集到的消息持久化（正常完成和中途报错都会调用）
@@ -618,11 +622,16 @@ export async function postConversationMessage(req: Request, res: Response): Prom
       const target = collectedStored.filter((m) => m.type === "ai").pop();
       if (target && target.type === "ai") target.subagents = subagentLogs;
     }
+    if (harnessEvents.length > 0) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
+    }
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (m.harness && m.harness.events.length > 0) return true;
       // Keep AI messages that carry tool_calls — dropping them would orphan
       // the corresponding ToolMessages and break the message sequence.
       if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
@@ -641,6 +650,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
         ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
         ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+        ...(harnessEvents.length > 0 ? { harness: { events: harnessEvents, driverEvents: harnessDriverEvents } } : {}),
       });
     } else if (errorMsg) {
       const lastAi = toStore.filter((m) => m.type === "ai").pop();
@@ -654,13 +664,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
   };
 
   try {
-    for await (const chunk of streamAgentWithTokens(
-      lcMessages,
-      onToken,
-      config.modelId,
-      onReasoningToken,
-      skillContext,
-      {
+    const streamOptions = {
         conversationMode,
         conversationId: id,
         teamId: meta.teamId,
@@ -668,16 +672,36 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         workspacePath,
         abortSignal: abortController.signal,
         planProgressEnabled: config.planning?.streamProgress ?? true,
-        onPlanEvent: (event) => {
+        ...(conversationMode === "harness" ? { harnessConfig: DEFAULT_HARNESS_CONFIG } : {}),
+        onPlanEvent: (event: PlanStreamEvent) => {
           latestPlan = { ...event };
           writeImmediate("data: " + JSON.stringify({ type: "plan", ...event }) + "\n\n");
         },
-        onSubagentEvent: (event) => {
+        onSubagentEvent: (event: SubagentStreamEvent) => {
           subagentEvents.push(event);
           writeImmediate("data: " + JSON.stringify({ type: "subagent", ...event }) + "\n\n");
         },
-      }
-    )) {
+        onHarnessEvent: (event: import("../agent/harness/types.js").HarnessEvent) => {
+          harnessEvents.push(event);
+          writeImmediate("data: " + JSON.stringify({ type: "harness", ...event }) + "\n\n");
+        },
+    };
+
+    const agentStream = conversationMode === "harness"
+      ? streamHarnessAgent(
+          lcMessages, onToken, config.modelId, onReasoningToken, skillContext,
+          streamOptions, undefined,
+          (driverEvent) => {
+            harnessDriverEvents.push(driverEvent);
+            writeImmediate("data: " + JSON.stringify({ type: "harness_driver", ...driverEvent }) + "\n\n");
+          }
+        )
+      : streamAgentWithTokens(
+          lcMessages, onToken, config.modelId, onReasoningToken, skillContext,
+          streamOptions
+        );
+
+    for await (const chunk of agentStream) {
       const key = chunk && typeof chunk === "object" ? Object.keys(chunk as object)[0] : "";
       const part = key ? (chunk as Record<string, { messages?: BaseMessage[]; reasoning?: string; prompt_tokens?: number; completion_tokens?: number; total_tokens?: number }>)[key] : undefined;
       if (key === "usage" && part && typeof part === "object" && "prompt_tokens" in part) {
@@ -813,11 +837,18 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         target.subagents = subagentLogs;
       }
     }
+    if (harnessEvents.length > 0) {
+      const target = collectedStored.filter((m) => m.type === "ai").pop();
+      if (target && target.type === "ai") {
+        target.harness = { events: harnessEvents, driverEvents: harnessDriverEvents };
+      }
+    }
     const toStore = collectedStored.filter((m) => {
       if (m.type !== "ai") return true;
       if (m.toolLogs && m.toolLogs.length > 0) return true;
       if (m.plan && m.plan.steps.length > 0) return true;
       if (m.subagents && m.subagents.length > 0) return true;
+      if (m.harness && m.harness.events.length > 0) return true;
       if (Array.isArray(m.tool_calls) && m.tool_calls.length > 0) return true;
       return typeof m.content === "string" && m.content.trim().length > 0;
     });
@@ -830,6 +861,7 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         ...(pendingToolLogs.length > 0 ? { toolLogs: pendingToolLogs } : {}),
         ...(latestPlan?.steps?.length ? { plan: latestPlan } : {}),
         ...(subagentLogs.length > 0 ? { subagents: subagentLogs } : {}),
+        ...(harnessEvents.length > 0 ? { harness: { events: harnessEvents, driverEvents: harnessDriverEvents } } : {}),
       });
     }
     // usageTokens: 本轮对话的总 token 消耗（所有 LLM 调用的累加），用于计费统计

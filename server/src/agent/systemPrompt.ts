@@ -3,8 +3,9 @@ import { getSkillCatalogForAgent } from "../skills/manager.js";
 import { getAgentConfig, getTeamAgents } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { loadUserConfig } from "../config/userConfig.js";
+import { buildHarnessPrompt } from "./harness/harnessPrompt.js";
 
-export type ConversationMode = "default" | "team";
+export type ConversationMode = "default" | "team" | "harness";
 
 export const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools, skills, and MCP (Model Context Protocol) integrations. You help users effectively with any task — from coding and data analysis to research and creative work.
 
@@ -47,11 +48,13 @@ You have access to built-in tools (run_command, read_file, write_file, edit_file
   - **Batch operations**: Full test suites, database migrations, batch file processing
   - **Script execution**: Any shell/Python/Node/etc. script where runtime is unpredictable — prefer background by default
   - **Waiting/polling**: sleep >3s, watching for changes, waiting for service startup
+  - **Dev servers / long-lived processes**: \`npm run dev\`, \`npm start\`, \`vite\`, \`next dev\`, \`python -m http.server\`, \`docker compose up\`, etc. — these NEVER exit on their own; always use \`background_run\`, then \`background_check\` to verify they started (look for "ready" / listening port in output)
 - Common examples (but not limited to):
   - Package: \`npm install\`, \`pip install\`, \`yarn\`, \`composer install\`, \`go get\`
   - Build: \`npm run build\`, \`docker build\`, \`cargo build\`, \`make\`, \`webpack\`
   - Test: \`npm test\`, \`pytest\`, \`cargo test\` (full suites, not single tests)
   - Files: \`wget\`, \`curl\`, \`tar\`, \`zip\`, \`rsync\`, \`dd\`
+  - Dev servers: \`npm run dev\`, \`npm start\`, \`vite\`, \`next dev\`, \`pnpm dev\`, \`yarn dev\` — MUST use background_run
   - Scripts: \`python script.py\`, \`bash script.sh\`, \`node script.js\`, \`./script\` — default to background unless user explicitly says it's quick
 - **Judgment principle**: When uncertain, prefer \`background_run\`. Cost of false positive (quick command in background) is low; cost of false negative (slow command blocking) is high.
 - After spawning, continue immediately with other work — completion notifications auto-inject as \`[bg:task_id][status] preview\`
@@ -262,7 +265,11 @@ You have access to the \`claude_code\` tool — a powerful AI coding agent power
 }
 
 export function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string): string {
-  const modePrompt = conversationMode === "team" ? buildTeamModePrompt(teamId ?? "default") : "";
+  const modePrompt = conversationMode === "team"
+    ? buildTeamModePrompt(teamId ?? "default")
+    : conversationMode === "harness"
+      ? buildHarnessPrompt()
+      : "";
   const workspaceSection = workspacePath
     ? `\n\n## Current Workspace\nYour workspace absolute path is: \`${workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${workspacePath}/filename.ext\`. Never write files to any other location.`
     : "";
