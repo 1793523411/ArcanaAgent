@@ -43,6 +43,28 @@ export const tools = {
 
 export type ToolId = keyof typeof tools;
 
+/**
+ * 只读工具集合 — 可安全并行执行（无副作用）。
+ * 不在此集合中的工具默认为写入工具，必须串行执行（Fail-closed）。
+ */
+export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  "read_file",
+  "search_code",
+  "list_files",
+  "project_search",
+  "project_snapshot",
+  "project_index",
+  "get_time",
+  "web_search",
+  "fetch_url",
+  "load_skill",
+  "background_check",
+]);
+
+export function isReadOnlyTool(toolName: string): boolean {
+  return READ_ONLY_TOOLS.has(toolName);
+}
+
 export function getToolsByIds(ids: string[]): StructuredToolInterface[] {
   const out: StructuredToolInterface[] = [];
   for (const id of ids) {

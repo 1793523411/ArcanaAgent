@@ -647,6 +647,47 @@ export default function StreamingBubble({
           </div>}
         </div>
       )}
+      {/* Main agent approval cards (not inside subagent sections) */}
+      {pendingApprovals.filter((a) => a.subagentId === "__main__").map((approval) => {
+        const isProcessing = processingApprovals.has(approval.requestId);
+        return (
+          <div
+            key={approval.requestId}
+            className="my-2 rounded-lg border-2 border-[#F59E0B]/50 bg-[#F59E0B]/5 p-3 space-y-2"
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#F59E0B]">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              Awaiting Approval
+            </div>
+            <div className="text-[12px] text-[var(--color-text)]">
+              <span className="font-medium">{approval.operationType}</span>
+              <span className="text-[var(--color-text-muted)]"> — {approval.operationDescription}</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleApproval(approval.requestId, true)}
+                className="flex-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[#10B981] text-white hover:bg-[#059669] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isProcessing ? "..." : "Approve"}
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleApproval(approval.requestId, false)}
+                className="flex-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[#EF4444] text-white hover:bg-[#DC2626] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isProcessing ? "..." : "Reject"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
       {content ? (
         <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{content}</MarkdownContent>
       ) : (

@@ -154,6 +154,8 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
   const map = new Map<string, PersistedSubagentLog>();
   for (const ev of events) {
     if (!("subagentId" in ev)) continue;
+    // __main__ is a synthetic subagentId for main agent approval events — not a real subagent
+    if (ev.subagentId === "__main__") continue;
     const existing = map.get(ev.subagentId) ?? {
       subagentId: ev.subagentId,
       depth: 1,

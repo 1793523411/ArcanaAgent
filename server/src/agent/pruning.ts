@@ -2,6 +2,7 @@ import { BaseMessage, AIMessage, ToolMessage, HumanMessage } from "@langchain/co
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
 import { serverLogger } from "../lib/logger.js";
 import { MAX_CONVERSATION_TOKENS } from "./messageUtils.js";
+import { applyMicrocompact } from "./microcompact.js";
 
 /**
  * Prune conversation messages when total token count exceeds the cap.
@@ -11,15 +12,22 @@ import { MAX_CONVERSATION_TOKENS } from "./messageUtils.js";
  *   3. If still over limit, drop oldest non-system message pairs as last resort.
  */
 export function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MAX_CONVERSATION_TOKENS): BaseMessage[] {
-  const total = estimateBaseMessageTokens(messages);
-  if (total <= tokenCap) return messages;
+  // ── Pass -1: Microcompact (zero LLM cost) ──
+  // Apply rule-based cleanup before token check — may avoid expensive passes entirely.
+  const microcompacted = applyMicrocompact(messages);
 
-  const cloned = [...messages];
+  const total = estimateBaseMessageTokens(microcompacted);
+  if (total <= tokenCap) return microcompacted;
+
+  const cloned = [...microcompacted];
   let currentTotal = total;
 
   // --- Pass 0: compress old task ToolMessage results ---
   // Task tool results are large (~3500 chars each). Compress all but the last 2
-  // to a short summary so the coordinator retains key info at much lower cost.
+  // to a structured summary so the coordinator retains key info at much lower cost.
+  // Strategy: keep header + first 200 chars (context) + last 200 chars (conclusion)
+  // + pointer to full result file. This is better than brute-force first-200 truncation
+  // because sub-agent conclusions (the most valuable part) are at the end.
   const taskToolIndices: number[] = [];
   for (let i = 0; i < cloned.length; i++) {
     const msg = cloned[i];
@@ -33,14 +41,21 @@ export function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MA
     if (currentTotal <= tokenCap) break;
     const msg = cloned[idx];
     const content = typeof msg.content === "string" ? msg.content : "";
-    if (content.length <= 250) continue; // already short enough
+    if (content.length <= 550) continue; // already short enough
     // Extract metadata header if present: [subagentId: xxx] [name: yyy] [role: zzz]
-    const headerMatch = content.match(/^(\[subagentId:.*?\]\s*\[name:.*?\]\s*\[role:.*?\])/);
+    const headerMatch = content.match(/^(\[subagentId:\s*(\S+)\].*?\[name:.*?\]\s*\[role:.*?\])/);
     const header = headerMatch ? headerMatch[1] : "";
+    const subagentId = headerMatch?.[2] ?? "";
     const body = header ? content.slice(header.length).trim() : content;
+    // Keep first 200 chars (context) + last 200 chars (conclusion) for better information retention
+    const HEAD_LEN = 200;
+    const TAIL_LEN = 200;
+    const head = body.slice(0, HEAD_LEN);
+    const tail = body.length > HEAD_LEN + TAIL_LEN ? body.slice(-TAIL_LEN) : "";
+    const fileHint = subagentId ? ` Full result: .agents/results/${subagentId}.md` : "";
     const compressed = header
-      ? `${header}\n${body.slice(0, 200)}... [compressed — use dependsOn to access full result]`
-      : `${body.slice(0, 200)}... [compressed — use dependsOn to access full result]`;
+      ? `${header}\n${head}${tail ? `\n... [${body.length - HEAD_LEN - TAIL_LEN} chars omitted] ...\n${tail}` : "..."}\n[compressed —${fileHint} use dependsOn to access full result]`
+      : `${head}${tail ? `\n... [${body.length - HEAD_LEN - TAIL_LEN} chars omitted] ...\n${tail}` : "..."}\n[compressed —${fileHint} use dependsOn to access full result]`;
     const toolMsg = msg as ToolMessage;
     cloned[idx] = new ToolMessage({
       content: compressed,
@@ -65,6 +80,8 @@ export function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MA
   for (const idx of compressible) {
     if (currentTotal <= tokenCap) break;
     const msg = cloned[idx];
+    // Skip task results — they have dedicated compression in Pass 0
+    if ((msg as unknown as { name?: string }).name === "task") continue;
     const content = typeof msg.content === "string" ? msg.content : "";
     const headLen = Math.min(100, content.length);
     const tailLen = Math.min(100, Math.max(0, content.length - headLen));

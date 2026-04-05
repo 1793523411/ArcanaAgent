@@ -20,6 +20,7 @@ import {
   filterToolsByRole,
   getAllTools,
   isPathInWorkspace,
+  isBypassImmune,
   findForbiddenOutputPath,
   type RuntimeToolBuildContext,
   type AgentExecutionOptions,
@@ -45,7 +46,7 @@ type StreamAgentWithTokensFn = (
   onReasoningToken?: (token: string) => void,
   skillContext?: string,
   options?: StreamAgentOptions
-) => AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown>;
+) => AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number } | { reason: string }>, void, unknown>;
 
 let _streamAgentWithTokens: StreamAgentWithTokensFn | null = null;
 
@@ -68,6 +69,42 @@ async function generateShortSubagentName(prompt: string, modelId?: string): Prom
   return name;
 }
 
+/**
+ * Wrap high-risk tools (run_command, write_file, edit_file) with approval gates.
+ * Applied in ALL modes (normal + team) for ALL agents (main + sub).
+ */
+function applyHighRiskApproval(
+  tools: StructuredToolInterface[],
+  convId: string,
+  subId: string,
+  workspacePath?: string,
+  subagentRole?: AgentRole,
+  onSubagentEvent?: (event: SubagentStreamEvent) => void,
+): StructuredToolInterface[] {
+  const customRules = loadUserConfig().approvalRules;
+  return tools.map((t) => {
+    if (t.name === "run_command") {
+      return wrapToolWithApproval(t, "run_command", (input) => {
+        const cmd = typeof input.command === "string" ? input.command : "";
+        return isHighRiskCommand(cmd, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    if (t.name === "write_file") {
+      return wrapToolWithApproval(t, "write_file", (input) => {
+        const path = typeof input.path === "string" ? input.path : "";
+        return isHighRiskWrite(path, workspacePath, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    if (t.name === "edit_file") {
+      return wrapToolWithApproval(t, "edit_file", (input) => {
+        const path = typeof input.path === "string" ? input.path : "";
+        return isHighRiskWrite(path, workspacePath, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    return t;
+  });
+}
+
 export function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToolBuildContext): StructuredToolInterface[] {
   const tools = getAllTools();
   const workspacePath = options?.workspacePath;
@@ -77,6 +114,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         async (input: Record<string, unknown>) => {
           const rawPath = typeof input.path === "string" ? input.path : "";
           const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          // Bypass-immune check: always require approval for protected paths
+          const bypassCheck = isBypassImmune("write_file", { path: resolvedPath });
+          if (bypassCheck) {
+            return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+          }
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: \u8f93\u51fa\u8def\u5f84\u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u4f7f\u7528 ${workspacePath} \u4e0b\u7684\u8def\u5f84\u3002`;
           }
@@ -111,6 +153,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         async (input: Record<string, unknown>) => {
           const rawPath = typeof input.path === "string" ? input.path : "";
           const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          // Bypass-immune check: always require approval for protected paths
+          const bypassCheck = isBypassImmune("edit_file", { path: resolvedPath });
+          if (bypassCheck) {
+            return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+          }
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: \u7f16\u8f91\u8def\u5f84\u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u4f7f\u7528 ${workspacePath} \u4e0b\u7684\u8def\u5f84\u3002`;
           }
@@ -134,6 +181,24 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         },
         {
           name: "edit_file",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    if (t.name === "read_file" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[read_file]\nstatus: blocked\npath: ${rawPath}\nnote: 读取路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "read_file",
           description: (t as unknown as { description?: string }).description ?? t.name,
           schema: (t as unknown as { schema: unknown }).schema as never,
         }
@@ -239,6 +304,14 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           return String(await t.invoke(input));
         }
         const cmd = typeof input?.command === "string" ? input.command : "";
+        // Defense-in-depth: isBypassImmune is checked here (with resolved workspace path)
+        // AND again in wrapToolWithApproval (with raw input). The two layers catch different
+        // cases — this one sees the resolved absolute path, the approval layer sees the
+        // original command before workspace normalization.
+        const bypassCheck = isBypassImmune("run_command", { command: cmd });
+        if (bypassCheck) {
+          return `[run_command]\nstatus: blocked\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+        }
         const forbidden = findForbiddenOutputPath(cmd, workspacePath);
         if (forbidden) {
           return `[run_command]\nstatus: blocked\ncommand: ${cmd}\ncwd: ${workspacePath}\nnote: \u8f93\u51fa\u8def\u5f84 ${forbidden} \u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u6539\u4e3a ${workspacePath} \u4e0b\u8def\u5f84\u3002`;
@@ -247,8 +320,17 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         const safeWorkingDirectory = isPathInWorkspace(resolvedInputDir, workspacePath)
           ? resolvedInputDir
           : workspacePath;
+        // Normalize absolute workspace paths in the command to relative paths.
+        // This prevents run_command's internal isDangerous patterns (e.g. /\brm\s+-rf\s+\/\b/)
+        // from false-positiving on commands like "rm -rf /Users/.../workspace/tmp"
+        // that target files inside the workspace and have already passed approval.
+        let safeCmd = cmd;
+        if (workspacePath && cmd.includes(workspacePath)) {
+          safeCmd = cmd.replace(new RegExp(workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "./");
+        }
         return String(await t.invoke({
           ...input,
+          command: safeCmd || input.command,
           working_directory: safeWorkingDirectory,
         }));
       },
@@ -284,53 +366,20 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
   const depth = context?.options?.subagentDepth ?? 0;
   const subagentEnabled = context?.options?.subagentEnabled ?? true;
   if (!subagentEnabled || depth >= 1) {
-    const convMode = options?.conversationMode ?? context?.options?.conversationMode ?? "default";
     const convId = options?.conversationId ?? context?.options?.conversationId;
-    const subId = options?.subagentId;
-    if (convMode === "team" && convId && subId) {
-      const customRules = loadUserConfig().approvalRules;
-      return finalTools.map((t) => {
-        if (t.name === "run_command") {
-          return wrapToolWithApproval(t, "run_command", (input) => {
-            const cmd = typeof input.command === "string" ? input.command : "";
-            return isHighRiskCommand(cmd, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        if (t.name === "write_file") {
-          return wrapToolWithApproval(t, "write_file", (input) => {
-            const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        if (t.name === "edit_file") {
-          return wrapToolWithApproval(t, "edit_file", (input) => {
-            const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        return t;
-      });
+    const subId = options?.subagentId ?? "__main__";
+    const onEvt = options?.onSubagentEvent ?? context?.options?.onSubagentEvent;
+    if (convId) {
+      return applyHighRiskApproval(finalTools, convId, subId, workspacePath, subagentRole, onEvt);
     }
     return finalTools;
   }
   if (!context) {
     return finalTools;
   }
+  // Resolve approval context for main agent path
+  const mainConvId = context.options?.conversationId;
+  const mainOnEvt = context.options?.onSubagentEvent;
   const conversationMode = context.options?.conversationMode ?? "default";
   const subagentResults = context.subagentResults ?? new Map<string, { name: string; summary: string }>();
   const MAX_SUBAGENT_RESULTS = 30;
@@ -610,8 +659,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
   if (conversationMode === "team" && depth === 0) {
     const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "fetch_url", "search_code", "list_files", "web_search", "project_search", "project_snapshot"]);
     const coordinatorTools = filteredWrappedTools.filter((t) => coordinatorAllowed.has(t.name));
+    // Coordinator tools (task, read_file, etc.) don't include run_command/write_file/edit_file,
+    // so applyHighRiskApproval is unnecessary here — skip it for performance.
     return [...coordinatorTools, taskTool as unknown as StructuredToolInterface];
   }
 
-  return [...filteredWrappedTools, taskTool as unknown as StructuredToolInterface];
+  const baseTools = [...filteredWrappedTools, taskTool as unknown as StructuredToolInterface];
+  return mainConvId ? applyHighRiskApproval(baseTools, mainConvId, "__main__", workspacePath, subagentRole, mainOnEvt) : baseTools;
 }

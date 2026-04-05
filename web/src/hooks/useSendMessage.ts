@@ -408,6 +408,29 @@ export function useSendMessage(options: {
               output?: string;
             };
             setConversationState(convId, (prev) => {
+              // __main__ is a synthetic subagentId for main agent approval events.
+              // Handle approval events without creating subagent entries.
+              if (payload.subagentId === "__main__") {
+                if (payload.kind === "approval_request" && payload.requestId) {
+                  return {
+                    ...prev,
+                    pendingApprovals: [...prev.pendingApprovals, {
+                      requestId: payload.requestId,
+                      subagentId: payload.subagentId,
+                      operationType: payload.operationType ?? "unknown",
+                      operationDescription: payload.operationDescription ?? "",
+                      details: payload.details ?? {},
+                    }],
+                  };
+                }
+                if (payload.kind === "approval_response" && payload.requestId) {
+                  return {
+                    ...prev,
+                    pendingApprovals: prev.pendingApprovals.filter((a) => a.requestId !== payload.requestId),
+                  };
+                }
+                return prev; // ignore any other __main__ events
+              }
               const existing = prev.streamingSubagents;
               const idx = existing.findIndex((s) => s.subagentId === payload.subagentId);
               const lifecyclePhase =

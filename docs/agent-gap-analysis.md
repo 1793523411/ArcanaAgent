@@ -9,10 +9,10 @@
 
 | 维度 | ArcanaAgent | Claude Code | 差距 |
 |------|:-----------:|:-----------:|:----:|
-| **Agent Loop** | ★★★☆ | ★★★★★ | 中等 |
-| **Tool System** | ★★★☆ | ★★★★★ | 中等 |
-| **Context Management** | ★★☆☆ | ★★★★★ | **大** |
-| **Security/Governance** | ★★★☆ | ★★★★★ | 中等 |
+| **Agent Loop** | ★★★★ | ★★★★★ | 小 |
+| **Tool System** | ★★★★ | ★★★★★ | 小 |
+| **Context Management** | ★★★★ | ★★★★★ | 小 |
+| **Security/Governance** | ★★★★ | ★★★★★ | 小 |
 | **Multi-Agent** | ★★★☆ | ★★★★☆ | 小 |
 | **Knowledge/Skills** | ★★★☆ | ★★★★☆ | 小 |
 | **Harness (独有)** | ★★★★ | N/A | ArcanaAgent 领先 |
@@ -177,32 +177,81 @@ Harness（EvalGuard + LoopDetector + Replanner + HarnessDriver）是 Claude Code
 
 ## 优化路线图
 
+> 状态更新：2026-04-05
+
 ### Phase 1 — 高价值低成本
 
-| 改进项 | 预估工作量 | 效果 |
-|--------|-----------|------|
-| 加 Microcompact 层 | ~100 行 | 零 LLM 成本提升上下文效率 |
-| 加 Session Memory | ~150 行 | 防止压缩后失忆 |
-| 加终止原因枚举 | ~30 行 | 提升可观测性 |
-| 加 Bypass-immune 安全层 | ~50 行 | 关键安全兜底 |
+| 改进项 | 预估工作量 | 效果 | 状态 |
+|--------|-----------|------|------|
+| 加 Microcompact 层 | ~100 行 | 零 LLM 成本提升上下文效率 | ✅ 已完成 |
+| 加 Session Memory | ~150 行 | 防止压缩后失忆 | ✅ 已完成 |
+| 加终止原因枚举 | ~30 行 | 提升可观测性 | ✅ 已完成 |
+| 加 Bypass-immune 安全层 | ~50 行 | 关键安全兜底 | ✅ 已完成 |
 
 ### Phase 2 — 中等投入
 
-| 改进项 | 预估工作量 | 效果 |
-|--------|-----------|------|
-| 加 Continue Site 恢复机制 | ~200 行 | 提升长任务成功率 |
-| 工具 isReadOnly 标记 + 读写并发 | ~100 行 | 提升多工具效率 |
-| 项目级配置 .arcana/config.json | ~80 行 | 多项目差异化配置 |
-| Harness EvalGuard 分级策略 | ~60 行 | 降低 Harness 成本 |
+| 改进项 | 预估工作量 | 效果 | 状态 |
+|--------|-----------|------|------|
+| 加 Continue Site 恢复机制 | ~200 行 | 提升长任务成功率 | ✅ 已完成 |
+| 工具 isReadOnly 标记 + 读写并发 | ~100 行 | 提升多工具效率 | ✅ 已完成 |
+| Harness EvalGuard 分级策略 | ~60 行 | 降低 Harness 成本 | ✅ 已完成 |
+| Task 结果智能压缩 | ~40 行 | 防止多子 Agent 场景信息丢失 | ✅ 已完成 |
+| 项目级配置 .arcana/config.json | ~80 行 | 多项目差异化配置 | ⬜ 未开始 |
 
 ### Phase 3 — 长期优化
 
-| 改进项 | 预估工作量 | 效果 |
-|--------|-----------|------|
-| Pre/Post Hook 拦截器系统 | ~200 行 | 可扩展的工具生命周期 |
-| 缓存前缀稳定性排序 | ~50 行 | 节省 prompt cache 费用 |
-| AI 分类器安全层 | ~150 行 | 覆盖 regex 搞不定的模糊安全场景 |
-| 结构化摘要模板（9 段） | ~100 行 | 提升压缩后信息保留质量 |
+| 改进项 | 预估工作量 | 效果 | 状态 |
+|--------|-----------|------|------|
+| Pre/Post Hook 拦截器系统 | ~200 行 | 可扩展的工具生命周期 | ⬜ 未开始 |
+| 缓存前缀稳定性排序 | ~50 行 | 节省 prompt cache 费用 | ⬜ 未开始 |
+| AI 分类器安全层 | ~150 行 | 覆盖 regex 搞不定的模糊安全场景 | ⬜ 未开始 |
+| 结构化摘要模板（9 段） | ~100 行 | 提升压缩后信息保留质量 | ⬜ 未开始 |
+
+### 已完成改进明细
+
+<details>
+<summary>点击展开详细改动清单</summary>
+
+**Microcompact 层** (`server/src/agent/microcompact.ts` 新文件)
+- 规则 1: 已被后续 write/edit 覆盖的 read_file 结果 → 标记 stale
+- 规则 2: 超过 6 轮前的工具结果 → 只保留前 200 字符
+- 规则 3: 连续 3+ 次同名工具错误 → 折叠为摘要
+- 集成点: `pruning.ts` 在 token 检查前执行
+
+**Session Memory** (`summarizer.ts` + `contextBuilder.ts`)
+- 6 段结构化摘要模板（当前目标/关键决策/已修改文件/遇到的错误/进行中的任务/重要上下文）
+- 摘要作为 system message 注入，不会被 trim 策略删除
+
+**终止原因枚举** (`messageUtils.ts` + `index.ts`)
+- StopReason 类型: completed | max_rounds | aborted | harness_abort | context_overflow | model_error | tool_error_cascade | empty_response
+- 所有退出路径均 yield stop reason
+
+**Bypass-immune 安全层** (`riskDetection.ts` + `toolBuilder.ts`)
+- 写入 .git/、.env、credentials/pem/key 文件 → 无条件阻止
+- force push (`--force` / `-f`)、根目录 rm -rf → 无条件阻止
+- 路径验证加固: realpathSync 解析 symlink
+- read_file 添加 workspace 路径限制
+
+**Continue Site 恢复** (`index.ts` 双路径)
+- model_error: 最多 3 次重试，第 2 次起压缩上下文，指数退避
+- tool_error_cascade: 批量工具 >50% 失败时注入恢复提示，连续 3 轮终止
+- 双路径（reasoning stream + LangChain fallback）均已覆盖
+
+**读写并发** (`tools/index.ts` + `index.ts`)
+- READ_ONLY_TOOLS 集合标记只读工具
+- executeToolCalls 拆分读/写/task 三组: 读+task 并行，写串行
+
+**EvalGuard 分级** (`harness/evalGuard.ts` + `harness/middleware.ts`)
+- skip: 纯只读工具步骤，跳过 LLM eval
+- lightweight: 写入无错误，规则检查
+- full: 有错误或无工具证据，完整 LLM eval
+
+**Task 结果智能压缩** (`pruning.ts`)
+- 头尾保留策略: 前 200 字符(上下文) + 后 200 字符(结论)，替代暴力截断
+- 保留 metadata header + subagentId，附加全量结果文件路径指引
+- Pass 1 跳过 task 结果，避免 Pass 0 压缩后被二次截断
+
+</details>
 
 ---
 
@@ -210,10 +259,10 @@ Harness（EvalGuard + LoopDetector + Replanner + HarnessDriver）是 Claude Code
 
 | 维度 | ArcanaAgent | Claude Code | Cursor | GitHub Copilot |
 |------|------------|------------|--------|---------------|
-| Agent Loop | LangGraph StateGraph | while(true) + 7 continue sites | 不公开 | 不公开 |
-| 工具系统 | 21 内置 + MCP | 43+ 内置 + MCP | 内置编辑 + 终端 | 内置编辑 + 终端 |
-| 权限模型 | RBAC + 审批规则 | 5 模式 + 7 级规则 + AI 分类器 | 编辑器级沙盒 | GitHub 权限 |
-| 上下文管理 | 2-pass 压缩 | 4 级压缩 + Session Memory | .cursorrules + 索引 | copilot-instructions.md |
+| Agent Loop | LangGraph StateGraph + Continue Site 恢复 | while(true) + 7 continue sites | 不公开 | 不公开 |
+| 工具系统 | 21 内置 + MCP + 读写并发 | 43+ 内置 + MCP | 内置编辑 + 终端 | 内置编辑 + 终端 |
+| 权限模型 | RBAC + 审批规则 + Bypass-immune | 5 模式 + 7 级规则 + AI 分类器 | 编辑器级沙盒 | GitHub 权限 |
+| 上下文管理 | Microcompact + 3-pass 压缩 + Session Memory | 4 级压缩 + Session Memory | .cursorrules + 索引 | copilot-instructions.md |
 | 多 Agent | 子 Agent + Team 模式 | 5 种 Agent + Swarm 编排 | 8 并行 Agent (worktree) | 单 Agent |
 | 执行监控 | **Harness 系统** | 无 | 无 | 无 |
 | 定时任务 | **Scheduler 系统** | 无内置（依赖 cron hook） | 无 | 无 |
@@ -222,10 +271,12 @@ Harness（EvalGuard + LoopDetector + Replanner + HarnessDriver）是 Claude Code
 
 ## 核心结论
 
-1. **最大短板是 Context Management** — 这是长任务成功率的决定因素。Phase 1 的 Microcompact + Session Memory 是投入产出比最高的改进。
+1. **Context Management 差距已大幅缩小** — Microcompact + Session Memory + Task 智能压缩已实现，从 ★★ 提升到 ★★★★。剩余差距主要在 9 段结构化摘要模板（Phase 3）。
 
-2. **Harness 系统是独特优势** — EvalGuard + LoopDetector + Replanner 的组合在开源 agent 中少见，值得继续深化。
+2. **Harness 系统是独特优势** — EvalGuard 分级策略已优化（skip/lightweight/full），降低了 eval 成本。LoopDetector + Replanner 的组合在开源 agent 中少见，值得继续深化。
 
-3. **安全模型需要从"单层检测"升级到"纵深防御"** — 加一个 Bypass-immune 层是最小成本的关键改进。
+3. **安全模型已升级为纵深防御** — Bypass-immune 层 + symlink 路径解析 + read_file workspace 限制已实现。剩余差距在 AI 分类器层（Phase 3）。
 
-4. **Agent Loop 需要从"线性执行"进化到"状态机恢复"** — Continue Site 机制是 Claude Code 长任务高成功率的核心原因之一。
+4. **Agent Loop 已具备状态机恢复能力** — Continue Site（model_error 重试 + tool_error_cascade 检测）+ StopReason 枚举已实现。双路径（reasoning stream + LangChain fallback）均已覆盖。
+
+5. **剩余优化集中在 Phase 3** — Pre/Post Hook、缓存前缀稳定性、AI 分类器、9 段摘要模板。这些是锦上添花的长期优化，当前系统已具备生产级基础能力。

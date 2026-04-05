@@ -3,7 +3,7 @@ import type { ModelAdapter } from "../../llm/adapter.js";
 import type { RuntimePlanStep } from "../planTracker.js";
 import { computeCurrentStep } from "../planTracker.js";
 import { LoopDetector } from "./loopDetector.js";
-import { evaluateStepCompletion } from "./evalGuard.js";
+import { evaluateStepCompletion, determineEvalTier, lightweightEval } from "./evalGuard.js";
 import { generateReplan, mergeReplanIntoSteps, buildReplanInjectionMessage } from "./replanner.js";
 import type { HarnessConfig, HarnessEvent, MiddlewareResult } from "./types.js";
 
@@ -28,6 +28,9 @@ export class HarnessMiddleware {
 
   /** 每个步骤的连续 weak 计数，超过阈值自动接受 */
   private weakCounts = new Map<number, number>();
+
+  /** 追踪每个 step 使用了哪些工具名（用于 EvalGuard 分级） */
+  private stepToolsUsed = new Map<number, Set<string>>();
 
   constructor(config: HarnessConfig, adapter: ModelAdapter) {
     this.config = config;
@@ -56,17 +59,39 @@ export class HarnessMiddleware {
       }
     }
 
+    // 1b. 追踪当前 step 使用的工具名（用于 EvalGuard 分级）
+    const currentStepIdx = computeCurrentStep(planSteps);
+    if (currentStepIdx >= 0) {
+      const used = this.stepToolsUsed.get(currentStepIdx) ?? new Set();
+      for (const out of toolOutputs) used.add(out.name);
+      this.stepToolsUsed.set(currentStepIdx, used);
+    }
+
     // 2. Eval：检查是否有 plan step 刚被标记完成
     if (this.config.evalEnabled && planSteps.length > 0) {
       const currentCompleted = computeCurrentStep(planSteps) - 1; // 最后一个已完成的 index
       if (currentCompleted > this.lastCompletedIndex && currentCompleted >= 0) {
         const justCompleted = planSteps[currentCompleted];
         if (justCompleted?.completed) {
-          const evalResult = await evaluateStepCompletion(
-            this.adapter,
-            justCompleted,
-            currentCompleted
-          );
+          // ── EvalGuard 分级策略 ──
+          const toolsUsed = Array.from(this.stepToolsUsed.get(currentCompleted) ?? []);
+          const tier = determineEvalTier(justCompleted, toolsUsed);
+
+          let evalResult;
+          if (tier === "skip") {
+            // 只读工具步骤：跳过 LLM eval，直接 pass
+            evalResult = { stepIndex: currentCompleted, verdict: "pass" as const, reason: "只读工具步骤，跳过评估（skip tier）" };
+          } else if (tier === "lightweight") {
+            // 写入无错误：纯规则检查
+            evalResult = lightweightEval(justCompleted, currentCompleted);
+          } else {
+            // full: 完整 LLM eval
+            evalResult = await evaluateStepCompletion(
+              this.adapter,
+              justCompleted,
+              currentCompleted
+            );
+          }
           events.push({ kind: "eval", data: evalResult, timestamp: now() });
 
           if (evalResult.verdict === "weak") {

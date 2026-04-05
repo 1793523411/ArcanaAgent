@@ -1,6 +1,7 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { tool } from "@langchain/core/tools";
 import { resolve } from "path";
+import { realpathSync } from "fs";
 import { getAgentConfig, isAllToolsAllowed, type AgentRole } from "./roles.js";
 import { listToolIds, getToolsByIds } from "../tools/index.js";
 import { getMcpTools } from "../mcp/client.js";
@@ -10,6 +11,7 @@ import type { PlanStep } from "./planning.js";
 import type { ConversationMode } from "./systemPrompt.js";
 import type { HarnessConfig, HarnessEvent } from "./harness/types.js";
 import type { ExecutionEnhancementsConfig } from "../config/userConfig.js";
+import type { StopReason } from "./messageUtils.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
@@ -46,6 +48,8 @@ export interface StreamAgentOptions extends AgentExecutionOptions {
   harnessConfig?: HarnessConfig;
   /** Harness 事件回调（eval 结果、循环检测、重规划决策） */
   onHarnessEvent?: (event: HarnessEvent) => void;
+  /** Agent Loop 终止原因回调 */
+  onStopReason?: (reason: StopReason) => void;
 }
 
 export type SubagentStreamEvent =
@@ -118,6 +122,7 @@ export const HIGH_RISK_COMMAND_PATTERNS = [
   /\brm\s+(-[^\s]*\s+)*-[^\s]*r/i,    // rm -rf, rm -r
   /\brm\s+.*--recursive/i,              // rm --recursive
   /\bgit\s+push\s+.*--force/i,         // git push --force
+  /\bgit\s+push\b.*\s-f\b/i,           // git push -f (with args in between)
   /\bgit\s+reset\s+--hard/i,           // git reset --hard
   /\bDROP\s+(TABLE|DATABASE)/i,         // DROP TABLE / DROP DATABASE
   /\bDELETE\s+FROM\b/i,                // DELETE FROM
@@ -126,6 +131,41 @@ export const HIGH_RISK_COMMAND_PATTERNS = [
   /\bchmod\s+777\b/,                    // chmod 777
   /\bkill\s+-9\b/,                      // kill -9
 ];
+
+// ── Bypass-immune rules: cannot be overridden by user approvalRules ──
+
+const BYPASS_IMMUNE_WRITE_PATTERNS = [
+  { pattern: /\/\.git\//, description: "Writing to .git/ directory" },
+  { pattern: /\/\.env$/, description: "Writing to .env file" },
+  { pattern: /\/\.env\./, description: "Writing to .env.* file" },
+  { pattern: /\/(credentials|\.pem|\.key|id_rsa)/, description: "Writing to credential/key file" },
+];
+
+const BYPASS_IMMUNE_COMMAND_PATTERNS = [
+  { pattern: /\bgit\s+push\s+.*--force/i, description: "Force push to remote" },
+  { pattern: /\bgit\s+push\b.*\s-f\b/i, description: "Force push to remote" },
+  { pattern: /\brm\s+(-[^\s]*\s+)*-[^\s]*r[^\s]*\s+(\.\/?|\/|~\/?)(\s|$)/i, description: "Recursive delete at root-level path" },
+];
+
+/**
+ * Check if an operation is bypass-immune (always requires approval regardless of user config).
+ * Returns a description string if bypass-immune, null otherwise.
+ */
+export function isBypassImmune(operationType: string, input: Record<string, unknown>): string | null {
+  if ((operationType === "write_file" || operationType === "edit_file") && typeof input.path === "string") {
+    const path = input.path;
+    for (const rule of BYPASS_IMMUNE_WRITE_PATTERNS) {
+      if (rule.pattern.test(path)) return `[bypass-immune] ${rule.description}: ${path}`;
+    }
+  }
+  if (operationType === "run_command" && typeof input.command === "string") {
+    const command = input.command;
+    for (const rule of BYPASS_IMMUNE_COMMAND_PATTERNS) {
+      if (rule.pattern.test(command)) return `[bypass-immune] ${rule.description}`;
+    }
+  }
+  return null;
+}
 
 export function isHighRiskCommand(command: string, customRules?: ApprovalRule[]): string | null {
   for (const pattern of HIGH_RISK_COMMAND_PATTERNS) {
@@ -188,6 +228,11 @@ export function wrapToolWithApproval(
 ): StructuredToolInterface {
   const wrapped = tool(
     async (input: Record<string, unknown>) => {
+      // Bypass-immune check first — block before approval flow to avoid misleading UX
+      const bypassCheck = isBypassImmune(toolName, input);
+      if (bypassCheck) {
+        return `[blocked] ${bypassCheck}. This operation is permanently blocked for safety.`;
+      }
       const riskDesc = getRiskDescription(input);
       if (!riskDesc) {
         return String(await originalTool.invoke(input));
@@ -247,7 +292,17 @@ export interface RuntimeToolBuildContext {
 export function isPathInWorkspace(pathText: string, workspacePath: string): boolean {
   const workspace = resolve(workspacePath);
   const target = resolve(pathText);
-  return target === workspace || target.startsWith(`${workspace}/`);
+  // resolve() normalizes ../ segments
+  if (target !== workspace && !target.startsWith(`${workspace}/`)) return false;
+  // Resolve symlinks if the file exists to prevent symlink escapes
+  try {
+    const realTarget = realpathSync(target);
+    const realWorkspace = realpathSync(workspace);
+    return realTarget === realWorkspace || realTarget.startsWith(`${realWorkspace}/`);
+  } catch {
+    // File doesn't exist yet — trust the normalized path check above
+    return true;
+  }
 }
 
 export function isLikelyProjectMirrorPath(pathText: string): boolean {
