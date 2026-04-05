@@ -475,6 +475,50 @@ export default function MessageBubble({ message, conversationId, models = [], te
                         )}
                       </div>
                     )}
+                    {/* ── Per-subagent harness events ── */}
+                    {!subCollapsed && s.harnessEvents && s.harnessEvents.length > 0 && (
+                      <div className="mt-2 p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+                        <div className="text-[11px] text-[var(--color-text-muted)] mb-1">执行监控</div>
+                        <div className="space-y-1">
+                          {s.harnessEvents.map((evt, hIdx) => {
+                            if (evt.kind === "eval") {
+                              const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
+                              const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
+                              const color = d.verdict === "pass"
+                                ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
+                                : d.verdict === "weak" || d.verdict === "inconclusive"
+                                  ? "border-yellow-500/30 bg-yellow-500/5"
+                                  : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+                              return (
+                                <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border ${color}`}>
+                                  {icon} Step {(d.stepIndex ?? 0) + 1} 验证：{d.verdict} — {d.reason}
+                                </div>
+                              );
+                            }
+                            if (evt.kind === "loop_detection") {
+                              const d = evt.data as { detected?: boolean; description?: string };
+                              if (!d.detected) return null;
+                              return (
+                                <div key={hIdx} className="text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5">
+                                  🔄 循环检测：{d.description}
+                                </div>
+                              );
+                            }
+                            if (evt.kind === "replan") {
+                              const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
+                              if (!d.shouldReplan && !d.pendingApproval) return null;
+                              return (
+                                <div key={hIdx} className="text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5">
+                                  🔀 {d.pendingApproval ? "重规划建议（仅参考）" : "计划已重规划"}
+                                  {d.trigger && <span className="opacity-70"> — 触发：{d.trigger === "eval_fail" ? "验证失败" : "循环检测"}</span>}
+                                </div>
+                              );
+                            }
+                            return null;
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {!subCollapsed && hasSubTools && (
                       <div className="mt-2">
                         <button type="button" onClick={() => toggleSubSection(s.subagentId, "tools")} className="text-[11px] text-[var(--color-text-muted)] mb-1">

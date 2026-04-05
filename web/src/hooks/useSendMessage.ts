@@ -28,6 +28,7 @@ type StreamingSubagent = {
   } | null;
   summary?: string;
   error?: string;
+  harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
 };
 
 type ConversationStreamState = {
@@ -379,7 +380,7 @@ export function useSendMessage(options: {
           }
           if (obj.type === "subagent" && typeof (obj as { subagentId?: string }).subagentId === "string") {
             const payload = obj as {
-              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name" | "approval_request" | "approval_response";
+              kind?: "lifecycle" | "token" | "reasoning" | "plan" | "tool_call" | "tool_result" | "subagent_name" | "approval_request" | "approval_response" | "harness";
               subagentId: string;
               subagentName?: string;
               role?: string;
@@ -406,6 +407,10 @@ export function useSendMessage(options: {
               name?: string;
               input?: string;
               output?: string;
+              // harness event fields (kind === "harness")
+              harnessKind?: string;
+              data?: unknown;
+              timestamp?: string;
             };
             setConversationState(convId, (prev) => {
               // __main__ is a synthetic subagentId for main agent approval events.
@@ -430,6 +435,25 @@ export function useSendMessage(options: {
                   };
                 }
                 return prev; // ignore any other __main__ events
+              }
+              // Handle subagent harness events — append to per-subagent harnessEvents
+              if (payload.kind === "harness" && payload.subagentId) {
+                const existing = prev.streamingSubagents;
+                const idx = existing.findIndex((s) => s.subagentId === payload.subagentId);
+                if (idx >= 0) {
+                  const next = [...existing];
+                  const cur = next[idx];
+                  next[idx] = {
+                    ...cur,
+                    harnessEvents: [...(cur.harnessEvents ?? []), {
+                      kind: typeof payload.harnessKind === "string" ? payload.harnessKind : "unknown",
+                      data: (payload.data && typeof payload.data === "object" ? payload.data : {}) as Record<string, unknown>,
+                      timestamp: typeof payload.timestamp === "string" ? payload.timestamp : undefined,
+                    }],
+                  };
+                  return { ...prev, streamingSubagents: next };
+                }
+                return prev; // subagent not yet created, ignore
               }
               const existing = prev.streamingSubagents;
               const idx = existing.findIndex((s) => s.subagentId === payload.subagentId);
@@ -462,6 +486,10 @@ export function useSendMessage(options: {
               };
               if (payload.kind === "lifecycle") {
                 const parsedRole = typeof payload.role === "string" && payload.role ? payload.role : undefined;
+                // Reset streaming state when subagent restarts (e.g., harness outer retry)
+                if (lifecyclePhase === "started" && idx >= 0) {
+                  nextItem = { ...nextItem, content: "", reasoning: "", toolLogs: [], plan: null, summary: undefined, error: undefined, status: "thinking", harnessEvents: [] };
+                }
                 nextItem = {
                   ...nextItem,
                   subagentName: typeof payload.subagentName === "string" ? payload.subagentName : nextItem.subagentName,

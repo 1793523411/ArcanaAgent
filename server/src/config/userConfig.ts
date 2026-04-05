@@ -65,13 +65,22 @@ export interface ApprovalRule {
 }
 
 export const defaultApprovalRules: ApprovalRule[] = [
-  {
-    id: "builtin_kill_port",
-    name: "禁止 kill 3000/3001 端口",
-    pattern: "(kill.*30(00|01))|(30(00|01).*kill)|(fuser\\s+-k\\s+30(00|01))",
-    operationType: "run_command",
-    enabled: true,
-  },
+  // ── High-risk command patterns (可由用户禁用) ──
+  // 注：git push --force/f 已由 BYPASS_IMMUNE 永久拦截，无需在此重复
+  { id: "builtin_rm_rf", name: "rm -rf / rm -r", pattern: "\\brm\\s+(-[^\\s]*\\s+)*-[^\\s]*r", operationType: "run_command", enabled: true },
+  { id: "builtin_rm_recursive", name: "rm --recursive", pattern: "\\brm\\s+.*--recursive", operationType: "run_command", enabled: true },
+  { id: "builtin_git_reset_hard", name: "git reset --hard", pattern: "\\bgit\\s+reset\\s+--hard", operationType: "run_command", enabled: true },
+  { id: "builtin_drop_table", name: "DROP TABLE/DATABASE", pattern: "\\bDROP\\s+(TABLE|DATABASE)", operationType: "run_command", enabled: true },
+  { id: "builtin_delete_from", name: "DELETE FROM", pattern: "\\bDELETE\\s+FROM\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_truncate", name: "TRUNCATE TABLE", pattern: "\\bTRUNCATE\\s+TABLE", operationType: "run_command", enabled: true },
+  { id: "builtin_git_clean", name: "git clean -f", pattern: "\\bgit\\s+clean\\s+-[^\\s]*f", operationType: "run_command", enabled: true },
+  { id: "builtin_chmod_777", name: "chmod 777", pattern: "\\bchmod\\s+777\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_kill_9", name: "kill -9", pattern: "\\bkill\\s+-9\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_kill_port", name: "禁止 kill 3000/3001 端口", pattern: "(kill.*30(00|01))|(30(00|01).*kill)|(fuser\\s+-k\\s+30(00|01))", operationType: "run_command", enabled: true },
+  // ── High-risk write patterns (可由用户禁用) ──
+  // 注：.env/.pem/.key/credentials 写入已由 BYPASS_IMMUNE 永久拦截，无需在此重复
+  { id: "builtin_write_config_json", name: "写入 config.json", pattern: "config\\.json$", operationType: "write_file", enabled: true },
+  { id: "builtin_write_gitignore", name: "写入 .gitignore", pattern: "\\.gitignore$", operationType: "write_file", enabled: true },
 ];
 
 export type CodeIndexStrategy = "none" | "repomap" | "vector";
@@ -203,23 +212,33 @@ export function loadUserConfig(): UserConfig {
         });
         return acc;
       }, []),
-      approvalRules: approvalRulesRaw
-        ? approvalRulesRaw.reduce<ApprovalRule[]>((acc, item) => {
-            if (!item || typeof item !== "object") return acc;
-            const rule = item as Partial<ApprovalRule>;
-            if (typeof rule.id !== "string" || typeof rule.name !== "string" || typeof rule.pattern !== "string") return acc;
-            const opType = rule.operationType;
-            if (opType !== "run_command" && opType !== "write_file" && opType !== "edit_file") return acc;
-            acc.push({
-              id: rule.id,
-              name: rule.name,
-              pattern: rule.pattern,
-              operationType: opType,
-              enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
-            });
-            return acc;
-          }, [])
-        : [...defaultApprovalRules],
+      approvalRules: (() => {
+        const parsed_rules = approvalRulesRaw
+          ? approvalRulesRaw.reduce<ApprovalRule[]>((acc, item) => {
+              if (!item || typeof item !== "object") return acc;
+              const rule = item as Partial<ApprovalRule>;
+              if (typeof rule.id !== "string" || typeof rule.name !== "string" || typeof rule.pattern !== "string") return acc;
+              const opType = rule.operationType;
+              if (opType !== "run_command" && opType !== "write_file" && opType !== "edit_file") return acc;
+              acc.push({
+                id: rule.id,
+                name: rule.name,
+                pattern: rule.pattern,
+                operationType: opType,
+                enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
+              });
+              return acc;
+            }, [])
+          : [...defaultApprovalRules];
+        // Ensure all builtin rules are present (migrate new defaults into existing config)
+        const existingIds = new Set(parsed_rules.map((r) => r.id));
+        for (const builtin of defaultApprovalRules) {
+          if (!existingIds.has(builtin.id)) {
+            parsed_rules.push({ ...builtin });
+          }
+        }
+        return parsed_rules;
+      })(),
       codeIndexStrategy: (() => {
         const val = (parsed as Record<string, unknown>).codeIndexStrategy;
         if (val === "none" || val === "repomap" || val === "vector") return val;

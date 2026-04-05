@@ -1,6 +1,19 @@
 export type ConversationMode = "default" | "team";
 export type AgentRole = string;
 
+export interface AgentDefHarness {
+  /** 启用循环检测（零 token 成本，默认 true） */
+  loopDetection?: boolean;
+  /** 启用 Eval 步骤验证（每步一次 LLM 调用，默认 false） */
+  eval?: boolean;
+  /** 启用动态重规划（循环或 eval 失败时生成新计划，默认 false） */
+  replan?: boolean;
+  /** 自动批准重规划（默认 true，设为 false 时重规划仅作为建议注入） */
+  autoApproveReplan?: boolean;
+  /** 启用外层重试（整轮失败后从头重新执行，默认 false） */
+  outerRetry?: boolean;
+}
+
 export interface AgentDef {
   id: string;
   name: string;
@@ -12,6 +25,8 @@ export interface AgentDef {
   builtIn: boolean;
   /** 是否启用 Claude Code 能力（仅在全局开启时生效） */
   claudeCodeEnabled?: boolean;
+  /** 子 agent Harness 配置（team 模式下生效） */
+  harness?: AgentDefHarness;
 }
 
 export interface TeamDef {
@@ -86,6 +101,8 @@ export interface SubagentLog {
   plan?: PlanLog;
   /** 审批记录（team 模式） */
   approvalLogs?: ApprovalLog[];
+  /** 子 agent Harness 事件（eval/loop_detection/replan） */
+  harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
   summary?: string;
   error?: string;
 }
@@ -207,6 +224,13 @@ export interface ExecutionEnhancementsConfig {
   loopSimilarityThreshold: number;
 }
 
+export interface BuiltInRiskRule {
+  name: string;
+  pattern: string;
+  operationType: "run_command" | "write_file";
+  category: "bypass_immune";
+}
+
 export interface UserConfig {
   enabledToolIds: string[];
   mcpServers: McpServerConfig[];
@@ -223,6 +247,8 @@ export interface UserConfig {
   claudeCode?: ClaudeCodeConfig;
   /** 执行增强配置 */
   enhancements?: ExecutionEnhancementsConfig;
+  /** 系统内置高危规则（只读，后端生成） */
+  builtInRiskRules?: BuiltInRiskRule[];
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;

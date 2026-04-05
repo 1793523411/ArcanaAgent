@@ -109,6 +109,11 @@ export type SubagentStreamEvent =
       subagentId: string;
       requestId: string;
       approved: boolean;
+    }
+  | {
+      kind: "harness";
+      subagentId: string;
+      [key: string]: unknown;
     };
 
 export function filterToolsByRole(tools: StructuredToolInterface[], agentId: string): StructuredToolInterface[] {
@@ -118,19 +123,29 @@ export function filterToolsByRole(tools: StructuredToolInterface[], agentId: str
   return tools.filter((t) => allowed.has(t.name));
 }
 
-export const HIGH_RISK_COMMAND_PATTERNS = [
-  /\brm\s+(-[^\s]*\s+)*-[^\s]*r/i,    // rm -rf, rm -r
-  /\brm\s+.*--recursive/i,              // rm --recursive
-  /\bgit\s+push\s+.*--force/i,         // git push --force
-  /\bgit\s+push\b.*\s-f\b/i,           // git push -f (with args in between)
-  /\bgit\s+reset\s+--hard/i,           // git reset --hard
-  /\bDROP\s+(TABLE|DATABASE)/i,         // DROP TABLE / DROP DATABASE
-  /\bDELETE\s+FROM\b/i,                // DELETE FROM
-  /\bTRUNCATE\s+TABLE/i,               // TRUNCATE TABLE
-  /\bgit\s+clean\s+-[^\s]*f/i,         // git clean -f
-  /\bchmod\s+777\b/,                    // chmod 777
-  /\bkill\s+-9\b/,                      // kill -9
-];
+// HIGH_RISK patterns are now managed as builtin approvalRules in userConfig.ts
+// Only BYPASS_IMMUNE patterns remain hardcoded (see below)
+
+// ── Structured bypass-immune rules for frontend display (truly non-disablable) ──
+
+export interface BuiltInRiskRule {
+  name: string;
+  pattern: string;
+  operationType: "run_command" | "write_file";
+  category: "bypass_immune";
+}
+
+export function getBuiltInRiskRules(): BuiltInRiskRule[] {
+  return [
+    { name: "Force push to remote", pattern: "\\bgit\\s+push\\s+.*--force", operationType: "run_command", category: "bypass_immune" },
+    { name: "Force push to remote (-f)", pattern: "\\bgit\\s+push\\b.*\\s-f\\b", operationType: "run_command", category: "bypass_immune" },
+    { name: "递归删除根路径", pattern: "\\brm\\s+(-[^\\s]*\\s+)*-[^\\s]*r[^\\s]*\\s+(\\./?|/|~/?)(\\s|$)", operationType: "run_command", category: "bypass_immune" },
+    { name: "写入 .git/ 目录", pattern: "/\\.git/", operationType: "write_file", category: "bypass_immune" },
+    { name: "写入 .env 文件", pattern: "/\\.env$", operationType: "write_file", category: "bypass_immune" },
+    { name: "写入 .env.* 文件", pattern: "/\\.env\\.", operationType: "write_file", category: "bypass_immune" },
+    { name: "写入凭证/密钥文件", pattern: "/(credentials|\\.pem|\\.key|id_rsa)", operationType: "write_file", category: "bypass_immune" },
+  ];
+}
 
 // ── Bypass-immune rules: cannot be overridden by user approvalRules ──
 
@@ -168,16 +183,11 @@ export function isBypassImmune(operationType: string, input: Record<string, unkn
 }
 
 export function isHighRiskCommand(command: string, customRules?: ApprovalRule[]): string | null {
-  for (const pattern of HIGH_RISK_COMMAND_PATTERNS) {
-    if (pattern.test(command)) {
-      return command.trim().slice(0, 120);
-    }
-  }
   if (customRules) {
     for (const rule of customRules) {
       if (rule.enabled && rule.operationType === "run_command") {
         try {
-          if (new RegExp(rule.pattern).test(command)) {
+          if (new RegExp(rule.pattern, "i").test(command)) {
             return `[${rule.name}] ${command.trim().slice(0, 120)}`;
           }
         } catch { /* ignore invalid regex */ }
@@ -193,12 +203,6 @@ export function isHighRiskWrite(path: string, workspacePath?: string, customRule
     const resolvedPath = resolve(path);
     if (!resolvedPath.startsWith(`${resolvedWorkspace}/`) && resolvedPath !== resolvedWorkspace) {
       return `Writing outside workspace: ${path}`;
-    }
-  }
-  const riskyPatterns = [/\.env$/, /credentials/, /\.pem$/, /\.key$/, /config\.json$/, /\.gitignore$/];
-  for (const pattern of riskyPatterns) {
-    if (pattern.test(path)) {
-      return `Writing to sensitive file: ${path}`;
     }
   }
   if (customRules) {

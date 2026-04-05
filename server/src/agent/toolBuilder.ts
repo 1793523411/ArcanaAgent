@@ -28,6 +28,7 @@ import {
   type SubagentStreamEvent,
   type PlanStreamEvent,
 } from "./riskDetection.js";
+import type { HarnessEvent, EvalResult, LoopDetectionResult } from "./harness/types.js";
 import {
   truncateToolResult,
   MAX_TASK_TOOL_RESULT_CHARS,
@@ -304,10 +305,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           return String(await t.invoke(input));
         }
         const cmd = typeof input?.command === "string" ? input.command : "";
-        // Defense-in-depth: isBypassImmune is checked here (with resolved workspace path)
-        // AND again in wrapToolWithApproval (with raw input). The two layers catch different
-        // cases — this one sees the resolved absolute path, the approval layer sees the
-        // original command before workspace normalization.
+        // Defense-in-depth: isBypassImmune is checked here against the raw command (with absolute
+        // workspace paths) BEFORE normalization. This is intentional — bypass-immune patterns need
+        // the original paths for accurate matching. The normalization below only affects run_command's
+        // internal isDangerous patterns, which would otherwise false-positive on workspace absolute paths.
+        // findForbiddenOutputPath also runs against raw paths to enforce workspace boundaries correctly.
         const bypassCheck = isBypassImmune("run_command", { command: cmd });
         if (bypassCheck) {
           return `[run_command]\nstatus: blocked\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
@@ -326,11 +328,14 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         // that target files inside the workspace and have already passed approval.
         let safeCmd = cmd;
         if (workspacePath && cmd.includes(workspacePath)) {
-          safeCmd = cmd.replace(new RegExp(workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/?", "g"), "./");
+          // Match workspacePath followed by / or end-of-token (space, quote, ;, &, |, end of string)
+          // to avoid partial path matches (e.g. /tmp matching /tmpdir)
+          const escaped = workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          safeCmd = cmd.replace(new RegExp(escaped + "(?=/|\\s|[;\"'&|)]|$)", "g"), ".");
         }
         return String(await t.invoke({
           ...input,
-          command: safeCmd || input.command,
+          command: safeCmd,
           working_directory: safeWorkingDirectory,
         }));
       },
@@ -496,6 +501,22 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
         });
+        // Subagent harness: per-agent toggles override global numeric params.
+        // Global ExecutionEnhancementsConfig provides baseline (window size, similarity threshold, etc.).
+        // Per-agent AgentDef.harness provides boolean overrides (loopDetection, eval, replan).
+        // Hoisted so both harnessConfig and outer retry logic can reference them without redundant I/O.
+        const globalEnhancements = loadUserConfig().enhancements;
+        const agentHarness = role ? getAgentDef(role)?.harness : undefined;
+        // Per-agent toggles > global toggles > hardcoded defaults.
+        // When no per-agent harness is set, inherit from global ExecutionEnhancementsConfig.
+        const evalOn = agentHarness?.eval ?? globalEnhancements?.evalGuard ?? false;
+        const loopOn = agentHarness?.loopDetection ?? globalEnhancements?.loopDetection ?? true;
+        const replanOn = agentHarness?.replan ?? globalEnhancements?.replan ?? false;
+        // autoApproveReplan semantics (defined in HarnessMiddleware.tryReplan):
+        //   true  → replan 直接替换当前计划步骤（自动批准）
+        //   false → replan 仅作为建议注入对话，当前计划不变（需人工采纳）
+        // 子 agent 默认 true（无法暂停等用户确认），per-agent 可覆盖为 false 启用建议模式。
+        const autoApprove = agentHarness?.autoApproveReplan ?? true;
         const subagentOptions: StreamAgentOptions = {
           ...context.options,
           planningEnabled: true,
@@ -503,6 +524,15 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           subagentDepth: depth + 1,
           subagentRole: role,
           subagentId,
+          harnessConfig: {
+            evalEnabled: evalOn,
+            loopDetectionEnabled: loopOn,
+            replanEnabled: replanOn,
+            autoApproveReplan: autoApprove,
+            maxReplanAttempts: replanOn ? (globalEnhancements?.maxReplanAttempts ?? 3) : 0,
+            loopWindowSize: globalEnhancements?.loopWindowSize ?? 6,
+            loopSimilarityThreshold: globalEnhancements?.loopSimilarityThreshold ?? 0.7,
+          },
           ...(role ? {
             subagentSystemPromptOverride: buildSubagentSystemPrompt(role, context.skillContext, context.options?.workspacePath),
           } : {}),
@@ -514,9 +544,27 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
             });
           },
         };
-        const runSubagent = async () => {
+        // Outer retry: collect harness events to detect unresolved failures
+        const outerRetryEnabled = agentHarness?.outerRetry ?? globalEnhancements?.outerRetry ?? false;
+        const maxOuterRetries = outerRetryEnabled ? (globalEnhancements?.maxOuterRetries ?? 2) : 0;
+        const harnessEvents: HarnessEvent[] = [];
+        // Always forward harness events to parent (for frontend display).
+        // Also collect them locally for outer retry decision logic.
+        subagentOptions.onHarnessEvent = (event) => {
+          context.options?.onSubagentEvent?.({
+            kind: "harness",
+            subagentId,
+            harnessKind: event.kind,
+            data: event.data,
+            timestamp: event.timestamp,
+          });
+          if (outerRetryEnabled) {
+            harnessEvents.push(event);
+          }
+        };
+        const runSubagent = async (messages: BaseMessage[]) => {
           for await (const chunk of _streamAgentWithTokens!(
-            [new HumanMessage(enrichedPrompt)],
+            messages,
             (token) => {
               if (!summaryTruncated) {
                 const next = summaryText + token;
@@ -590,7 +638,49 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
             }
           }
         };
-        await Promise.race([runSubagent(), timeoutPromise]);
+        // Outer retry loop: re-run subagent if harness detected unresolved failures
+        let currentMessages: BaseMessage[] = [new HumanMessage(enrichedPrompt)];
+        for (let outerIteration = 0; outerIteration <= maxOuterRetries; outerIteration++) {
+          // Reset state for each iteration
+          if (outerIteration > 0) {
+            summaryText = "";
+            summaryTruncated = false;
+            fullText = "";
+            // Notify parent that this subagent is retrying so frontend can reset its state
+            context.options?.onSubagentEvent?.({
+              kind: "lifecycle",
+              phase: "started",
+              subagentId,
+              subagentName,
+              role,
+              depth: depth + 1,
+              prompt: `[Harness outer retry ${outerIteration}/${maxOuterRetries}] ${prompt}`,
+            });
+            // Inject failure context from previous iteration
+            const failureSummary = harnessEvents
+              .filter((e) => (e.kind === "eval" && (e.data as EvalResult).verdict === "fail") ||
+                             (e.kind === "loop_detection" && (e.data as LoopDetectionResult).detected === true))
+              .map((e) => e.kind === "eval"
+                ? `Eval fail step ${(e.data as EvalResult).stepIndex}: ${(e.data as EvalResult).reason}`
+                : `Loop detected: ${(e.data as LoopDetectionResult).description ?? "repeated pattern"}`)
+              .join("\n");
+            currentMessages = [
+              new HumanMessage(enrichedPrompt),
+              new HumanMessage(`[Harness] Previous attempt failed. Issues:\n${failureSummary}\n\nTry a fundamentally different approach. Do NOT repeat the same strategies.`),
+            ];
+            harnessEvents.length = 0; // clear for next iteration
+          }
+          await Promise.race([runSubagent(currentMessages), timeoutPromise]);
+          // Check if outer retry needed
+          if (outerIteration < maxOuterRetries && outerRetryEnabled && harnessEvents.length > 0) {
+            const hasUnresolved = harnessEvents.some((e) =>
+              (e.kind === "eval" && (e.data as EvalResult).verdict === "fail") ||
+              (e.kind === "loop_detection" && (e.data as LoopDetectionResult).detected === true)
+            );
+            if (hasUnresolved) continue; // retry
+          }
+          break; // success or no retry needed
+        }
         if (timeoutTimer) clearTimeout(timeoutTimer);
         const rawSummary = summaryText.trim() || NO_VISIBLE_OUTPUT_MESSAGE;
         const summary = truncateToolResult(rawSummary, MAX_TASK_TOOL_RESULT_CHARS);

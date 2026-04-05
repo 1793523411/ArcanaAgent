@@ -42,6 +42,7 @@ import type { SubagentStreamEvent } from "../agent/index.js";
 import { streamHarnessAgent } from "../agent/harness/harnessDriver.js";
 import type { HarnessConfig } from "../agent/harness/types.js";
 import { approvalManager } from "../agent/approvalManager.js";
+import { getBuiltInRiskRules } from "../agent/riskDetection.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, hasAnyEnhancement, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
@@ -146,6 +147,7 @@ type PersistedSubagentLog = {
     approved: boolean;
     createdAt: string;
   }>;
+  harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
   summary?: string;
   error?: string;
 };
@@ -256,6 +258,19 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
         );
         map.set(ev.subagentId, { ...cur, approvalLogs: updated });
       }
+      continue;
+    }
+    if (ev.kind === "harness") {
+      const cur = map.get(ev.subagentId) ?? existing;
+      const events = cur.harnessEvents ?? [];
+      const raw = ev as unknown as Record<string, unknown>;
+      const harnessKind = typeof raw.harnessKind === "string" ? raw.harnessKind : "unknown";
+      const data = (raw.data && typeof raw.data === "object" ? raw.data : {}) as Record<string, unknown>;
+      const timestamp = typeof raw.timestamp === "string" ? raw.timestamp : undefined;
+      map.set(ev.subagentId, {
+        ...cur,
+        harnessEvents: [...events, { kind: harnessKind, data, timestamp }],
+      });
       continue;
     }
   }
@@ -1064,7 +1079,8 @@ export function getConfig(_req: Request, res: Response): void {
   const toolIds = listToolIds();
   const models = listModels();
   const mcpStatus = getMcpStatus();
-  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus });
+  const builtInRiskRules = getBuiltInRiskRules();
+  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus, builtInRiskRules });
 }
 
 export function getModels(_req: Request, res: Response): void {
@@ -1790,6 +1806,13 @@ const agentDefBody = z.object({
   systemPrompt: z.string().max(5000).default(""),
   allowedTools: z.array(z.string()).default(["*"]),
   claudeCodeEnabled: z.boolean().optional().default(false),
+  harness: z.object({
+    loopDetection: z.boolean().optional(),
+    eval: z.boolean().optional(),
+    replan: z.boolean().optional(),
+    autoApproveReplan: z.boolean().optional(),
+    outerRetry: z.boolean().optional(),
+  }).optional(),
 });
 
 export function postAgents(req: Request, res: Response): void {
