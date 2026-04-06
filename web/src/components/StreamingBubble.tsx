@@ -139,6 +139,7 @@ export default function StreamingBubble({
   const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState(false);
   const [harnessRoundExpanded, setHarnessRoundExpanded] = useState<Record<string, boolean>>({});
+  const harnessIterations = useMemo(() => groupByDriverIteration(harness?.events ?? [], harness?.driverEvents), [harness?.events, harness?.driverEvents]);
   // Use shared processingApprovals from parent if available, otherwise local fallback
   const [localProcessing, setLocalProcessing] = useState<Set<string>>(new Set());
   const processingApprovals = externalProcessing ?? localProcessing;
@@ -455,7 +456,7 @@ export default function StreamingBubble({
           </div>
           <div className="space-y-1">
             {(() => {
-              const iterations = groupByDriverIteration(harness.events, harness.driverEvents);
+              const iterations = harnessIterations;
               const hasMultipleIterations = iterations.length > 1;
               return iterations.map((iter) => {
                 const isLastIter = iter.iteration === iterations[iterations.length - 1].iteration;

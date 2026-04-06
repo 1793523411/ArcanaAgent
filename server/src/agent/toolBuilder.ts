@@ -322,20 +322,8 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         const safeWorkingDirectory = isPathInWorkspace(resolvedInputDir, workspacePath)
           ? resolvedInputDir
           : workspacePath;
-        // Normalize absolute workspace paths in the command to relative paths.
-        // This prevents run_command's internal isDangerous patterns (e.g. /\brm\s+-rf\s+\/\b/)
-        // from false-positiving on commands like "rm -rf /Users/.../workspace/tmp"
-        // that target files inside the workspace and have already passed approval.
-        let safeCmd = cmd;
-        if (workspacePath && cmd.includes(workspacePath)) {
-          // Match workspacePath followed by / or end-of-token (space, quote, ;, &, |, end of string)
-          // to avoid partial path matches (e.g. /tmp matching /tmpdir)
-          const escaped = workspacePath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-          safeCmd = cmd.replace(new RegExp(escaped + "(?=/|\\s|[;\"'&|)]|$)", "g"), ".");
-        }
         return String(await t.invoke({
           ...input,
-          command: safeCmd,
           working_directory: safeWorkingDirectory,
         }));
       },
