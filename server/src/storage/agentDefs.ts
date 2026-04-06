@@ -10,12 +10,16 @@ export interface AgentDefHarness {
   loopDetection?: boolean;
   /** 启用 Eval 步骤验证（每步一次 LLM 调用，默认 false） */
   eval?: boolean;
+  /** 只读工具步骤跳过评估（默认 true） */
+  evalSkipReadOnly?: boolean;
   /** 启用动态重规划（循环或 eval 失败时生成新计划，默认 false） */
   replan?: boolean;
   /** 自动批准重规划（默认 true，设为 false 时重规划仅作为建议注入） */
   autoApproveReplan?: boolean;
   /** 启用外层重试（整轮失败后从头重新执行，默认 false） */
   outerRetry?: boolean;
+  /** 超时时间（毫秒），覆盖全局设置 */
+  timeoutMs?: number;
 }
 
 export interface AgentDef {

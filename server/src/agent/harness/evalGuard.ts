@@ -10,16 +10,19 @@ export type EvalTier = "skip" | "lightweight" | "full";
 
 /**
  * 根据步骤涉及的工具类型决定评估级别，降低 Harness 成本。
- * - skip: 只涉及只读工具 → 不调 LLM
+ * - skip: 只涉及只读工具 → 不调 LLM（可通过 skipReadOnly=false 禁用）
  * - lightweight: 涉及写入工具但无错误 → 纯规则检查
  * - full: 有错误或复杂场景 → 完整 LLM 评估
  */
-export function determineEvalTier(step: RuntimePlanStep, toolsUsed: string[]): EvalTier {
+export function determineEvalTier(step: RuntimePlanStep, toolsUsed: string[], skipReadOnly: boolean = true): EvalTier {
   // 没有工具记录时走 full eval
   if (toolsUsed.length === 0) return "full";
 
-  // 所有工具都是只读 → 跳过 eval
-  if (toolsUsed.every((t) => isReadOnlyTool(t))) return "skip";
+  // 所有工具都是只读
+  if (toolsUsed.every((t) => isReadOnlyTool(t))) {
+    // skipReadOnly=true → 跳过 eval，直接 pass；false → 走完整 LLM 评估
+    return skipReadOnly ? "skip" : "full";
+  }
 
   // 涉及写入工具 — 检查 evidences 中是否有错误
   const hasError = step.evidences.some((e) => e.includes("[error]"));

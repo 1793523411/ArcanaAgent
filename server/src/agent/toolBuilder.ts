@@ -497,16 +497,16 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         let summaryTruncated = false;
         let fullText = "";
         const MAX_FULL_TEXT = 64000;
-        const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
-        });
         // Subagent harness: per-agent toggles override global numeric params.
         // Global ExecutionEnhancementsConfig provides baseline (window size, similarity threshold, etc.).
         // Per-agent AgentDef.harness provides boolean overrides (loopDetection, eval, replan).
         // Hoisted so both harnessConfig and outer retry logic can reference them without redundant I/O.
         const globalEnhancements = loadUserConfig().enhancements;
         const agentHarness = role ? getAgentDef(role)?.harness : undefined;
+        const SUBAGENT_TIMEOUT_MS = agentHarness?.timeoutMs ?? globalEnhancements?.agentTimeoutMs ?? 600_000;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
+        });
         // Per-agent toggles > global toggles > hardcoded defaults.
         // When no per-agent harness is set, inherit from global ExecutionEnhancementsConfig.
         const evalOn = agentHarness?.eval ?? globalEnhancements?.evalGuard ?? false;
@@ -526,6 +526,7 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           subagentId,
           harnessConfig: {
             evalEnabled: evalOn,
+            evalSkipReadOnly: agentHarness?.evalSkipReadOnly ?? globalEnhancements?.evalSkipReadOnly ?? true,
             loopDetectionEnabled: loopOn,
             replanEnabled: replanOn,
             autoApproveReplan: autoApprove,

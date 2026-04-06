@@ -99,6 +99,8 @@ export interface ClaudeCodeConfig {
 export interface ExecutionEnhancementsConfig {
   /** LLM 评估 plan step 完成质量 */
   evalGuard: boolean;
+  /** 只读工具步骤跳过评估（skip tier） */
+  evalSkipReadOnly: boolean;
   /** 纯算法检测工具调用循环 */
   loopDetection: boolean;
   /** 失败/循环时动态重规划 */
@@ -115,10 +117,13 @@ export interface ExecutionEnhancementsConfig {
   loopWindowSize: number;
   /** trigram Jaccard 相似度阈值（0-1） */
   loopSimilarityThreshold: number;
+  /** 子 agent 超时时间（毫秒），默认 600000（10 分钟） */
+  agentTimeoutMs: number;
 }
 
 export const defaultEnhancements: ExecutionEnhancementsConfig = {
   evalGuard: false,
+  evalSkipReadOnly: true,
   loopDetection: false,
   replan: false,
   autoApproveReplan: false,
@@ -127,6 +132,7 @@ export const defaultEnhancements: ExecutionEnhancementsConfig = {
   maxOuterRetries: 2,
   loopWindowSize: 6,
   loopSimilarityThreshold: 0.7,
+  agentTimeoutMs: 600_000,
 };
 
 export interface UserConfig {
@@ -262,6 +268,7 @@ export function loadUserConfig(): UserConfig {
         const d = defaultEnhancements;
         return {
           evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : d.evalGuard,
+          evalSkipReadOnly: typeof e.evalSkipReadOnly === "boolean" ? e.evalSkipReadOnly : d.evalSkipReadOnly,
           loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : d.loopDetection,
           replan: typeof e.replan === "boolean" ? e.replan : d.replan,
           autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : d.autoApproveReplan,
@@ -270,6 +277,7 @@ export function loadUserConfig(): UserConfig {
           maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : d.maxOuterRetries,
           loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : d.loopWindowSize,
           loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : d.loopSimilarityThreshold,
+          agentTimeoutMs: typeof e.agentTimeoutMs === "number" && e.agentTimeoutMs >= 60_000 && e.agentTimeoutMs <= 3_600_000 ? e.agentTimeoutMs : d.agentTimeoutMs,
         };
       })(),
     };

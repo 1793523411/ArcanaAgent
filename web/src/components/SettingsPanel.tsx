@@ -21,6 +21,7 @@ const DEFAULT_PLANNING: PlanningConfig = {
 
 const DEFAULT_ENHANCEMENTS: ExecutionEnhancementsConfig = {
   evalGuard: false,
+  evalSkipReadOnly: true,
   loopDetection: false,
   replan: false,
   autoApproveReplan: false,
@@ -29,6 +30,7 @@ const DEFAULT_ENHANCEMENTS: ExecutionEnhancementsConfig = {
   maxOuterRetries: 2,
   loopWindowSize: 6,
   loopSimilarityThreshold: 0.7,
+  agentTimeoutMs: 600000,
 };
 
 interface Props {
@@ -469,6 +471,23 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                   <p className="text-xs text-[var(--color-text-muted)] ml-6 -mt-1.5">
                     计划步骤完成后用 LLM 评估证据质量，防止"假完成"。
                   </p>
+                  {enhancements.evalGuard && (
+                    <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)] ml-6">
+                      <input
+                        type="checkbox"
+                        checked={enhancements.evalSkipReadOnly ?? true}
+                        onChange={(e) => setEnhancements({ evalSkipReadOnly: e.target.checked })}
+                        className="border-[var(--color-border)]"
+                      />
+                      <span>跳过只读步骤</span>
+                      <span className="text-[11px] text-[var(--color-text-muted)] ml-1">（默认开启）</span>
+                    </label>
+                  )}
+                  {enhancements.evalGuard && (
+                    <p className="text-xs text-[var(--color-text-muted)] ml-12 -mt-1.5">
+                      仅使用只读工具的步骤直接通过，关闭后所有步骤均走完整评估。
+                    </p>
+                  )}
                   <label className="flex items-center gap-2 cursor-pointer text-[var(--color-text)]">
                     <input
                       type="checkbox"
@@ -565,6 +584,21 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                           if (v > 0 && v <= 1) setEnhancements({ loopSimilarityThreshold: v });
                         }}
                         disabled={!enhancements.loopDetection}
+                        className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-xs text-[var(--color-text)]">Agent 超时时间（分钟）</span>
+                      <span className="text-[10px] text-[var(--color-text-muted)] block">子 agent 执行的最大时长，超时后自动终止</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={60}
+                        value={Math.round(enhancements.agentTimeoutMs / 60000)}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(60, parseInt(e.target.value) || 10));
+                          setEnhancements({ agentTimeoutMs: v * 60000 });
+                        }}
                         className="w-full px-3 py-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)] disabled:opacity-50"
                       />
                     </label>

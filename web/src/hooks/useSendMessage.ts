@@ -52,7 +52,7 @@ type ConversationStreamState = {
   streamingHarness: {
     events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
     /** 与持久化消息一致，按序追加，用于从最后一项推导右上角 Driver 状态 */
-    driverEvents: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+    driverEvents: Array<{ phase: string; iteration: number; maxRetries: number; harnessEventsInIteration?: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>; timestamp: string }>;
     driverPhase: string | null;
     driverIteration: number;
     driverMaxRetries: number;
@@ -652,7 +652,7 @@ export function useSendMessage(options: {
 
           // ── Harness driver lifecycle events ──
           if (obj.type === "harness_driver" && typeof (obj as { phase?: string }).phase === "string") {
-            const evt = obj as { phase: string; iteration: number; maxRetries: number; timestamp: string };
+            const evt = obj as { phase: string; iteration: number; maxRetries: number; harnessEventsInIteration?: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>; timestamp: string };
             setConversationState(convId, (prev) => {
               const harness = prev.streamingHarness ?? {
                 events: [],
@@ -665,6 +665,7 @@ export function useSendMessage(options: {
                 phase: evt.phase,
                 iteration: evt.iteration,
                 maxRetries: evt.maxRetries,
+                harnessEventsInIteration: evt.harnessEventsInIteration,
                 timestamp: evt.timestamp,
               };
               return {

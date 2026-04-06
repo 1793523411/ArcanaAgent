@@ -75,7 +75,7 @@ export class HarnessMiddleware {
         if (justCompleted?.completed) {
           // ── EvalGuard 分级策略 ──
           const toolsUsed = Array.from(this.stepToolsUsed.get(currentCompleted) ?? []);
-          const tier = determineEvalTier(justCompleted, toolsUsed);
+          const tier = determineEvalTier(justCompleted, toolsUsed, this.config.evalSkipReadOnly);
 
           let evalResult;
           if (tier === "skip") {

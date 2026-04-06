@@ -290,6 +290,7 @@ function buildHarnessConfigFromEnhancements(e?: ExecutionEnhancementsConfig): Ha
   if (!e || !hasAnyEnhancement(e)) return undefined;
   return {
     evalEnabled: e.evalGuard,
+    evalSkipReadOnly: e.evalSkipReadOnly ?? true,
     loopDetectionEnabled: e.loopDetection,
     replanEnabled: e.replan,
     autoApproveReplan: e.autoApproveReplan,
@@ -1422,6 +1423,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     const e = body.enhancements;
     config.enhancements = {
       evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : prev.evalGuard,
+      evalSkipReadOnly: typeof e.evalSkipReadOnly === "boolean" ? e.evalSkipReadOnly : prev.evalSkipReadOnly,
       loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : prev.loopDetection,
       replan: typeof e.replan === "boolean" ? e.replan : prev.replan,
       autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : prev.autoApproveReplan,
@@ -1430,6 +1432,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : prev.maxOuterRetries,
       loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : prev.loopWindowSize,
       loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : prev.loopSimilarityThreshold,
+      agentTimeoutMs: typeof e.agentTimeoutMs === "number" && e.agentTimeoutMs >= 60_000 && e.agentTimeoutMs <= 3_600_000 ? e.agentTimeoutMs : prev.agentTimeoutMs,
     };
   }
   saveUserConfig(config);
@@ -1812,9 +1815,11 @@ const agentDefBody = z.object({
   harness: z.object({
     loopDetection: z.boolean().optional(),
     eval: z.boolean().optional(),
+    evalSkipReadOnly: z.boolean().optional(),
     replan: z.boolean().optional(),
     autoApproveReplan: z.boolean().optional(),
     outerRetry: z.boolean().optional(),
+    timeoutMs: z.number().min(60000).max(3600000).optional(),
   }).optional(),
 });
 

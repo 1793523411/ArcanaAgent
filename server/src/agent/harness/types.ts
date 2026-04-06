@@ -7,6 +7,8 @@ import type { RuntimePlanStep } from "../planTracker.js";
 export interface HarnessConfig {
   /** 是否启用 Eval（LLM 验证 plan step 完成质量） */
   evalEnabled: boolean;
+  /** 只读工具步骤是否跳过评估（true 时 skip tier 直接 pass，false 时走 full eval） */
+  evalSkipReadOnly: boolean;
   /** 是否启用循环检测（纯算法，零 token 成本） */
   loopDetectionEnabled: boolean;
   /** 是否启用动态重规划 */
@@ -23,6 +25,7 @@ export interface HarnessConfig {
 
 export const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
   evalEnabled: true,
+  evalSkipReadOnly: true,
   loopDetectionEnabled: true,
   replanEnabled: true,
   autoApproveReplan: false,
