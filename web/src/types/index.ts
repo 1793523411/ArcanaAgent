@@ -208,8 +208,8 @@ export interface ClaudeCodeConfig {
   model?: string;
   /** 默认最大轮次 */
   maxTurns?: number;
-  /** 限制 Claude Code 可用工具 */
-  allowedTools?: string[];
+  /** 禁用的 Claude Code 工具 */
+  disallowedTools?: string[];
 }
 
 export interface ExecutionEnhancementsConfig {

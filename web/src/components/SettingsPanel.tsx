@@ -1453,10 +1453,10 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                     </label>
 
                     <div className="space-y-2">
-                      <span className="text-sm text-[var(--color-text)]">允许的工具</span>
+                      <span className="text-sm text-[var(--color-text)]">禁用的工具</span>
                       <div className="grid grid-cols-3 gap-2">
-                        {["Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit"].map((t) => {
-                          const current = config.claudeCode?.allowedTools ?? ["Read", "Edit", "Write", "Bash", "Glob", "Grep"];
+                        {["Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch", "WebSearch", "NotebookEdit", "Agent"].map((t) => {
+                          const current = config.claudeCode?.disallowedTools ?? [];
                           const checked = current.includes(t);
                           return (
                             <label key={t} className="flex items-center gap-2 cursor-pointer text-sm text-[var(--color-text)]">
@@ -1467,7 +1467,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                                   const next = checked ? current.filter(x => x !== t) : [...current, t];
                                   setConfig({
                                     ...config,
-                                    claudeCode: { ...config.claudeCode, enabled: true, allowedTools: next }
+                                    claudeCode: { ...config.claudeCode, enabled: true, disallowedTools: next }
                                   });
                                 }}
                                 className="border-[var(--color-border)]"
@@ -1478,7 +1478,7 @@ export default function SettingsPanel({ onClose, onSaved }: Props) {
                         })}
                       </div>
                       <span className="text-xs text-[var(--color-text-muted)]">
-                        选择 Claude Code 可以使用的工具。建议至少保留 Read 和 Edit。
+                        勾选的工具将被禁用。默认所有工具可用，使用 Claude Code 内置全量工具集。
                       </span>
                     </div>
 

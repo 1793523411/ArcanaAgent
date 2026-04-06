@@ -43,7 +43,7 @@ export const claude_code = tool(
     const globalCc = loadUserConfig().claudeCode;
     const maxTurns = input.maxTurns ?? globalCc?.maxTurns ?? 15;
     const model = input.model || globalCc?.model || undefined;
-    const allowedTools = input.allowedTools ?? globalCc?.allowedTools ?? ["Read", "Edit", "Write", "Bash", "Glob", "Grep"];
+    const disallowedTools = input.disallowedTools ?? globalCc?.disallowedTools ?? [];
 
     const abortController = new AbortController();
     // 10 分钟超时
@@ -61,7 +61,8 @@ export const claude_code = tool(
           cwd,
           model,
           maxTurns,
-          allowedTools,
+          tools: { type: "preset", preset: "claude_code" },
+          disallowedTools,
           permissionMode: "bypassPermissions",
           abortController,
           persistSession: false,
@@ -253,13 +254,13 @@ Input:
 - prompt: Detailed description of the coding task
 - cwd: (optional) Working directory, defaults to current workspace
 - maxTurns: (optional) Max execution rounds, default 15
-- allowedTools: (optional) Tools Claude Code can use, default: Read, Edit, Write, Bash, Glob, Grep`,
+- disallowedTools: (optional) Tools to disable, default: none (all tools available)`,
     schema: z.object({
       prompt: z.string().describe("Detailed description of the coding task to delegate"),
       cwd: z.string().optional().describe("Working directory for Claude Code execution"),
       model: z.string().optional().describe("Claude model to use (e.g. 'sonnet', 'opus', 'claude-sonnet-4-6')"),
       maxTurns: z.number().optional().describe("Maximum execution rounds (default: 15)"),
-      allowedTools: z.array(z.string()).optional().describe("Allowed Claude Code tools (default: Read, Edit, Write, Bash, Glob, Grep)"),
+      disallowedTools: z.array(z.string()).optional().describe("Tools to disable for Claude Code (default: none)"),
     }),
   }
 );

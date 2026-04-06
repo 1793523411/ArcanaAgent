@@ -92,8 +92,8 @@ export interface ClaudeCodeConfig {
   model?: string;
   /** 默认最大轮次 */
   maxTurns?: number;
-  /** 限制 Claude Code 可用工具 */
-  allowedTools?: string[];
+  /** 禁用的 Claude Code 工具 */
+  disallowedTools?: string[];
 }
 
 export interface ExecutionEnhancementsConfig {
@@ -252,7 +252,7 @@ export function loadUserConfig(): UserConfig {
           enabled: typeof cc.enabled === "boolean" ? cc.enabled : false,
           model: typeof cc.model === "string" ? cc.model : undefined,
           maxTurns: typeof cc.maxTurns === "number" ? cc.maxTurns : undefined,
-          allowedTools: Array.isArray(cc.allowedTools) ? cc.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+          disallowedTools: Array.isArray(cc.disallowedTools) ? cc.disallowedTools.filter((t: unknown) => typeof t === "string") : undefined,
         };
       })(),
       enhancements: (() => {

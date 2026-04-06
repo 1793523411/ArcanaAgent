@@ -1373,7 +1373,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     templates?: PromptTemplate[];
     approvalRules?: ApprovalRule[];
     codeIndexStrategy?: string;
-    claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; allowedTools?: string[] };
+    claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; disallowedTools?: string[] };
     enhancements?: Partial<ExecutionEnhancementsConfig>;
   };
   const config = loadUserConfig();
@@ -1410,7 +1410,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       enabled: typeof body.claudeCode.enabled === "boolean" ? body.claudeCode.enabled : false,
       model: typeof body.claudeCode.model === "string" && body.claudeCode.model.trim() ? body.claudeCode.model.trim() : undefined,
       maxTurns: typeof body.claudeCode.maxTurns === "number" ? body.claudeCode.maxTurns : undefined,
-      allowedTools: Array.isArray(body.claudeCode.allowedTools) ? body.claudeCode.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+      disallowedTools: Array.isArray(body.claudeCode.disallowedTools) ? body.claudeCode.disallowedTools.filter((t: unknown) => typeof t === "string") : undefined,
     };
   }
   if (body.enhancements && typeof body.enhancements === "object") {
