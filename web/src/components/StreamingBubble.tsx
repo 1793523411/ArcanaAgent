@@ -3,7 +3,7 @@ import type { AgentRole, StreamingStatus, ToolLog, TeamDef, AgentDef } from "../
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
-import { formatTokenCount } from "../utils/format";
+import { formatTokenCount, formatDuration } from "../utils/format";
 import { getRoleConfig } from "../constants/roles";
 
 interface PendingApproval {
@@ -141,6 +141,19 @@ export default function StreamingBubble({
   const [localProcessing, setLocalProcessing] = useState<Set<string>>(new Set());
   const processingApprovals = externalProcessing ?? localProcessing;
   const reasoningRef = useRef<HTMLDivElement>(null);
+
+  // 实时计时器
+  const startTimeRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isStreaming) return;
+    startTimeRef.current = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => {
+      setElapsed(Date.now() - startTimeRef.current);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isStreaming]);
 
   const handleApproval = useCallback(async (requestId: string, approved: boolean) => {
     if (onApproval) {
@@ -323,6 +336,14 @@ export default function StreamingBubble({
               title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
             >
               入 {formatTokenCount(usageTokens.promptTokens)} / 出 {formatTokenCount(usageTokens.completionTokens)}
+            </span>
+          )}
+          {isStreaming && elapsed >= 1000 && (
+            <span
+              className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0 tabular-nums"
+              title="Agent 工作耗时"
+            >
+              {formatDuration(elapsed)}
             </span>
           )}
         </div>

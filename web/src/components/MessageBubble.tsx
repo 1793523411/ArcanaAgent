@@ -4,7 +4,7 @@ import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
-import { formatTokenCount } from "../utils/format";
+import { formatTokenCount, formatDuration } from "../utils/format";
 import { getRoleConfig } from "../constants/roles";
 
 interface Props {
@@ -201,6 +201,14 @@ export default function MessageBubble({ message, conversationId, models = [], te
                 title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
               >
                 入 {formatTokenCount(message.usageTokens.promptTokens)} / 出 {formatTokenCount(message.usageTokens.completionTokens)}
+              </span>
+            )}
+            {!isHuman && message.durationMs != null && message.durationMs > 0 && (
+              <span
+                className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0 tabular-nums"
+                title="Agent 工作耗时"
+              >
+                {formatDuration(message.durationMs)}
               </span>
             )}
           </div>

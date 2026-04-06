@@ -930,6 +930,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         promptTokens: contextPromptTokens,
       };
     }
+    // 记录 Agent 工作耗时
+    const durationMs = requestTimer.elapsed();
+    if (lastAi) lastAi.durationMs = durationMs;
     if (toStore.length > 0 && !abortController.signal.aborted) {
       compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
