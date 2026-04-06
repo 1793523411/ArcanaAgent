@@ -2,6 +2,18 @@ import { BaseMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import { backgroundManager } from "./backgroundManager.js";
 import { getModelContextWindow } from "../config/models.js";
 
+// ── Agent Loop 终止原因 ──
+
+export type StopReason =
+  | "completed"             // 模型正常结束（无 tool_calls）
+  | "max_rounds"            // 达到 maxRounds 限制
+  | "aborted"               // 用户取消（AbortSignal）
+  | "harness_abort"         // Harness 中间件终止
+  | "context_overflow"      // 上下文溢出（压缩后仍超限）
+  | "model_error"           // 模型调用失败
+  | "tool_error_cascade"    // 连续多轮工具大面积失败
+  | "empty_response";       // 模型连续返回空内容
+
 export function getTextFromChunk(chunk: { content?: unknown }): string {
   const c = chunk.content;
   if (typeof c === "string") return c;

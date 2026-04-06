@@ -1,6 +1,17 @@
 /**
  * 直接调用 Chat Completions 流式接口并解析 delta.reasoning_content / delta.content / delta.tool_calls，
  * 供支持思考的模型使用（LangChain 可能不透传 reasoning_content）。
+ *
+ * 背景: OpenAI 兼容的 reasoning 模型 (DeepSeek-R1, QwQ 等) 在 SSE delta 中返回独立的
+ * reasoning_content 字段，但 LangChain 的 ChatOpenAI 不透传该字段，导致思考过程丢失。
+ * 因此本文件绕过 LangChain，直接构造 HTTP 请求并解析原始 SSE 流。
+ *
+ * 调用方: adapter.ts 中 OpenAICompatibleAdapter.streamSingleTurn()
+ * 对应: index.ts streamAgentWithTokens() 的路径 1
+ *
+ * [优化方向] 如果 LangChain ChatOpenAI 未来支持透传 reasoning_content，本文件可退役，
+ * 统一走 LangChain 标准 stream。但考虑到原生调用的控制力优势 (精确 usage、流式粒度)，
+ * 更推荐的方向是反过来——给 Anthropic 也写类似的原生调用，全部脱离 LangChain。
  */
 import type { BaseMessage } from "@langchain/core/messages";
 

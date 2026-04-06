@@ -42,6 +42,7 @@ import type { SubagentStreamEvent } from "../agent/index.js";
 import { streamHarnessAgent } from "../agent/harness/harnessDriver.js";
 import type { HarnessConfig } from "../agent/harness/types.js";
 import { approvalManager } from "../agent/approvalManager.js";
+import { getBuiltInRiskRules } from "../agent/riskDetection.js";
 import { getLLM } from "../llm/index.js";
 import { loadUserConfig, saveUserConfig, hasAnyEnhancement, type UserConfig, type ContextStrategyConfig, type PromptTemplate, type PlanningConfig, type ApprovalRule, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
 import { listToolIds } from "../tools/index.js";
@@ -146,6 +147,7 @@ type PersistedSubagentLog = {
     approved: boolean;
     createdAt: string;
   }>;
+  harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
   summary?: string;
   error?: string;
 };
@@ -154,6 +156,8 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
   const map = new Map<string, PersistedSubagentLog>();
   for (const ev of events) {
     if (!("subagentId" in ev)) continue;
+    // __main__ is a synthetic subagentId for main agent approval events — not a real subagent
+    if (ev.subagentId === "__main__") continue;
     const existing = map.get(ev.subagentId) ?? {
       subagentId: ev.subagentId,
       depth: 1,
@@ -256,6 +260,19 @@ function buildSubagentLogs(events: SubagentStreamEvent[]): PersistedSubagentLog[
       }
       continue;
     }
+    if (ev.kind === "harness") {
+      const cur = map.get(ev.subagentId) ?? existing;
+      const events = cur.harnessEvents ?? [];
+      const raw = ev as unknown as Record<string, unknown>;
+      const harnessKind = typeof raw.harnessKind === "string" ? raw.harnessKind : "unknown";
+      const data = (raw.data && typeof raw.data === "object" ? raw.data : {}) as Record<string, unknown>;
+      const timestamp = typeof raw.timestamp === "string" ? raw.timestamp : undefined;
+      map.set(ev.subagentId, {
+        ...cur,
+        harnessEvents: [...events, { kind: harnessKind, data, timestamp }],
+      });
+      continue;
+    }
   }
   return Array.from(map.values());
 }
@@ -273,6 +290,7 @@ function buildHarnessConfigFromEnhancements(e?: ExecutionEnhancementsConfig): Ha
   if (!e || !hasAnyEnhancement(e)) return undefined;
   return {
     evalEnabled: e.evalGuard,
+    evalSkipReadOnly: e.evalSkipReadOnly ?? true,
     loopDetectionEnabled: e.loopDetection,
     replanEnabled: e.replan,
     autoApproveReplan: e.autoApproveReplan,
@@ -913,6 +931,9 @@ export async function postConversationMessage(req: Request, res: Response): Prom
         promptTokens: contextPromptTokens,
       };
     }
+    // 记录 Agent 工作耗时
+    const durationMs = requestTimer.elapsed();
+    if (lastAi) lastAi.durationMs = durationMs;
     if (toStore.length > 0 && !abortController.signal.aborted) {
       compressTaskToolMessagesForStorage(toStore);
       appendMessages(id, toStore);
@@ -1062,7 +1083,8 @@ export function getConfig(_req: Request, res: Response): void {
   const toolIds = listToolIds();
   const models = listModels();
   const mcpStatus = getMcpStatus();
-  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus });
+  const builtInRiskRules = getBuiltInRiskRules();
+  res.json({ ...config, availableToolIds: toolIds, availableModels: models, mcpStatus, builtInRiskRules });
 }
 
 export function getModels(_req: Request, res: Response): void {
@@ -1355,7 +1377,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     templates?: PromptTemplate[];
     approvalRules?: ApprovalRule[];
     codeIndexStrategy?: string;
-    claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; allowedTools?: string[] };
+    claudeCode?: { enabled?: boolean; model?: string; maxTurns?: number; disallowedTools?: string[] };
     enhancements?: Partial<ExecutionEnhancementsConfig>;
   };
   const config = loadUserConfig();
@@ -1392,7 +1414,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       enabled: typeof body.claudeCode.enabled === "boolean" ? body.claudeCode.enabled : false,
       model: typeof body.claudeCode.model === "string" && body.claudeCode.model.trim() ? body.claudeCode.model.trim() : undefined,
       maxTurns: typeof body.claudeCode.maxTurns === "number" ? body.claudeCode.maxTurns : undefined,
-      allowedTools: Array.isArray(body.claudeCode.allowedTools) ? body.claudeCode.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+      disallowedTools: Array.isArray(body.claudeCode.disallowedTools) ? body.claudeCode.disallowedTools.filter((t: unknown) => typeof t === "string") : undefined,
     };
   }
   if (body.enhancements && typeof body.enhancements === "object") {
@@ -1401,6 +1423,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
     const e = body.enhancements;
     config.enhancements = {
       evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : prev.evalGuard,
+      evalSkipReadOnly: typeof e.evalSkipReadOnly === "boolean" ? e.evalSkipReadOnly : prev.evalSkipReadOnly,
       loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : prev.loopDetection,
       replan: typeof e.replan === "boolean" ? e.replan : prev.replan,
       autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : prev.autoApproveReplan,
@@ -1409,6 +1432,7 @@ export async function putConfig(req: Request, res: Response): Promise<void> {
       maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : prev.maxOuterRetries,
       loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : prev.loopWindowSize,
       loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : prev.loopSimilarityThreshold,
+      agentTimeoutMs: typeof e.agentTimeoutMs === "number" && e.agentTimeoutMs >= 60_000 && e.agentTimeoutMs <= 3_600_000 ? e.agentTimeoutMs : prev.agentTimeoutMs,
     };
   }
   saveUserConfig(config);
@@ -1788,6 +1812,15 @@ const agentDefBody = z.object({
   systemPrompt: z.string().max(5000).default(""),
   allowedTools: z.array(z.string()).default(["*"]),
   claudeCodeEnabled: z.boolean().optional().default(false),
+  harness: z.object({
+    loopDetection: z.boolean().optional(),
+    eval: z.boolean().optional(),
+    evalSkipReadOnly: z.boolean().optional(),
+    replan: z.boolean().optional(),
+    autoApproveReplan: z.boolean().optional(),
+    outerRetry: z.boolean().optional(),
+    timeoutMs: z.number().min(60000).max(3600000).optional(),
+  }).optional(),
 });
 
 export function postAgents(req: Request, res: Response): void {

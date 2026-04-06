@@ -1,6 +1,23 @@
 export type ConversationMode = "default" | "team";
 export type AgentRole = string;
 
+export interface AgentDefHarness {
+  /** 启用循环检测（零 token 成本，默认 true） */
+  loopDetection?: boolean;
+  /** 启用 Eval 步骤验证（每步一次 LLM 调用，默认 false） */
+  eval?: boolean;
+  /** 只读工具步骤跳过评估（默认 true） */
+  evalSkipReadOnly?: boolean;
+  /** 启用动态重规划（循环或 eval 失败时生成新计划，默认 false） */
+  replan?: boolean;
+  /** 自动批准重规划（默认 true，设为 false 时重规划仅作为建议注入） */
+  autoApproveReplan?: boolean;
+  /** 启用外层重试（整轮失败后从头重新执行，默认 false） */
+  outerRetry?: boolean;
+  /** 超时时间（毫秒），覆盖全局设置 */
+  timeoutMs?: number;
+}
+
 export interface AgentDef {
   id: string;
   name: string;
@@ -12,6 +29,8 @@ export interface AgentDef {
   builtIn: boolean;
   /** 是否启用 Claude Code 能力（仅在全局开启时生效） */
   claudeCodeEnabled?: boolean;
+  /** 子 agent Harness 配置（team 模式下生效） */
+  harness?: AgentDefHarness;
 }
 
 export interface TeamDef {
@@ -86,6 +105,8 @@ export interface SubagentLog {
   plan?: PlanLog;
   /** 审批记录（team 模式） */
   approvalLogs?: ApprovalLog[];
+  /** 子 agent Harness 事件（eval/loop_detection/replan） */
+  harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
   summary?: string;
   error?: string;
 }
@@ -110,6 +131,8 @@ export interface StoredMessage {
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  /** Agent 工作耗时（毫秒，仅 ai） */
+  durationMs?: number;
   contextUsage?: {
     strategy: "full" | "trim" | "compress";
     contextWindow: number;
@@ -191,12 +214,13 @@ export interface ClaudeCodeConfig {
   model?: string;
   /** 默认最大轮次 */
   maxTurns?: number;
-  /** 限制 Claude Code 可用工具 */
-  allowedTools?: string[];
+  /** 禁用的 Claude Code 工具 */
+  disallowedTools?: string[];
 }
 
 export interface ExecutionEnhancementsConfig {
   evalGuard: boolean;
+  evalSkipReadOnly: boolean;
   loopDetection: boolean;
   replan: boolean;
   autoApproveReplan: boolean;
@@ -205,6 +229,14 @@ export interface ExecutionEnhancementsConfig {
   maxOuterRetries: number;
   loopWindowSize: number;
   loopSimilarityThreshold: number;
+  agentTimeoutMs: number;
+}
+
+export interface BuiltInRiskRule {
+  name: string;
+  pattern: string;
+  operationType: "run_command" | "write_file";
+  category: "bypass_immune";
 }
 
 export interface UserConfig {
@@ -223,6 +255,8 @@ export interface UserConfig {
   claudeCode?: ClaudeCodeConfig;
   /** 执行增强配置 */
   enhancements?: ExecutionEnhancementsConfig;
+  /** 系统内置高危规则（只读，后端生成） */
+  builtInRiskRules?: BuiltInRiskRule[];
 }
 
 export type StreamingStatus = "thinking" | "tool" | null;

@@ -94,6 +94,8 @@ export interface StoredMessage {
   attachments?: StoredAttachment[];
   /** 本轮对话 token 消耗（仅 ai，由 API 或估算得到） */
   usageTokens?: { promptTokens: number; completionTokens: number; totalTokens: number };
+  /** Agent 工作耗时（毫秒，仅 ai） */
+  durationMs?: number;
   contextUsage?: {
     strategy: "full" | "trim" | "compress";
     contextWindow: number;

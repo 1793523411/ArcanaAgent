@@ -32,6 +32,7 @@ interface AgentFormData {
   systemPrompt: string;
   allowedTools: string[];
   claudeCodeEnabled?: boolean;
+  harness?: { loopDetection?: boolean; eval?: boolean; evalSkipReadOnly?: boolean; replan?: boolean; autoApproveReplan?: boolean; outerRetry?: boolean; timeoutMs?: number };
 }
 
 const emptyAgentForm: AgentFormData = {
@@ -42,20 +43,31 @@ const emptyAgentForm: AgentFormData = {
   systemPrompt: "",
   allowedTools: ["*"],
   claudeCodeEnabled: false,
+  harness: { loopDetection: true, eval: false, evalSkipReadOnly: true, replan: false, autoApproveReplan: true, outerRetry: false },
 };
 
 function AgentForm({
   initial,
   availableTools,
+  globalEnhancements,
   onSave,
   onCancel,
 }: {
   initial?: AgentFormData;
   availableTools: string[];
+  globalEnhancements?: { loopDetection?: boolean; evalGuard?: boolean; evalSkipReadOnly?: boolean; replan?: boolean; autoApproveReplan?: boolean; outerRetry?: boolean } | null;
   onSave: (data: AgentFormData) => void;
   onCancel: () => void;
 }) {
-  const [form, setForm] = useState<AgentFormData>(initial ?? emptyAgentForm);
+  const defaultHarness = {
+    loopDetection: globalEnhancements?.loopDetection ?? true,
+    eval: globalEnhancements?.evalGuard ?? false,
+    evalSkipReadOnly: globalEnhancements?.evalSkipReadOnly ?? true,
+    replan: globalEnhancements?.replan ?? false,
+    autoApproveReplan: true, // subagents default to auto-approve
+    outerRetry: globalEnhancements?.outerRetry ?? false,
+  };
+  const [form, setForm] = useState<AgentFormData>(initial ?? { ...emptyAgentForm, harness: defaultHarness });
 
   return (
     <div className="space-y-4">
@@ -180,6 +192,98 @@ function AgentForm({
         <p className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
           允许该 Agent 使用 Claude Code 进行自主编码（需全局开启 Claude Code）
         </p>
+      </div>
+
+      {/* Harness config */}
+      <div>
+        <label className="block text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>子 Agent Harness 防护配置</label>
+        <p className="text-xs mb-2" style={{ color: "var(--color-text-muted)", opacity: 0.7 }}>
+          Team 模式下按此配置生效，普通模式子 Agent 默认仅开启循环检测。数值参数继承全局「执行增强」设置。
+        </p>
+        <div className="space-y-1.5">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.harness?.loopDetection ?? true}
+              onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, loopDetection: e.target.checked } })}
+              className="border-[var(--color-border)]"
+            />
+            <span className="text-sm" style={{ color: "var(--color-text)" }}>循环检测</span>
+            <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（零成本，推荐开启）</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.harness?.eval ?? false}
+              onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, eval: e.target.checked } })}
+              className="border-[var(--color-border)]"
+            />
+            <span className="text-sm" style={{ color: "var(--color-text)" }}>步骤验证 (Eval)</span>
+            <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（每步消耗一次 LLM 调用）</span>
+          </label>
+          {form.harness?.eval && (
+            <label className="flex items-center gap-2 cursor-pointer ml-6">
+              <input
+                type="checkbox"
+                checked={form.harness?.evalSkipReadOnly ?? true}
+                onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, evalSkipReadOnly: e.target.checked } })}
+                className="border-[var(--color-border)]"
+              />
+              <span className="text-sm" style={{ color: "var(--color-text)" }}>跳过只读步骤</span>
+              <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（默认开启）</span>
+            </label>
+          )}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.harness?.replan ?? false}
+              onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, replan: e.target.checked } })}
+              className="border-[var(--color-border)]"
+            />
+            <span className="text-sm" style={{ color: "var(--color-text)" }}>动态重规划 (Replan)</span>
+            <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（遇到阻碍时自动换策略）</span>
+          </label>
+          {form.harness?.replan && (
+            <label className="flex items-center gap-2 cursor-pointer ml-6">
+              <input
+                type="checkbox"
+                checked={form.harness?.autoApproveReplan ?? true}
+                onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, autoApproveReplan: e.target.checked } })}
+                className="border-[var(--color-border)]"
+              />
+              <span className="text-sm" style={{ color: "var(--color-text)" }}>自动批准重规划</span>
+              <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（关闭后仅作为建议）</span>
+            </label>
+          )}
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.harness?.outerRetry ?? false}
+              onChange={(e) => setForm({ ...form, harness: { ...defaultHarness, ...form.harness, outerRetry: e.target.checked } })}
+              className="border-[var(--color-border)]"
+            />
+            <span className="text-sm" style={{ color: "var(--color-text)" }}>外层重试</span>
+            <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>（整轮失败后从头重新执行）</span>
+          </label>
+          <label className="space-y-1 mt-2">
+            <span className="text-sm" style={{ color: "var(--color-text)" }}>超时时间（分钟）</span>
+            <span className="text-xs block" style={{ color: "var(--color-text-muted)" }}>留空则跟随全局设置</span>
+            <input
+              type="number"
+              min={1}
+              max={60}
+              placeholder="跟随全局设置"
+              value={form.harness?.timeoutMs ? Math.round(form.harness.timeoutMs / 60000) : ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                const timeoutMs = raw === "" ? undefined : Math.max(1, Math.min(60, parseInt(raw) || 10)) * 60000;
+                setForm({ ...form, harness: { ...defaultHarness, ...form.harness, timeoutMs } });
+              }}
+              className="w-full px-3 py-2 rounded-lg text-sm"
+              style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            />
+          </label>
+        </div>
       </div>
 
       <div className="flex justify-end gap-2 pt-2">
@@ -351,6 +455,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
   const [agents, setAgents] = useState<AgentDef[]>([]);
   const [teams, setTeams] = useState<TeamDef[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [globalEnhancements, setGlobalEnhancements] = useState<{ loopDetection?: boolean; evalGuard?: boolean; evalSkipReadOnly?: boolean; replan?: boolean; autoApproveReplan?: boolean; outerRetry?: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
 
   // Agent editing
@@ -378,6 +483,9 @@ export default function AgentTeamPanel({ onClose }: Props) {
       setTeams(t);
       if (cfg.availableToolIds) {
         setAvailableTools(cfg.availableToolIds);
+      }
+      if (cfg.enhancements) {
+        setGlobalEnhancements(cfg.enhancements);
       }
       // Refresh the role display cache so TeamPanel/StreamingBubble/MessageBubble
       // pick up newly created or updated agents
@@ -537,6 +645,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                   <AgentForm
                     key={editingAgentId ?? (aiGeneratedData ? "ai" : "manual")}
                     availableTools={availableTools}
+                    globalEnhancements={globalEnhancements}
                     initial={editingAgent ? {
                       name: editingAgent.name,
                       description: editingAgent.description,
@@ -545,6 +654,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                       systemPrompt: editingAgent.systemPrompt,
                       allowedTools: editingAgent.allowedTools,
                       claudeCodeEnabled: editingAgent.claudeCodeEnabled ?? false,
+                      harness: editingAgent.harness ?? { loopDetection: true, eval: false, evalSkipReadOnly: true, replan: false, autoApproveReplan: true, outerRetry: false },
                     } : aiGeneratedData ?? undefined}
                     onSave={handleSaveAgent}
                     onCancel={() => { setEditingAgentId(null); setCreatingAgent(false); setAiGeneratedData(null); }}

@@ -5,6 +5,23 @@ import { listToolIds } from "../tools/index.js";
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const AGENTS_FILE = join(DATA_DIR, "agents.json");
 
+export interface AgentDefHarness {
+  /** 启用循环检测（零 token 成本，默认 true） */
+  loopDetection?: boolean;
+  /** 启用 Eval 步骤验证（每步一次 LLM 调用，默认 false） */
+  eval?: boolean;
+  /** 只读工具步骤跳过评估（默认 true） */
+  evalSkipReadOnly?: boolean;
+  /** 启用动态重规划（循环或 eval 失败时生成新计划，默认 false） */
+  replan?: boolean;
+  /** 自动批准重规划（默认 true，设为 false 时重规划仅作为建议注入） */
+  autoApproveReplan?: boolean;
+  /** 启用外层重试（整轮失败后从头重新执行，默认 false） */
+  outerRetry?: boolean;
+  /** 超时时间（毫秒），覆盖全局设置 */
+  timeoutMs?: number;
+}
+
 export interface AgentDef {
   id: string;
   name: string;
@@ -17,6 +34,8 @@ export interface AgentDef {
   builtIn: boolean;
   /** 是否启用 Claude Code 能力（仅在全局开启时生效） */
   claudeCodeEnabled?: boolean;
+  /** 子 agent Harness 配置（team 模式下生效）。未设置时使用默认值：仅开启 loopDetection。 */
+  harness?: AgentDefHarness;
 }
 
 /** Wildcard value meaning "all tools are allowed" */
@@ -58,6 +77,7 @@ Your job is to implement code changes according to the plan or instructions give
 - If tests are needed, write them alongside the implementation.`,
     allowedTools: ["*"],
     builtIn: true,
+    harness: { loopDetection: true, eval: false, replan: true, outerRetry: false },
   },
   {
     id: "reviewer",
@@ -93,6 +113,7 @@ Your job is to validate that the implementation works correctly.
 - Report: tests passed/failed, coverage gaps, and any issues found.`,
     allowedTools: ["*"],
     builtIn: true,
+    harness: { loopDetection: true, eval: false, replan: true, outerRetry: false },
   },
 ];
 
@@ -141,7 +162,8 @@ export function ensureBuiltInAgents(): void {
         ex.name !== builtin.name ||
         ex.icon !== builtin.icon ||
         ex.color !== builtin.color ||
-        JSON.stringify(ex.allowedTools) !== JSON.stringify(builtin.allowedTools)
+        JSON.stringify(ex.allowedTools) !== JSON.stringify(builtin.allowedTools) ||
+        JSON.stringify(ex.harness) !== JSON.stringify(builtin.harness)
       ) {
         const idx = existing.findIndex((a) => a.id === builtin.id);
         if (idx >= 0) {

@@ -88,8 +88,15 @@ class AnthropicAdapter implements ModelAdapter {
   }
 
   supportsReasoningStream(): boolean {
-    // Anthropic 思考内容通过 LangChain ChatAnthropic content blocks 返回，
-    // 不走 OpenAI-compatible reasoning stream 路径
+    // Anthropic 的 thinking 内容通过 LangChain ChatAnthropic 的 content blocks 原生返回
+    // (content 数组中 type="thinking" 的块)，不需要像 OpenAI 兼容模型那样绕过 LangChain。
+    // OpenAI 兼容模型的 reasoning_content 是独立字段，LangChain ChatOpenAI 不透传，
+    // 所以才需要 streamWithReasoning.ts 直接调原生 HTTP API。
+    //
+    // [优化方向] 如果未来要统一为生产级架构，可以给 AnthropicAdapter 也实现
+    // streamSingleTurn()（直接调 Anthropic /v1/messages SSE），这样就能删除
+    // index.ts 中的 LangChain fallback 路径 (路径 2)，将两套 ~200 行的重复循环
+    // 合并为一套，降低维护成本。当前方案功能无损，优先级不高。
     return false;
   }
 

@@ -2,10 +2,28 @@ import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import { getLLM } from "../llm/index.js";
 import type { StoredMessage } from "../storage/index.js";
 
-const SYSTEM_INSTRUCTION = `你是对话摘要器。只输出对话的摘要内容，禁止任何自我介绍、开场白或说明。
-摘要需保留：角色设定、场景/剧情、用户偏好、关键决定、重要事实。若为角色扮演，写出场景、双方角色、剧情进展。用中文，150-250字。`;
+const SYSTEM_INSTRUCTION = `你是结构化对话摘要器。严格按以下格式输出，不要任何开场白或说明。
+每个部分如果没有相关信息则输出"（无）"。
 
-const USER_TEMPLATE = `请将以下对话压缩成摘要：\n\n`;
+## 当前目标
+（用户最新的请求/目标，1-2句话）
+
+## 关键决策
+（已做出的重要决定，每条一行，用 - 开头）
+
+## 已修改文件
+（文件路径列表，每个一行，用 - 开头。若无文件操作则写"（无）"）
+
+## 遇到的错误
+（关键错误及其解决状态，每条一行）
+
+## 进行中的任务
+（尚未完成的工作项）
+
+## 重要上下文
+（需要记住的关键事实、用户偏好、技术约束等）`;
+
+const USER_TEMPLATE = `请将以下对话压缩为结构化摘要。注意提取文件路径、错误信息、用户决策等关键信息：\n\n`;
 
 function messagesToText(msgs: StoredMessage[]): string {
   const parts: string[] = [];

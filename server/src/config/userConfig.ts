@@ -65,13 +65,22 @@ export interface ApprovalRule {
 }
 
 export const defaultApprovalRules: ApprovalRule[] = [
-  {
-    id: "builtin_kill_port",
-    name: "禁止 kill 3000/3001 端口",
-    pattern: "(kill.*30(00|01))|(30(00|01).*kill)|(fuser\\s+-k\\s+30(00|01))",
-    operationType: "run_command",
-    enabled: true,
-  },
+  // ── High-risk command patterns (可由用户禁用) ──
+  // 注：git push --force/f 已由 BYPASS_IMMUNE 永久拦截，无需在此重复
+  { id: "builtin_rm_rf", name: "rm -rf / rm -r", pattern: "\\brm\\s+(-[^\\s]*\\s+)*-[^\\s]*r", operationType: "run_command", enabled: true },
+  { id: "builtin_rm_recursive", name: "rm --recursive", pattern: "\\brm\\s+.*--recursive", operationType: "run_command", enabled: true },
+  { id: "builtin_git_reset_hard", name: "git reset --hard", pattern: "\\bgit\\s+reset\\s+--hard", operationType: "run_command", enabled: true },
+  { id: "builtin_drop_table", name: "DROP TABLE/DATABASE", pattern: "\\bDROP\\s+(TABLE|DATABASE)", operationType: "run_command", enabled: true },
+  { id: "builtin_delete_from", name: "DELETE FROM", pattern: "\\bDELETE\\s+FROM\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_truncate", name: "TRUNCATE TABLE", pattern: "\\bTRUNCATE\\s+TABLE", operationType: "run_command", enabled: true },
+  { id: "builtin_git_clean", name: "git clean -f", pattern: "\\bgit\\s+clean\\s+-[^\\s]*f", operationType: "run_command", enabled: true },
+  { id: "builtin_chmod_777", name: "chmod 777", pattern: "\\bchmod\\s+777\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_kill_9", name: "kill -9", pattern: "\\bkill\\s+-9\\b", operationType: "run_command", enabled: true },
+  { id: "builtin_kill_port", name: "禁止 kill 3000/3001 端口", pattern: "(kill.*30(00|01))|(30(00|01).*kill)|(fuser\\s+-k\\s+30(00|01))", operationType: "run_command", enabled: true },
+  // ── High-risk write patterns (可由用户禁用) ──
+  // 注：.env/.pem/.key/credentials 写入已由 BYPASS_IMMUNE 永久拦截，无需在此重复
+  { id: "builtin_write_config_json", name: "写入 config.json", pattern: "config\\.json$", operationType: "write_file", enabled: true },
+  { id: "builtin_write_gitignore", name: "写入 .gitignore", pattern: "\\.gitignore$", operationType: "write_file", enabled: true },
 ];
 
 export type CodeIndexStrategy = "none" | "repomap" | "vector";
@@ -83,13 +92,15 @@ export interface ClaudeCodeConfig {
   model?: string;
   /** 默认最大轮次 */
   maxTurns?: number;
-  /** 限制 Claude Code 可用工具 */
-  allowedTools?: string[];
+  /** 禁用的 Claude Code 工具 */
+  disallowedTools?: string[];
 }
 
 export interface ExecutionEnhancementsConfig {
   /** LLM 评估 plan step 完成质量 */
   evalGuard: boolean;
+  /** 只读工具步骤跳过评估（skip tier） */
+  evalSkipReadOnly: boolean;
   /** 纯算法检测工具调用循环 */
   loopDetection: boolean;
   /** 失败/循环时动态重规划 */
@@ -106,10 +117,13 @@ export interface ExecutionEnhancementsConfig {
   loopWindowSize: number;
   /** trigram Jaccard 相似度阈值（0-1） */
   loopSimilarityThreshold: number;
+  /** 子 agent 超时时间（毫秒），默认 600000（10 分钟） */
+  agentTimeoutMs: number;
 }
 
 export const defaultEnhancements: ExecutionEnhancementsConfig = {
   evalGuard: false,
+  evalSkipReadOnly: true,
   loopDetection: false,
   replan: false,
   autoApproveReplan: false,
@@ -118,6 +132,7 @@ export const defaultEnhancements: ExecutionEnhancementsConfig = {
   maxOuterRetries: 2,
   loopWindowSize: 6,
   loopSimilarityThreshold: 0.7,
+  agentTimeoutMs: 600_000,
 };
 
 export interface UserConfig {
@@ -203,23 +218,33 @@ export function loadUserConfig(): UserConfig {
         });
         return acc;
       }, []),
-      approvalRules: approvalRulesRaw
-        ? approvalRulesRaw.reduce<ApprovalRule[]>((acc, item) => {
-            if (!item || typeof item !== "object") return acc;
-            const rule = item as Partial<ApprovalRule>;
-            if (typeof rule.id !== "string" || typeof rule.name !== "string" || typeof rule.pattern !== "string") return acc;
-            const opType = rule.operationType;
-            if (opType !== "run_command" && opType !== "write_file" && opType !== "edit_file") return acc;
-            acc.push({
-              id: rule.id,
-              name: rule.name,
-              pattern: rule.pattern,
-              operationType: opType,
-              enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
-            });
-            return acc;
-          }, [])
-        : [...defaultApprovalRules],
+      approvalRules: (() => {
+        const parsed_rules = approvalRulesRaw
+          ? approvalRulesRaw.reduce<ApprovalRule[]>((acc, item) => {
+              if (!item || typeof item !== "object") return acc;
+              const rule = item as Partial<ApprovalRule>;
+              if (typeof rule.id !== "string" || typeof rule.name !== "string" || typeof rule.pattern !== "string") return acc;
+              const opType = rule.operationType;
+              if (opType !== "run_command" && opType !== "write_file" && opType !== "edit_file") return acc;
+              acc.push({
+                id: rule.id,
+                name: rule.name,
+                pattern: rule.pattern,
+                operationType: opType,
+                enabled: typeof rule.enabled === "boolean" ? rule.enabled : true,
+              });
+              return acc;
+            }, [])
+          : [...defaultApprovalRules];
+        // Ensure all builtin rules are present (migrate new defaults into existing config)
+        const existingIds = new Set(parsed_rules.map((r) => r.id));
+        for (const builtin of defaultApprovalRules) {
+          if (!existingIds.has(builtin.id)) {
+            parsed_rules.push({ ...builtin });
+          }
+        }
+        return parsed_rules;
+      })(),
       codeIndexStrategy: (() => {
         const val = (parsed as Record<string, unknown>).codeIndexStrategy;
         if (val === "none" || val === "repomap" || val === "vector") return val;
@@ -233,7 +258,7 @@ export function loadUserConfig(): UserConfig {
           enabled: typeof cc.enabled === "boolean" ? cc.enabled : false,
           model: typeof cc.model === "string" ? cc.model : undefined,
           maxTurns: typeof cc.maxTurns === "number" ? cc.maxTurns : undefined,
-          allowedTools: Array.isArray(cc.allowedTools) ? cc.allowedTools.filter((t: unknown) => typeof t === "string") : undefined,
+          disallowedTools: Array.isArray(cc.disallowedTools) ? cc.disallowedTools.filter((t: unknown) => typeof t === "string") : undefined,
         };
       })(),
       enhancements: (() => {
@@ -243,6 +268,7 @@ export function loadUserConfig(): UserConfig {
         const d = defaultEnhancements;
         return {
           evalGuard: typeof e.evalGuard === "boolean" ? e.evalGuard : d.evalGuard,
+          evalSkipReadOnly: typeof e.evalSkipReadOnly === "boolean" ? e.evalSkipReadOnly : d.evalSkipReadOnly,
           loopDetection: typeof e.loopDetection === "boolean" ? e.loopDetection : d.loopDetection,
           replan: typeof e.replan === "boolean" ? e.replan : d.replan,
           autoApproveReplan: typeof e.autoApproveReplan === "boolean" ? e.autoApproveReplan : d.autoApproveReplan,
@@ -251,6 +277,7 @@ export function loadUserConfig(): UserConfig {
           maxOuterRetries: typeof e.maxOuterRetries === "number" && e.maxOuterRetries > 0 ? e.maxOuterRetries : d.maxOuterRetries,
           loopWindowSize: typeof e.loopWindowSize === "number" && e.loopWindowSize >= 3 ? e.loopWindowSize : d.loopWindowSize,
           loopSimilarityThreshold: typeof e.loopSimilarityThreshold === "number" && e.loopSimilarityThreshold > 0 && e.loopSimilarityThreshold <= 1 ? e.loopSimilarityThreshold : d.loopSimilarityThreshold,
+          agentTimeoutMs: typeof e.agentTimeoutMs === "number" && e.agentTimeoutMs >= 60_000 && e.agentTimeoutMs <= 3_600_000 ? e.agentTimeoutMs : d.agentTimeoutMs,
         };
       })(),
     };

@@ -4,7 +4,8 @@ import MarkdownContent from "./MarkdownContent";
 import AttachmentStrip from "./AttachmentStrip";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
-import { formatTokenCount } from "../utils/format";
+import { formatTokenCount, formatDuration } from "../utils/format";
+import { groupByDriverIteration, iterationSummary } from "../utils/harnessUtils";
 import { getRoleConfig } from "../constants/roles";
 
 interface Props {
@@ -87,6 +88,8 @@ export default function MessageBubble({ message, conversationId, models = [], te
       ? Math.max(...harness.driverEvents.map((e) => e.iteration)) + 1
       : 0;
   const [harnessCollapsed, setHarnessCollapsed] = useState(true);
+  const [harnessRoundExpanded, setHarnessRoundExpanded] = useState<Record<string, boolean>>({});
+  const harnessIterations = useMemo(() => groupByDriverIteration(harness?.events ?? [], harness?.driverEvents), [harness?.events, harness?.driverEvents]);
   const [iterationsCollapsed, setIterationsCollapsed] = useState(true);
   const hasSubagents = message.type === "ai" && subagents.length > 0;
   const runningSubagents = subagents.filter((s) => s.phase === "started").length;
@@ -117,7 +120,7 @@ export default function MessageBubble({ message, conversationId, models = [], te
     setSubagentCollapsedMap((prev) => ({ ...prev, [subagentId]: !prev[subagentId] }));
   };
 
-  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content") => {
+  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content" | "harness") => {
     const key = `${subagentId}:${section}`;
     setSubSectionCollapsedMap((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -201,6 +204,14 @@ export default function MessageBubble({ message, conversationId, models = [], te
                 title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
               >
                 入 {formatTokenCount(message.usageTokens.promptTokens)} / 出 {formatTokenCount(message.usageTokens.completionTokens)}
+              </span>
+            )}
+            {!isHuman && message.durationMs != null && message.durationMs > 0 && (
+              <span
+                className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0 tabular-nums"
+                title="Agent 工作耗时"
+              >
+                {formatDuration(message.durationMs)}
               </span>
             )}
           </div>
@@ -326,45 +337,84 @@ export default function MessageBubble({ message, conversationId, models = [], te
                     {" "}(共 {driverRoundCount} 轮)
                   </div>
                 )}
-                {harness!.events.map((evt, idx) => {
-                  if (evt.kind === "eval") {
-                    const v = evt.data.verdict;
-                    const borderCls = v === "pass"
-                      ? "border-[var(--color-success-border)]"
-                      : v === "weak" || v === "inconclusive"
-                        ? "border-yellow-500/60"
-                        : "border-[var(--color-error-text)]/60";
-                    const icon = v === "pass" ? "✅" : v === "weak" ? "⚠️" : v === "inconclusive" ? "ℹ️" : "❌";
+                {(() => {
+                  const iterations = harnessIterations;
+                  const hasMultipleIterations = iterations.length > 1;
+                  return iterations.map((iter) => {
+                    const isLastIter = iter.iteration === iterations[iterations.length - 1].iteration;
+                    const isEarlierIter = hasMultipleIterations && !isLastIter;
+                    const expanded = !!harnessRoundExpanded[iter.iteration];
+
+                    if (isEarlierIter && !expanded) {
+                      return (
+                        <button
+                          key={`iter-${iter.iteration}`}
+                          type="button"
+                          onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [iter.iteration]: true }))}
+                          className="w-full text-left text-[12px] px-2 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer opacity-60"
+                        >
+                          <span className="select-none mr-1">▶</span>
+                          {iterationSummary(iter)}
+                        </button>
+                      );
+                    }
+
                     return (
-                      <div key={`h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border ${borderCls} bg-[var(--color-bg)]`}>
-                        <div>{icon} 步骤 {evt.data.stepIndex + 1} 评估: <span className="font-medium">{v}</span></div>
-                        <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.reason}</div>
-                      </div>
-                    );
-                  }
-                  if (evt.kind === "loop_detection" && evt.data.detected) {
-                    return (
-                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-yellow-500/60 bg-[var(--color-bg)]">
-                        <div>🔄 循环检测: {evt.data.type === "exact_cycle" ? "精确循环" : "语义停滞"}</div>
-                        {evt.data.description && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.description}</div>}
-                      </div>
-                    );
-                  }
-                  if (evt.kind === "replan" && evt.data.shouldReplan) {
-                    return (
-                      <div key={`h-${idx}`} className="text-[12px] px-2 py-1.5 rounded border border-blue-500/60 bg-[var(--color-bg)]">
-                        <div>🔀 {evt.data.pendingApproval ? "重规划建议" : "已重规划"} (触发: {evt.data.trigger === "eval_fail" ? "评估失败" : "循环检测"})</div>
-                        {evt.data.pendingApproval && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">仅作为参考建议，未自动应用</div>}
-                        {evt.data.revisedSteps && (
-                          <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
-                            新步骤: {evt.data.revisedSteps.map(s => s.title).join(" → ")}
-                          </div>
+                      <div key={`iter-${iter.iteration}`} className="space-y-1.5">
+                        {isEarlierIter && (
+                          <button
+                            type="button"
+                            onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [iter.iteration]: false }))}
+                            className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer opacity-60"
+                          >
+                            <span className="select-none mr-1">▼</span>
+                            {iterationSummary(iter)}
+                          </button>
                         )}
+                        {iter.events.length === 0 ? null : iter.events.map((evt, idx) => {
+                          if (evt.kind === "eval") {
+                            const v = evt.data.verdict;
+                            const borderCls = v === "pass"
+                              ? "border-[var(--color-success-border)]"
+                              : v === "weak" || v === "inconclusive"
+                                ? "border-yellow-500/60"
+                                : "border-[var(--color-error-text)]/60";
+                            const icon = v === "pass" ? "✅" : v === "weak" ? "⚠️" : v === "inconclusive" ? "ℹ️" : "❌";
+                            const replanLabel = hasMultipleIterations && isLastIter ? " (重试后)" : "";
+                            return (
+                              <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border ${borderCls} bg-[var(--color-bg)] ${isEarlierIter ? "opacity-60" : ""}`}>
+                                <div>{icon} 步骤 {(evt.data.stepIndex as number) + 1} 评估{replanLabel}: <span className="font-medium">{v as string}</span></div>
+                                <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{evt.data.reason as string}</div>
+                              </div>
+                            );
+                          }
+                          if (evt.kind === "loop_detection" && evt.data.detected) {
+                            return (
+                              <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border border-yellow-500/60 bg-[var(--color-bg)] ${isEarlierIter ? "opacity-60" : ""}`}>
+                                <div>🔄 循环检测: {evt.data.type === "exact_cycle" ? "精确循环" : "语义停滞"}</div>
+                                {!!evt.data.description && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{String(evt.data.description)}</div>}
+                              </div>
+                            );
+                          }
+                          if (evt.kind === "replan" && evt.data.shouldReplan) {
+                            return (
+                              <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1.5 rounded border border-blue-500/60 bg-[var(--color-bg)] ${isEarlierIter ? "opacity-60" : ""}`}>
+                                <div>🔀 {evt.data.pendingApproval ? "重规划建议" : "已重规划"} (触发: {evt.data.trigger === "eval_fail" ? "评估失败" : "循环检测"})</div>
+                                {!!evt.data.pendingApproval && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">仅作为参考建议，未自动应用</div>}
+                                {!!evt.data.revisedSteps && (
+                                  <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">
+                                    新步骤: {(evt.data.revisedSteps as Array<{ title: string }>).map(s => s.title).join(" → ")}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          return null;
+                        })}
                       </div>
                     );
-                  }
-                  return null;
-                })}
+                  });
+                })()}
               </div>
             )}
           </div>
@@ -475,6 +525,98 @@ export default function MessageBubble({ message, conversationId, models = [], te
                         )}
                       </div>
                     )}
+                    {/* ── Per-subagent harness events ── */}
+                    {!subCollapsed && s.harnessEvents && s.harnessEvents.length > 0 && (() => {
+                      const subHarnessKey = `${s.subagentId}:harness`;
+                      const subHarnessCollapsed = !!subSectionCollapsedMap[subHarnessKey];
+                      const subIterations = groupByDriverIteration(s.harnessEvents);
+                      const hasMultiSubIters = subIterations.length > 1;
+                      return (
+                      <div className="mt-2">
+                        <button type="button" onClick={() => toggleSubSection(s.subagentId, "harness")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                          {subHarnessCollapsed ? "▶" : "▼"} 执行监控 ({s.harnessEvents.length})
+                        </button>
+                        {!subHarnessCollapsed && (
+                        <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+                          <div className="space-y-1">
+                            {subIterations.map((iter) => {
+                              const isLastSubIter = iter.iteration === subIterations[subIterations.length - 1].iteration;
+                              const isEarlierSubIter = hasMultiSubIters && !isLastSubIter;
+                              const subIterExpanded = !!harnessRoundExpanded[`sub-${s.subagentId}-${iter.iteration}`];
+
+                              if (isEarlierSubIter && !subIterExpanded) {
+                                return (
+                                  <button
+                                    key={`sub-iter-${iter.iteration}`}
+                                    type="button"
+                                    onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [`sub-${s.subagentId}-${iter.iteration}`]: true }))}
+                                    className="w-full text-left text-[12px] px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer opacity-60"
+                                  >
+                                    <span className="select-none mr-1">▶</span>
+                                    {iterationSummary(iter)}
+                                  </button>
+                                );
+                              }
+
+                              return (
+                                <div key={`sub-iter-${iter.iteration}`} className="space-y-1">
+                                  {isEarlierSubIter && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [`sub-${s.subagentId}-${iter.iteration}`]: false }))}
+                                      className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer opacity-60"
+                                    >
+                                      <span className="select-none mr-1">▼</span>
+                                      {iterationSummary(iter)}
+                                    </button>
+                                  )}
+                                  {iter.events.length === 0 ? null : iter.events.map((evt, hIdx) => {
+                                    if (evt.kind === "eval") {
+                                      const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
+                                      const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
+                                      const color = d.verdict === "pass"
+                                        ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
+                                        : d.verdict === "weak" || d.verdict === "inconclusive"
+                                          ? "border-yellow-500/30 bg-yellow-500/5"
+                                          : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+                                      const replanLabel = hasMultiSubIters && isLastSubIter ? " (重试后)" : "";
+                                      return (
+                                        <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border ${color} ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                          {icon} 步骤 {(d.stepIndex ?? 0) + 1} 评估{replanLabel}: <span className="font-medium">{d.verdict}</span>
+                                          {d.reason && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{d.reason}</div>}
+                                        </div>
+                                      );
+                                    }
+                                    if (evt.kind === "loop_detection") {
+                                      const d = evt.data as { detected?: boolean; description?: string };
+                                      if (!d.detected) return null;
+                                      return (
+                                        <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5 ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                          🔄 循环检测：{d.description}
+                                        </div>
+                                      );
+                                    }
+                                    if (evt.kind === "replan") {
+                                      const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
+                                      if (!d.shouldReplan && !d.pendingApproval) return null;
+                                      return (
+                                        <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5 ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                          🔀 {d.pendingApproval ? "重规划建议" : "已重规划"}
+                                          {d.trigger && <span className="opacity-70"> (触发: {d.trigger === "eval_fail" ? "评估失败" : "循环检测"})</span>}
+                                        </div>
+                                      );
+                                    }
+                                    return null;
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                        )}
+                      </div>
+                      );
+                    })()}
                     {!subCollapsed && hasSubTools && (
                       <div className="mt-2">
                         <button type="button" onClick={() => toggleSubSection(s.subagentId, "tools")} className="text-[11px] text-[var(--color-text-muted)] mb-1">

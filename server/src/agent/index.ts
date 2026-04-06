@@ -9,6 +9,7 @@ import { serverLogger } from "../lib/logger.js";
 import { buildPlanningPrelude } from "./planning.js";
 import { buildRuntimeTools, injectStreamAgent } from "./toolBuilder.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
+import { isReadOnlyTool } from "../tools/index.js";
 import {
   getTextFromChunk,
   getTextFromMessage,
@@ -26,6 +27,7 @@ import {
   MAX_CONVERSATION_TOKENS,
   truncateToolResult,
   resolveConversationTokenCap,
+  type StopReason,
 } from "./messageUtils.js";
 import { pruneConversationIfNeeded } from "./pruning.js";
 import {
@@ -43,6 +45,7 @@ export type { ConversationMode } from "./systemPrompt.js";
 export type { PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
 export type { HarnessConfig, HarnessEvent } from "./harness/types.js";
 export type { HarnessDriverConfig, HarnessDriverEvent } from "./harness/harnessDriver.js";
+export type { StopReason } from "./messageUtils.js";
 export { streamHarnessAgent } from "./harness/harnessDriver.js";
 
 type MessagesState = typeof MessagesAnnotation.State;
@@ -163,6 +166,14 @@ export async function runAgent(
   return result.messages;
 }
 
+/** Shared helper — creates an emitStop function that sets the local variable and notifies the caller. */
+function makeEmitStop(
+  setter: (reason: StopReason) => void,
+  options?: StreamAgentOptions
+): (reason: StopReason) => void {
+  return (reason: StopReason) => { setter(reason); options?.onStopReason?.(reason); };
+}
+
 export async function* streamAgentWithTokens(
   messages: BaseMessage[],
   onToken: (token: string) => void,
@@ -170,7 +181,7 @@ export async function* streamAgentWithTokens(
   onReasoningToken?: (token: string) => void,
   skillContext?: string,
   options?: StreamAgentOptions
-): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown> {
+): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number } | { reason: StopReason }>, void, unknown> {
   const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements);
   const systemMessage = new SystemMessage(systemPromptText);
   const adapter = getModelAdapter(modelId);
@@ -335,46 +346,65 @@ export async function* streamAgentWithTokens(
 
     const hasDependencies = Array.from(taskDeps.values()).some((deps) => deps.length > 0);
 
-    // Circular dependency detection: build a graph of subagentId references
-    // Since dependsOn uses subagentIds (not tc.ids), we detect cycles among
-    // the declared dependency values. If a cycle is detected, fall back to sequential.
+    // If there are task dependencies, run everything sequentially (original behavior)
     if (hasDependencies) {
-      const allDepIds = new Set<string>();
-      for (const deps of taskDeps.values()) {
-        for (const d of deps) allDepIds.add(d);
-      }
-      // Simple: if any depId is referenced by multiple tasks as mutual dependency, warn
-      // Full cycle detection would require knowing subagentId→tc.id mapping which we don't have yet.
-      // Sequential execution inherently prevents deadlocks anyway.
-    }
-
-    const outputs: Array<{ id: string; name: string; result: string }> = [];
-    if (hasDependencies) {
-      // Sequential execution: run all tool calls in order so dependsOn results
-      // are available in subagentResults by the time dependent tasks run.
+      const outputs: Array<{ id: string; name: string; result: string }> = [];
       for (const tc of toolCalls) {
         outputs.push(await executeToolCall(tc, toolMap));
       }
-    } else {
-      // Parallel execution: start all tasks concurrently, run non-tasks inline
-      const taskPromiseMap = new Map<string, Promise<{ id: string; name: string; result: string }>>();
-      for (const tc of toolCalls) {
-        if (tc.name === "task") {
-          taskPromiseMap.set(tc.id, executeToolCall(tc, toolMap));
-        }
-      }
-      for (const tc of toolCalls) {
-        if (tc.name === "task") {
-          const taskResult = await taskPromiseMap.get(tc.id);
-          outputs.push(taskResult ?? { id: tc.id, name: tc.name, result: "[error] Unknown task execution failure" });
-        } else {
-          outputs.push(await executeToolCall(tc, toolMap));
-        }
-      }
+      return outputs;
     }
-    return outputs;
+
+    // ── Read/Write Lock Semantics ──
+    // - Read-only tools: execute in parallel (Promise.all)
+    // - Write tools: execute sequentially
+    // - Mixed batch: parallel reads first, then sequential writes
+    // - task tools: always parallel (as before)
+    const reads: ToolCallResult[] = [];
+    const writes: ToolCallResult[] = [];
+    const tasks: ToolCallResult[] = [];
+
+    for (const tc of toolCalls) {
+      if (tc.name === "task") tasks.push(tc);
+      else if (isReadOnlyTool(tc.name)) reads.push(tc);
+      else writes.push(tc);
+    }
+
+    const resultMap = new Map<string, { id: string; name: string; result: string }>();
+
+    // Phase 1: Execute reads + tasks in parallel
+    const parallelCalls = [...reads, ...tasks];
+    if (parallelCalls.length > 0) {
+      const parallelResults = await Promise.all(
+        parallelCalls.map((tc) => executeToolCall(tc, toolMap))
+      );
+      for (const r of parallelResults) resultMap.set(r.id, r);
+    }
+
+    // Phase 2: Execute writes sequentially
+    for (const tc of writes) {
+      const result = await executeToolCall(tc, toolMap);
+      resultMap.set(result.id, result);
+    }
+
+    // Return in original order
+    return toolCalls.map((tc) =>
+      resultMap.get(tc.id) ?? { id: tc.id, name: tc.name, result: "[error] Unknown execution failure" }
+    );
   };
 
+  // ── 双路径架构 ──
+  // 路径 1 (下方 if 块): adapter.streamSingleTurn() — 直接调原生 HTTP API
+  //   - 适用于: OpenAI 兼容的 reasoning 模型 (DeepSeek-R1, QwQ 等)
+  //   - 优势: 精确提取 reasoning_content、usage 等 LangChain 不透传的字段
+  // 路径 2 (if 块之后): model.stream() — 通过 LangChain 标准 stream
+  //   - 适用于: Anthropic 模型 (thinking 通过 content blocks 原生支持) + 非 reasoning 的 OpenAI 模型
+  //   - 同时作为路径 1 的 fallback (路径 1 整体 try-catch 失败时降级)
+  //   - 损失: OpenAI reasoning 模型降级到此路径时会丢失 reasoning_content
+  // 两条路径的业务逻辑 (Planning/Harness/Pruning/错误恢复) 完全相同，仅 LLM 调用方式不同。
+  //
+  // [优化方向] 给 AnthropicAdapter 也实现 streamSingleTurn()，统一走路径 1，
+  // 删除路径 2 的 ~200 行重复循环代码。详见 adapter.ts AnthropicAdapter.supportsReasoningStream() 注释。
   if (useReasoningStream) {
     try {
       const tools = buildRuntimeTools(options, { modelId, skillContext, options });
@@ -385,19 +415,60 @@ export async function* streamAgentWithTokens(
 
       let lastHadContent = false;
       let reachedMaxRounds = false;
+      let stopReason: StopReason = "completed";
+      const emitStop = makeEmitStop((r) => { stopReason = r; }, options);
+
+      // ── Continue Site counters (prevent infinite recovery loops) ──
+      let modelErrorCount = 0;
+      let toolCascadeCount = 0;
+      const MAX_MODEL_ERRORS = 3;
+      const MAX_TOOL_CASCADES = 3;
+
       for (let round = 0; round < maxRounds; round++) {
         // Check abort signal at the start of each round
         if (options?.abortSignal?.aborted) {
           serverLogger.info("[stream] Aborted by signal, stopping execution");
+          emitStop("aborted");
+          yield { stop: { reason: "aborted" as StopReason } };
           return;
         }
         const bgMessage = buildBackgroundResultMessage();
         if (bgMessage) conversationMessages = [...conversationMessages, bgMessage];
         // Prune old tool results to stay within context window
         conversationMessages = pruneConversationIfNeeded(conversationMessages, conversationTokenCap);
-        const { content, reasoningContent, toolCalls, usage: turnUsage } = await adapter.streamSingleTurn(
-          conversationMessages, onToken, onReasoningToken!, openAITools, options?.abortSignal
-        );
+
+        // ── Continue Site 1: model_error — retry with backoff/compression ──
+        let turnResult: { content: string; reasoningContent: string; toolCalls: ToolCallResult[]; usage?: import("../llm/streamWithReasoning.js").TokenUsage };
+        try {
+          turnResult = await adapter.streamSingleTurn(
+            conversationMessages, onToken, onReasoningToken!, openAITools, options?.abortSignal
+          );
+          modelErrorCount = 0; // reset on success
+        } catch (modelErr) {
+          modelErrorCount++;
+          serverLogger.warn(`[continue-site:model_error] Attempt ${modelErrorCount}/${MAX_MODEL_ERRORS}`, {
+            error: modelErr instanceof Error ? modelErr.message : String(modelErr),
+          });
+          if (modelErrorCount >= MAX_MODEL_ERRORS) {
+            emitStop("model_error");
+            const errorMsg = new AIMessage({
+              content: `[Agent stopped: model error after ${MAX_MODEL_ERRORS} retries] ${modelErr instanceof Error ? modelErr.message : String(modelErr)}`,
+            });
+            yield { llmCall: { messages: [errorMsg] } };
+            yield { stop: { reason: "model_error" as StopReason } };
+            return;
+          }
+          // Recovery: compress context and retry
+          if (modelErrorCount >= 2) {
+            serverLogger.info("[continue-site:model_error] Compressing context before retry");
+            conversationMessages = pruneConversationIfNeeded(conversationMessages, Math.floor(conversationTokenCap * 0.7));
+          }
+          // Brief delay before retry
+          await new Promise((r) => setTimeout(r, modelErrorCount * 1000));
+          continue; // re-enter loop
+        }
+
+        const { content, reasoningContent, toolCalls, usage: turnUsage } = turnResult;
         if (turnUsage) yield { usage: turnUsage };
 
         lastHadContent = !!(content && content.trim());
@@ -436,6 +507,8 @@ export async function* streamAgentWithTokens(
             };
             if (finalUsage) yield { usage: finalUsage };
           }
+          emitStop("completed");
+          yield { stop: { reason: "completed" as StopReason } };
           return;
         }
 
@@ -453,6 +526,27 @@ export async function* streamAgentWithTokens(
         conversationMessages = [...conversationMessages, ...toolMessages];
         if (runtimePlanSteps.length > 0) emitCurrentPlan("running", lastToolNameForPlan);
         yield { toolNode: { messages: toolMessages } };
+
+        // ── Continue Site 3: tool_error_cascade — detect mass tool failures ──
+        const errorCount = toolOutputs.filter((o) => o.result.startsWith("[error]")).length;
+        if (toolOutputs.length >= 2 && errorCount / toolOutputs.length > 0.5) {
+          toolCascadeCount++;
+          serverLogger.warn(`[continue-site:tool_error_cascade] ${errorCount}/${toolOutputs.length} tools failed (streak ${toolCascadeCount}/${MAX_TOOL_CASCADES})`);
+          if (toolCascadeCount >= MAX_TOOL_CASCADES) {
+            emitStop("tool_error_cascade");
+            conversationMessages = [...conversationMessages, new HumanMessage(
+              `[Agent Error] Tool execution failed ${MAX_TOOL_CASCADES} rounds in a row (${errorCount}/${toolOutputs.length} errors each). Stopping to prevent further damage. Please review the errors above and try a different approach.`
+            )];
+            break;
+          }
+          // Inject recovery hint
+          conversationMessages = [...conversationMessages, new HumanMessage(
+            `[Harness] Warning: ${errorCount}/${toolOutputs.length} tools returned errors this round (cascade ${toolCascadeCount}/${MAX_TOOL_CASCADES}). Try a completely different approach to avoid repeated failures.`
+          )];
+        } else {
+          toolCascadeCount = 0; // reset streak when error ratio is acceptable
+        }
+
         // ── Harness middleware hook (reasoning stream path) ──
         if (harness) {
           const mwResult = await harness.afterToolResults(
@@ -469,9 +563,9 @@ export async function* streamAgentWithTokens(
           if (mwResult.injectMessages?.length) {
             conversationMessages = [...conversationMessages, ...mwResult.injectMessages];
           }
-          if (mwResult.abort) break;
+          if (mwResult.abort) { emitStop("harness_abort"); break; }
         }
-        if (round === maxRounds - 1) reachedMaxRounds = true;
+        if (round === maxRounds - 1) { reachedMaxRounds = true; emitStop("max_rounds"); }
       }
 
       if (!lastHadContent) {
@@ -485,6 +579,8 @@ export async function* streamAgentWithTokens(
         };
         if (finalUsage) yield { usage: finalUsage };
       }
+      if (stopReason === "completed" && reachedMaxRounds) emitStop("max_rounds");
+      yield { stop: { reason: stopReason } };
       return;
     } catch (e) {
       serverLogger.warn("Reasoning stream failed, falling back to standard LangChain stream", {
@@ -493,6 +589,16 @@ export async function* streamAgentWithTokens(
     }
   }
 
+  // ── 路径 2: LangChain 标准 stream ──
+  // 到达此处有两种情况:
+  //   1. useReasoningStream=false — Anthropic 模型 或 非 reasoning 的 OpenAI 模型，正常走此路径
+  //   2. 路径 1 整体 try-catch 失败 — OpenAI reasoning 模型的 fallback 降级
+  // 与路径 1 的差异:
+  //   - LLM 调用: model.stream() (LangChain) 而非 adapter.streamSingleTurn() (原生 HTTP)
+  //   - 需要手动从 chunk 逐片提取 content/reasoning/usage 并 concat
+  //   - 最终总结用 streamFinalOnlyWithRetryByModel (无 reasoning/usage) 而非 ByAdapter
+  //   - 正常结束用 break (走循环外收尾) 而非 return (就地退出)
+  // 业务逻辑 (Planning/Harness/Pruning/错误恢复/读写锁并行) 与路径 1 完全一致。
   const tools = buildRuntimeTools(options, { modelId, skillContext, options });
   const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
   const model = adapter.getLLM().bindTools(tools);
@@ -510,52 +616,90 @@ export async function* streamAgentWithTokens(
 
   let lastHadContent = false;
   let reachedMaxRounds = false;
+  let stopReason2: StopReason = "completed";
+  const emitStop2 = makeEmitStop((r) => { stopReason2 = r; }, options);
+
+  // ── Continue Site counters for fallback path ──
+  let modelErrorCount2 = 0;
+  let toolCascadeCount2 = 0;
+  const MAX_MODEL_ERRORS_FB = 3;
+  const MAX_TOOL_CASCADES_FB = 3;
+
   for (let round = 0; round < maxRounds; round++) {
     // Check abort signal at the start of each round
     if (options?.abortSignal?.aborted) {
       serverLogger.info("[stream] Aborted by signal, stopping execution");
+      emitStop2("aborted");
+      yield { stop: { reason: "aborted" as StopReason } };
       return;
     }
     const bgMessage = buildBackgroundResultMessage();
     if (bgMessage) state = [...state, bgMessage];
     // Prune old tool results to stay within context window
     state = pruneConversationIfNeeded(state, conversationTokenCap);
-    // Wrap LangChain stream with abort signal and per-chunk timeout
+
+    // ── Continue Site 1 (fallback): model_error — retry with backoff/compression ──
     const streamSignal = options?.abortSignal;
-    const stream = await model.stream([systemMessage, ...state], streamSignal ? { signal: streamSignal } : undefined);
     let fullChunk: BaseMessage | null = null;
     let accumulatedContent = "";
     let accumulatedReasoning = "";
     let lastUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
-    for await (const chunk of stream) {
-      // Check abort between chunks
-      if (streamSignal?.aborted) {
-        serverLogger.info("[stream] Aborted by signal during LangChain stream");
+    try {
+      const stream = await model.stream([systemMessage, ...state], streamSignal ? { signal: streamSignal } : undefined);
+      for await (const chunk of stream) {
+        // Check abort between chunks
+        if (streamSignal?.aborted) {
+          serverLogger.info("[stream] Aborted by signal during LangChain stream");
+          emitStop2("aborted");
+          yield { stop: { reason: "aborted" as StopReason } };
+          return;
+        }
+        const text = getTextFromChunk(chunk);
+        if (text) {
+          onToken(text);
+          accumulatedContent += text;
+        }
+        const reasoningChunk = getReasoningFromChunk(chunk);
+        if (reasoningChunk) {
+          accumulatedReasoning += reasoningChunk;
+          if (onReasoningToken) onReasoningToken(reasoningChunk);
+        }
+        const meta = (chunk as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
+        if (meta && typeof meta.input_tokens === "number" && typeof meta.output_tokens === "number") {
+          lastUsage = {
+            prompt_tokens: meta.input_tokens,
+            completion_tokens: meta.output_tokens,
+            total_tokens: meta.input_tokens + meta.output_tokens,
+          };
+        }
+        if (fullChunk && "concat" in fullChunk && typeof (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat === "function") {
+          fullChunk = (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat(chunk as BaseMessage) as BaseMessage;
+        } else {
+          fullChunk = chunk as BaseMessage;
+        }
+      }
+      modelErrorCount2 = 0; // reset on success
+    } catch (modelErr) {
+      modelErrorCount2++;
+      serverLogger.warn(`[continue-site:model_error:fallback] Attempt ${modelErrorCount2}/${MAX_MODEL_ERRORS_FB}`, {
+        error: modelErr instanceof Error ? (modelErr as Error).message : String(modelErr),
+      });
+      if (modelErrorCount2 >= MAX_MODEL_ERRORS_FB) {
+        emitStop2("model_error");
+        const errorMsg = new AIMessage({
+          content: `[Agent stopped: model error after ${MAX_MODEL_ERRORS_FB} retries] ${modelErr instanceof Error ? (modelErr as Error).message : String(modelErr)}`,
+        });
+        yield { llmCall: { messages: [errorMsg] } };
+        yield { stop: { reason: "model_error" as StopReason } };
         return;
       }
-      const text = getTextFromChunk(chunk);
-      if (text) {
-        onToken(text);
-        accumulatedContent += text;
+      // Recovery: compress context and retry
+      if (modelErrorCount2 >= 2) {
+        serverLogger.info("[continue-site:model_error:fallback] Compressing context before retry");
+        state = pruneConversationIfNeeded(state, Math.floor(conversationTokenCap * 0.7));
       }
-      const reasoningChunk = getReasoningFromChunk(chunk);
-      if (reasoningChunk) {
-        accumulatedReasoning += reasoningChunk;
-        if (onReasoningToken) onReasoningToken(reasoningChunk);
-      }
-      const meta = (chunk as { usage_metadata?: { input_tokens?: number; output_tokens?: number } }).usage_metadata;
-      if (meta && typeof meta.input_tokens === "number" && typeof meta.output_tokens === "number") {
-        lastUsage = {
-          prompt_tokens: meta.input_tokens,
-          completion_tokens: meta.output_tokens,
-          total_tokens: meta.input_tokens + meta.output_tokens,
-        };
-      }
-      if (fullChunk && "concat" in fullChunk && typeof (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat === "function") {
-        fullChunk = (fullChunk as { concat: (other: BaseMessage) => BaseMessage }).concat(chunk as BaseMessage) as BaseMessage;
-      } else {
-        fullChunk = chunk as BaseMessage;
-      }
+      await new Promise((r) => setTimeout(r, modelErrorCount2 * 1000));
+      continue; // re-enter loop
     }
     if (lastUsage) yield { usage: lastUsage };
     if (!fullChunk) break;
@@ -606,6 +750,26 @@ export async function* streamAgentWithTokens(
     }
     state = [...state, ...toolMessages];
     yield { toolNode: { messages: toolMessages } };
+
+    // ── Continue Site 3 (fallback): tool_error_cascade — detect mass tool failures ──
+    const errorCountFb = toolOutputs.filter((o) => o.result.startsWith("[error]")).length;
+    if (toolOutputs.length >= 2 && errorCountFb / toolOutputs.length > 0.5) {
+      toolCascadeCount2++;
+      serverLogger.warn(`[continue-site:tool_error_cascade:fallback] ${errorCountFb}/${toolOutputs.length} tools failed (streak ${toolCascadeCount2}/${MAX_TOOL_CASCADES_FB})`);
+      if (toolCascadeCount2 >= MAX_TOOL_CASCADES_FB) {
+        emitStop2("tool_error_cascade");
+        state = [...state, new HumanMessage(
+          `[Agent Error] Tool execution failed ${MAX_TOOL_CASCADES_FB} rounds in a row (${errorCountFb}/${toolOutputs.length} errors each). Stopping to prevent further damage. Please review the errors above and try a different approach.`
+        )];
+        break;
+      }
+      state = [...state, new HumanMessage(
+        `[Harness] Warning: ${errorCountFb}/${toolOutputs.length} tools returned errors this round (cascade ${toolCascadeCount2}/${MAX_TOOL_CASCADES_FB}). Try a completely different approach to avoid repeated failures.`
+      )];
+    } else {
+      toolCascadeCount2 = 0; // reset streak when error ratio is acceptable
+    }
+
     // ── Harness middleware hook (LangChain fallback path) ──
     if (harness) {
       const mwResult = await harness.afterToolResults(
@@ -622,9 +786,9 @@ export async function* streamAgentWithTokens(
       if (mwResult.injectMessages?.length) {
         state = [...state, ...mwResult.injectMessages];
       }
-      if (mwResult.abort) break;
+      if (mwResult.abort) { emitStop2("harness_abort"); break; }
     }
-    if (round === maxRounds - 1) reachedMaxRounds = true;
+    if (round === maxRounds - 1) { reachedMaxRounds = true; emitStop2("max_rounds"); }
   }
 
   if (!lastHadContent && state.length > messages.length) {
@@ -632,6 +796,7 @@ export async function* streamAgentWithTokens(
     const summaryMsg = new AIMessage({ content: summaryContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
     yield { llmCall: { messages: [summaryMsg] } };
   }
+  yield { stop: { reason: stopReason2 } };
 }
 
 injectStreamAgent(streamAgentWithTokens);

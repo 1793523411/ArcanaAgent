@@ -3,7 +3,8 @@ import type { AgentRole, StreamingStatus, ToolLog, TeamDef, AgentDef } from "../
 import MarkdownContent from "./MarkdownContent";
 import ToolCallBlock from "./ToolCallBlock";
 import { getArtifactUrl } from "../api";
-import { formatTokenCount } from "../utils/format";
+import { formatTokenCount, formatDuration } from "../utils/format";
+import { groupByDriverIteration, iterationSummary } from "../utils/harnessUtils";
 import { getRoleConfig } from "../constants/roles";
 
 interface PendingApproval {
@@ -67,6 +68,7 @@ interface Props {
     } | null;
     summary?: string;
     error?: string;
+    harnessEvents?: Array<{ kind: string; data: Record<string, unknown>; timestamp?: string }>;
   }>;
   plan?: {
     phase: "created" | "running" | "completed";
@@ -81,7 +83,7 @@ interface Props {
   };
   harness?: {
     events: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>;
-    driverEvents?: Array<{ phase: string; iteration: number; maxRetries: number; timestamp: string }>;
+    driverEvents?: Array<{ phase: string; iteration: number; maxRetries: number; harnessEventsInIteration?: Array<{ kind: string; data: Record<string, unknown>; timestamp: string }>; timestamp: string }>;
     driverPhase: string | null;
     driverIteration: number;
     driverMaxRetries: number;
@@ -136,10 +138,25 @@ export default function StreamingBubble({
   const [subagentCollapsedMap, setSubagentCollapsedMap] = useState<Record<string, boolean>>({});
   const [subSectionCollapsedMap, setSubSectionCollapsedMap] = useState<Record<string, boolean>>({});
   const [copied, setCopied] = useState(false);
+  const [harnessRoundExpanded, setHarnessRoundExpanded] = useState<Record<string, boolean>>({});
+  const harnessIterations = useMemo(() => groupByDriverIteration(harness?.events ?? [], harness?.driverEvents), [harness?.events, harness?.driverEvents]);
   // Use shared processingApprovals from parent if available, otherwise local fallback
   const [localProcessing, setLocalProcessing] = useState<Set<string>>(new Set());
   const processingApprovals = externalProcessing ?? localProcessing;
   const reasoningRef = useRef<HTMLDivElement>(null);
+
+  // 实时计时器
+  const startTimeRef = useRef(Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    if (!isStreaming) return;
+    startTimeRef.current = Date.now();
+    setElapsed(0);
+    const timer = setInterval(() => {
+      setElapsed(Date.now() - startTimeRef.current);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [isStreaming]);
 
   const handleApproval = useCallback(async (requestId: string, approved: boolean) => {
     if (onApproval) {
@@ -232,7 +249,7 @@ export default function StreamingBubble({
     setSubagentCollapsedMap((prev) => ({ ...prev, [subagentId]: !prev[subagentId] }));
   };
 
-  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content") => {
+  const toggleSubSection = (subagentId: string, section: "reasoning" | "plan" | "tools" | "content" | "harness") => {
     const key = `${subagentId}:${section}`;
     setSubSectionCollapsedMap((prev) => ({ ...prev, [key]: !prev[key] }));
   };
@@ -322,6 +339,14 @@ export default function StreamingBubble({
               title="含系统提示词 + 对话上下文 + 本轮回复；多轮模型调用会累加"
             >
               入 {formatTokenCount(usageTokens.promptTokens)} / 出 {formatTokenCount(usageTokens.completionTokens)}
+            </span>
+          )}
+          {isStreaming && elapsed >= 1000 && (
+            <span
+              className="text-[10px] text-[var(--color-text-muted)] whitespace-nowrap px-1.5 py-0.5 rounded-md bg-[var(--color-surface-hover)] border border-[var(--color-border)] shrink-0 tabular-nums"
+              title="Agent 工作耗时"
+            >
+              {formatDuration(elapsed)}
             </span>
           )}
         </div>
@@ -430,42 +455,82 @@ export default function StreamingBubble({
             })()}
           </div>
           <div className="space-y-1">
-            {harness.events.map((evt, idx) => {
-              if (evt.kind === "eval") {
-                const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
-                const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
-                const color = d.verdict === "pass"
-                  ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
-                  : d.verdict === "weak" || d.verdict === "inconclusive"
-                    ? "border-yellow-500/30 bg-yellow-500/5"
-                    : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+            {(() => {
+              const iterations = harnessIterations;
+              const hasMultipleIterations = iterations.length > 1;
+              return iterations.map((iter) => {
+                const isLastIter = iter.iteration === iterations[iterations.length - 1].iteration;
+                const isEarlierIter = hasMultipleIterations && !isLastIter;
+                const expanded = !!harnessRoundExpanded[iter.iteration];
+
+                if (isEarlierIter && !expanded) {
+                  return (
+                    <button
+                      key={`iter-${iter.iteration}`}
+                      type="button"
+                      onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [iter.iteration]: true }))}
+                      className="w-full text-left text-[12px] px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer opacity-60"
+                    >
+                      <span className="select-none mr-1">▶</span>
+                      {iterationSummary(iter)}
+                    </button>
+                  );
+                }
+
                 return (
-                  <div key={idx} className={`text-[12px] px-2 py-1 rounded border ${color}`}>
-                    {icon} Step {(d.stepIndex ?? 0) + 1} 验证：{d.verdict} — {d.reason}
+                  <div key={`iter-${iter.iteration}`} className="space-y-1">
+                    {isEarlierIter && (
+                      <button
+                        type="button"
+                        onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [iter.iteration]: false }))}
+                        className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer opacity-60"
+                      >
+                        <span className="select-none mr-1">▼</span>
+                        {iterationSummary(iter)}
+                      </button>
+                    )}
+                    {iter.events.length === 0 ? null : iter.events.map((evt, idx) => {
+                      if (evt.kind === "eval") {
+                        const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
+                        const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
+                        const color = d.verdict === "pass"
+                          ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
+                          : d.verdict === "weak" || d.verdict === "inconclusive"
+                            ? "border-yellow-500/30 bg-yellow-500/5"
+                            : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+                        const replanLabel = hasMultipleIterations && isLastIter ? " (重试后)" : "";
+                        return (
+                          <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1 rounded border ${color} ${isEarlierIter ? "opacity-60" : ""}`}>
+                            {icon} 步骤 {(d.stepIndex ?? 0) + 1} 评估{replanLabel}: <span className="font-medium">{d.verdict}</span>
+                            {d.reason && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{d.reason}</div>}
+                          </div>
+                        );
+                      }
+                      if (evt.kind === "loop_detection") {
+                        const d = evt.data as { detected?: boolean; description?: string };
+                        if (!d.detected) return null;
+                        return (
+                          <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5 ${isEarlierIter ? "opacity-60" : ""}`}>
+                            🔄 循环检测：{d.description}
+                          </div>
+                        );
+                      }
+                      if (evt.kind === "replan") {
+                        const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
+                        if (!d.shouldReplan && !d.pendingApproval) return null;
+                        return (
+                          <div key={`i${iter.iteration}-h-${idx}`} className={`text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5 ${isEarlierIter ? "opacity-60" : ""}`}>
+                            🔀 {d.pendingApproval ? "重规划建议" : "已重规划"}
+                            {d.trigger && <span className="opacity-70"> (触发: {d.trigger === "eval_fail" ? "评估失败" : "循环检测"})</span>}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })}
                   </div>
                 );
-              }
-              if (evt.kind === "loop_detection") {
-                const d = evt.data as { detected?: boolean; description?: string };
-                if (!d.detected) return null;
-                return (
-                  <div key={idx} className="text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5">
-                    🔄 循环检测：{d.description}
-                  </div>
-                );
-              }
-              if (evt.kind === "replan") {
-                const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
-                if (!d.shouldReplan && !d.pendingApproval) return null;
-                return (
-                  <div key={idx} className="text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5">
-                    🔀 {d.pendingApproval ? "重规划建议（仅参考）" : "计划已重规划"}
-                    {d.trigger && <span className="opacity-70"> — 触发：{d.trigger === "eval_fail" ? "验证失败" : "循环检测"}</span>}
-                  </div>
-                );
-              }
-              return null;
-            })}
+              });
+            })()}
           </div>
         </div>
       )}
@@ -575,6 +640,98 @@ export default function StreamingBubble({
                       )}
                     </div>
                   )}
+                  {/* ── Per-subagent harness events ── */}
+                  {!subCollapsed && s.harnessEvents && s.harnessEvents.length > 0 && (() => {
+                    const subHarnessKey = `${s.subagentId}:harness`;
+                    const subHarnessCollapsed = !!subSectionCollapsedMap[subHarnessKey];
+                    const subIterations = groupByDriverIteration(s.harnessEvents);
+                    const hasMultiSubIters = subIterations.length > 1;
+                    return (
+                    <div className="mt-2">
+                      <button type="button" onClick={() => toggleSubSection(s.subagentId, "harness")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
+                        {subHarnessCollapsed ? "▶" : "▼"} 执行监控 ({s.harnessEvents.length})
+                      </button>
+                      {!subHarnessCollapsed && (
+                      <div className="p-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)]">
+                        <div className="space-y-1">
+                          {subIterations.map((iter) => {
+                            const isLastSubIter = iter.iteration === subIterations[subIterations.length - 1].iteration;
+                            const isEarlierSubIter = hasMultiSubIters && !isLastSubIter;
+                            const subIterExpanded = !!harnessRoundExpanded[`sub-${s.subagentId}-${iter.iteration}`];
+
+                            if (isEarlierSubIter && !subIterExpanded) {
+                              return (
+                                <button
+                                  key={`sub-iter-${iter.iteration}`}
+                                  type="button"
+                                  onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [`sub-${s.subagentId}-${iter.iteration}`]: true }))}
+                                  className="w-full text-left text-[12px] px-2 py-1 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text-muted)] hover:bg-[var(--color-surface-hover)] transition-colors cursor-pointer opacity-60"
+                                >
+                                  <span className="select-none mr-1">▶</span>
+                                  {iterationSummary(iter)}
+                                </button>
+                              );
+                            }
+
+                            return (
+                              <div key={`sub-iter-${iter.iteration}`} className="space-y-1">
+                                {isEarlierSubIter && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setHarnessRoundExpanded((prev) => ({ ...prev, [`sub-${s.subagentId}-${iter.iteration}`]: false }))}
+                                    className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors cursor-pointer opacity-60"
+                                  >
+                                    <span className="select-none mr-1">▼</span>
+                                    {iterationSummary(iter)}
+                                  </button>
+                                )}
+                                {iter.events.length === 0 ? null : iter.events.map((evt, hIdx) => {
+                                  if (evt.kind === "eval") {
+                                    const d = evt.data as { stepIndex?: number; verdict?: string; reason?: string };
+                                    const icon = d.verdict === "pass" ? "✅" : d.verdict === "weak" ? "⚠️" : d.verdict === "inconclusive" ? "ℹ️" : "❌";
+                                    const color = d.verdict === "pass"
+                                      ? "border-[var(--color-success-border)] bg-[var(--color-success-bg)]"
+                                      : d.verdict === "weak" || d.verdict === "inconclusive"
+                                        ? "border-yellow-500/30 bg-yellow-500/5"
+                                        : "border-[var(--color-error-border)] bg-[var(--color-error-bg)]";
+                                    const replanLabel = hasMultiSubIters && isLastSubIter ? " (重试后)" : "";
+                                    return (
+                                      <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border ${color} ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                        {icon} 步骤 {(d.stepIndex ?? 0) + 1} 评估{replanLabel}: <span className="font-medium">{d.verdict}</span>
+                                        {d.reason && <div className="text-[11px] text-[var(--color-text-muted)] mt-0.5">{d.reason}</div>}
+                                      </div>
+                                    );
+                                  }
+                                  if (evt.kind === "loop_detection") {
+                                    const d = evt.data as { detected?: boolean; description?: string };
+                                    if (!d.detected) return null;
+                                    return (
+                                      <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border border-yellow-500/30 bg-yellow-500/5 ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                        🔄 循环检测：{d.description}
+                                      </div>
+                                    );
+                                  }
+                                  if (evt.kind === "replan") {
+                                    const d = evt.data as { shouldReplan?: boolean; trigger?: string; pendingApproval?: boolean };
+                                    if (!d.shouldReplan && !d.pendingApproval) return null;
+                                    return (
+                                      <div key={hIdx} className={`text-[12px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/5 ${isEarlierSubIter ? "opacity-60" : ""}`}>
+                                        🔀 {!!d.pendingApproval ? "重规划建议" : "已重规划"}
+                                        {d.trigger && <span className="opacity-70"> (触发: {d.trigger === "eval_fail" ? "评估失败" : "循环检测"})</span>}
+                                      </div>
+                                    );
+                                  }
+                                  return null;
+                                })}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      )}
+                    </div>
+                    );
+                  })()}
                   {!subCollapsed && hasSubTools && (
                     <div className="mt-2">
                       <button type="button" onClick={() => toggleSubSection(s.subagentId, "tools")} className="text-[11px] text-[var(--color-text-muted)] mb-1">
@@ -647,6 +804,47 @@ export default function StreamingBubble({
           </div>}
         </div>
       )}
+      {/* Main agent approval cards (not inside subagent sections) */}
+      {pendingApprovals.filter((a) => a.subagentId === "__main__").map((approval) => {
+        const isProcessing = processingApprovals.has(approval.requestId);
+        return (
+          <div
+            key={approval.requestId}
+            className="my-2 rounded-lg border-2 border-[#F59E0B]/50 bg-[#F59E0B]/5 p-3 space-y-2"
+          >
+            <div className="flex items-center gap-1.5 text-[12px] font-medium text-[#F59E0B]">
+              <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+                <line x1="12" y1="9" x2="12" y2="13" />
+                <line x1="12" y1="17" x2="12.01" y2="17" />
+              </svg>
+              Awaiting Approval
+            </div>
+            <div className="text-[12px] text-[var(--color-text)]">
+              <span className="font-medium">{approval.operationType}</span>
+              <span className="text-[var(--color-text-muted)]"> — {approval.operationDescription}</span>
+            </div>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleApproval(approval.requestId, true)}
+                className="flex-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[#10B981] text-white hover:bg-[#059669] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isProcessing ? "..." : "Approve"}
+              </button>
+              <button
+                type="button"
+                disabled={isProcessing}
+                onClick={() => handleApproval(approval.requestId, false)}
+                className="flex-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[#EF4444] text-white hover:bg-[#DC2626] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {isProcessing ? "..." : "Reject"}
+              </button>
+            </div>
+          </div>
+        );
+      })}
       {content ? (
         <MarkdownContent transformImageUrl={transformImageUrl} disableMermaid>{content}</MarkdownContent>
       ) : (

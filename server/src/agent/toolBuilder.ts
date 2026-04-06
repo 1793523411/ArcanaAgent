@@ -20,6 +20,7 @@ import {
   filterToolsByRole,
   getAllTools,
   isPathInWorkspace,
+  isBypassImmune,
   findForbiddenOutputPath,
   type RuntimeToolBuildContext,
   type AgentExecutionOptions,
@@ -27,6 +28,7 @@ import {
   type SubagentStreamEvent,
   type PlanStreamEvent,
 } from "./riskDetection.js";
+import type { HarnessEvent, EvalResult, LoopDetectionResult } from "./harness/types.js";
 import {
   truncateToolResult,
   MAX_TASK_TOOL_RESULT_CHARS,
@@ -45,7 +47,7 @@ type StreamAgentWithTokensFn = (
   onReasoningToken?: (token: string) => void,
   skillContext?: string,
   options?: StreamAgentOptions
-) => AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number }>, void, unknown>;
+) => AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number } | { reason: string }>, void, unknown>;
 
 let _streamAgentWithTokens: StreamAgentWithTokensFn | null = null;
 
@@ -68,6 +70,42 @@ async function generateShortSubagentName(prompt: string, modelId?: string): Prom
   return name;
 }
 
+/**
+ * Wrap high-risk tools (run_command, write_file, edit_file) with approval gates.
+ * Applied in ALL modes (normal + team) for ALL agents (main + sub).
+ */
+function applyHighRiskApproval(
+  tools: StructuredToolInterface[],
+  convId: string,
+  subId: string,
+  workspacePath?: string,
+  subagentRole?: AgentRole,
+  onSubagentEvent?: (event: SubagentStreamEvent) => void,
+): StructuredToolInterface[] {
+  const customRules = loadUserConfig().approvalRules;
+  return tools.map((t) => {
+    if (t.name === "run_command") {
+      return wrapToolWithApproval(t, "run_command", (input) => {
+        const cmd = typeof input.command === "string" ? input.command : "";
+        return isHighRiskCommand(cmd, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    if (t.name === "write_file") {
+      return wrapToolWithApproval(t, "write_file", (input) => {
+        const path = typeof input.path === "string" ? input.path : "";
+        return isHighRiskWrite(path, workspacePath, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    if (t.name === "edit_file") {
+      return wrapToolWithApproval(t, "edit_file", (input) => {
+        const path = typeof input.path === "string" ? input.path : "";
+        return isHighRiskWrite(path, workspacePath, customRules);
+      }, { conversationId: convId, subagentId: subId, role: subagentRole, onSubagentEvent });
+    }
+    return t;
+  });
+}
+
 export function buildRuntimeTools(options?: AgentExecutionOptions, context?: RuntimeToolBuildContext): StructuredToolInterface[] {
   const tools = getAllTools();
   const workspacePath = options?.workspacePath;
@@ -77,6 +115,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         async (input: Record<string, unknown>) => {
           const rawPath = typeof input.path === "string" ? input.path : "";
           const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          // Bypass-immune check: always require approval for protected paths
+          const bypassCheck = isBypassImmune("write_file", { path: resolvedPath });
+          if (bypassCheck) {
+            return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+          }
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[write_file]\nstatus: blocked\npath: ${rawPath}\nnote: \u8f93\u51fa\u8def\u5f84\u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u4f7f\u7528 ${workspacePath} \u4e0b\u7684\u8def\u5f84\u3002`;
           }
@@ -111,6 +154,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         async (input: Record<string, unknown>) => {
           const rawPath = typeof input.path === "string" ? input.path : "";
           const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          // Bypass-immune check: always require approval for protected paths
+          const bypassCheck = isBypassImmune("edit_file", { path: resolvedPath });
+          if (bypassCheck) {
+            return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+          }
           if (!isPathInWorkspace(resolvedPath, workspacePath)) {
             return `[edit_file]\nstatus: blocked\npath: ${rawPath}\nnote: \u7f16\u8f91\u8def\u5f84\u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u4f7f\u7528 ${workspacePath} \u4e0b\u7684\u8def\u5f84\u3002`;
           }
@@ -134,6 +182,24 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         },
         {
           name: "edit_file",
+          description: (t as unknown as { description?: string }).description ?? t.name,
+          schema: (t as unknown as { schema: unknown }).schema as never,
+        }
+      );
+      return wrapped as unknown as StructuredToolInterface;
+    }
+    if (t.name === "read_file" && workspacePath) {
+      const wrapped = tool(
+        async (input: Record<string, unknown>) => {
+          const rawPath = typeof input.path === "string" ? input.path : "";
+          const resolvedPath = rawPath.startsWith("/") ? rawPath : resolve(workspacePath, rawPath);
+          if (!isPathInWorkspace(resolvedPath, workspacePath)) {
+            return `[read_file]\nstatus: blocked\npath: ${rawPath}\nnote: 读取路径不在当前会话 workspace 内。请使用 ${workspacePath} 下的路径。`;
+          }
+          return String(await t.invoke({ ...input, path: resolvedPath }));
+        },
+        {
+          name: "read_file",
           description: (t as unknown as { description?: string }).description ?? t.name,
           schema: (t as unknown as { schema: unknown }).schema as never,
         }
@@ -239,6 +305,15 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           return String(await t.invoke(input));
         }
         const cmd = typeof input?.command === "string" ? input.command : "";
+        // Defense-in-depth: isBypassImmune is checked here against the raw command (with absolute
+        // workspace paths) BEFORE normalization. This is intentional — bypass-immune patterns need
+        // the original paths for accurate matching. The normalization below only affects run_command's
+        // internal isDangerous patterns, which would otherwise false-positive on workspace absolute paths.
+        // findForbiddenOutputPath also runs against raw paths to enforce workspace boundaries correctly.
+        const bypassCheck = isBypassImmune("run_command", { command: cmd });
+        if (bypassCheck) {
+          return `[run_command]\nstatus: blocked\nnote: ${bypassCheck}. This operation is permanently blocked for safety.`;
+        }
         const forbidden = findForbiddenOutputPath(cmd, workspacePath);
         if (forbidden) {
           return `[run_command]\nstatus: blocked\ncommand: ${cmd}\ncwd: ${workspacePath}\nnote: \u8f93\u51fa\u8def\u5f84 ${forbidden} \u4e0d\u5728\u5f53\u524d\u4f1a\u8bdd workspace \u5185\u3002\u8bf7\u6539\u4e3a ${workspacePath} \u4e0b\u8def\u5f84\u3002`;
@@ -284,53 +359,20 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
   const depth = context?.options?.subagentDepth ?? 0;
   const subagentEnabled = context?.options?.subagentEnabled ?? true;
   if (!subagentEnabled || depth >= 1) {
-    const convMode = options?.conversationMode ?? context?.options?.conversationMode ?? "default";
     const convId = options?.conversationId ?? context?.options?.conversationId;
-    const subId = options?.subagentId;
-    if (convMode === "team" && convId && subId) {
-      const customRules = loadUserConfig().approvalRules;
-      return finalTools.map((t) => {
-        if (t.name === "run_command") {
-          return wrapToolWithApproval(t, "run_command", (input) => {
-            const cmd = typeof input.command === "string" ? input.command : "";
-            return isHighRiskCommand(cmd, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        if (t.name === "write_file") {
-          return wrapToolWithApproval(t, "write_file", (input) => {
-            const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        if (t.name === "edit_file") {
-          return wrapToolWithApproval(t, "edit_file", (input) => {
-            const path = typeof input.path === "string" ? input.path : "";
-            return isHighRiskWrite(path, workspacePath, customRules);
-          }, {
-            conversationId: convId,
-            subagentId: subId,
-            role: subagentRole,
-            onSubagentEvent: options?.onSubagentEvent ?? context?.options?.onSubagentEvent,
-          });
-        }
-        return t;
-      });
+    const subId = options?.subagentId ?? "__main__";
+    const onEvt = options?.onSubagentEvent ?? context?.options?.onSubagentEvent;
+    if (convId) {
+      return applyHighRiskApproval(finalTools, convId, subId, workspacePath, subagentRole, onEvt);
     }
     return finalTools;
   }
   if (!context) {
     return finalTools;
   }
+  // Resolve approval context for main agent path
+  const mainConvId = context.options?.conversationId;
+  const mainOnEvt = context.options?.onSubagentEvent;
   const conversationMode = context.options?.conversationMode ?? "default";
   const subagentResults = context.subagentResults ?? new Map<string, { name: string; summary: string }>();
   const MAX_SUBAGENT_RESULTS = 30;
@@ -443,10 +485,26 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
         let summaryTruncated = false;
         let fullText = "";
         const MAX_FULL_TEXT = 64000;
-        const SUBAGENT_TIMEOUT_MS = 10 * 60 * 1000;
+        // Subagent harness: per-agent toggles override global numeric params.
+        // Global ExecutionEnhancementsConfig provides baseline (window size, similarity threshold, etc.).
+        // Per-agent AgentDef.harness provides boolean overrides (loopDetection, eval, replan).
+        // Hoisted so both harnessConfig and outer retry logic can reference them without redundant I/O.
+        const globalEnhancements = loadUserConfig().enhancements;
+        const agentHarness = role ? getAgentDef(role)?.harness : undefined;
+        const SUBAGENT_TIMEOUT_MS = agentHarness?.timeoutMs ?? globalEnhancements?.agentTimeoutMs ?? 600_000;
         const timeoutPromise = new Promise<never>((_, reject) => {
           timeoutTimer = setTimeout(() => reject(new Error(`Subagent timed out after ${SUBAGENT_TIMEOUT_MS / 1000}s`)), SUBAGENT_TIMEOUT_MS);
         });
+        // Per-agent toggles > global toggles > hardcoded defaults.
+        // When no per-agent harness is set, inherit from global ExecutionEnhancementsConfig.
+        const evalOn = agentHarness?.eval ?? globalEnhancements?.evalGuard ?? false;
+        const loopOn = agentHarness?.loopDetection ?? globalEnhancements?.loopDetection ?? true;
+        const replanOn = agentHarness?.replan ?? globalEnhancements?.replan ?? false;
+        // autoApproveReplan semantics (defined in HarnessMiddleware.tryReplan):
+        //   true  → replan 直接替换当前计划步骤（自动批准）
+        //   false → replan 仅作为建议注入对话，当前计划不变（需人工采纳）
+        // 子 agent 默认 true（无法暂停等用户确认），per-agent 可覆盖为 false 启用建议模式。
+        const autoApprove = agentHarness?.autoApproveReplan ?? true;
         const subagentOptions: StreamAgentOptions = {
           ...context.options,
           planningEnabled: true,
@@ -454,6 +512,16 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
           subagentDepth: depth + 1,
           subagentRole: role,
           subagentId,
+          harnessConfig: {
+            evalEnabled: evalOn,
+            evalSkipReadOnly: agentHarness?.evalSkipReadOnly ?? globalEnhancements?.evalSkipReadOnly ?? true,
+            loopDetectionEnabled: loopOn,
+            replanEnabled: replanOn,
+            autoApproveReplan: autoApprove,
+            maxReplanAttempts: replanOn ? (globalEnhancements?.maxReplanAttempts ?? 3) : 0,
+            loopWindowSize: globalEnhancements?.loopWindowSize ?? 6,
+            loopSimilarityThreshold: globalEnhancements?.loopSimilarityThreshold ?? 0.7,
+          },
           ...(role ? {
             subagentSystemPromptOverride: buildSubagentSystemPrompt(role, context.skillContext, context.options?.workspacePath),
           } : {}),
@@ -465,9 +533,27 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
             });
           },
         };
-        const runSubagent = async () => {
+        // Outer retry: collect harness events to detect unresolved failures
+        const outerRetryEnabled = agentHarness?.outerRetry ?? globalEnhancements?.outerRetry ?? false;
+        const maxOuterRetries = outerRetryEnabled ? (globalEnhancements?.maxOuterRetries ?? 2) : 0;
+        const harnessEvents: HarnessEvent[] = [];
+        // Always forward harness events to parent (for frontend display).
+        // Also collect them locally for outer retry decision logic.
+        subagentOptions.onHarnessEvent = (event) => {
+          context.options?.onSubagentEvent?.({
+            kind: "harness",
+            subagentId,
+            harnessKind: event.kind,
+            data: event.data,
+            timestamp: event.timestamp,
+          });
+          if (outerRetryEnabled) {
+            harnessEvents.push(event);
+          }
+        };
+        const runSubagent = async (messages: BaseMessage[]) => {
           for await (const chunk of _streamAgentWithTokens!(
-            [new HumanMessage(enrichedPrompt)],
+            messages,
             (token) => {
               if (!summaryTruncated) {
                 const next = summaryText + token;
@@ -541,7 +627,49 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
             }
           }
         };
-        await Promise.race([runSubagent(), timeoutPromise]);
+        // Outer retry loop: re-run subagent if harness detected unresolved failures
+        let currentMessages: BaseMessage[] = [new HumanMessage(enrichedPrompt)];
+        for (let outerIteration = 0; outerIteration <= maxOuterRetries; outerIteration++) {
+          // Reset state for each iteration
+          if (outerIteration > 0) {
+            summaryText = "";
+            summaryTruncated = false;
+            fullText = "";
+            // Notify parent that this subagent is retrying so frontend can reset its state
+            context.options?.onSubagentEvent?.({
+              kind: "lifecycle",
+              phase: "started",
+              subagentId,
+              subagentName,
+              role,
+              depth: depth + 1,
+              prompt: `[Harness outer retry ${outerIteration}/${maxOuterRetries}] ${prompt}`,
+            });
+            // Inject failure context from previous iteration
+            const failureSummary = harnessEvents
+              .filter((e) => (e.kind === "eval" && (e.data as EvalResult).verdict === "fail") ||
+                             (e.kind === "loop_detection" && (e.data as LoopDetectionResult).detected === true))
+              .map((e) => e.kind === "eval"
+                ? `Eval fail step ${(e.data as EvalResult).stepIndex}: ${(e.data as EvalResult).reason}`
+                : `Loop detected: ${(e.data as LoopDetectionResult).description ?? "repeated pattern"}`)
+              .join("\n");
+            currentMessages = [
+              new HumanMessage(enrichedPrompt),
+              new HumanMessage(`[Harness] Previous attempt failed. Issues:\n${failureSummary}\n\nTry a fundamentally different approach. Do NOT repeat the same strategies.`),
+            ];
+            harnessEvents.length = 0; // clear for next iteration
+          }
+          await Promise.race([runSubagent(currentMessages), timeoutPromise]);
+          // Check if outer retry needed
+          if (outerIteration < maxOuterRetries && outerRetryEnabled && harnessEvents.length > 0) {
+            const hasUnresolved = harnessEvents.some((e) =>
+              (e.kind === "eval" && (e.data as EvalResult).verdict === "fail") ||
+              (e.kind === "loop_detection" && (e.data as LoopDetectionResult).detected === true)
+            );
+            if (hasUnresolved) continue; // retry
+          }
+          break; // success or no retry needed
+        }
         if (timeoutTimer) clearTimeout(timeoutTimer);
         const rawSummary = summaryText.trim() || NO_VISIBLE_OUTPUT_MESSAGE;
         const summary = truncateToolResult(rawSummary, MAX_TASK_TOOL_RESULT_CHARS);
@@ -610,8 +738,11 @@ export function buildRuntimeTools(options?: AgentExecutionOptions, context?: Run
   if (conversationMode === "team" && depth === 0) {
     const coordinatorAllowed = new Set(["task", "read_file", "load_skill", "get_time", "fetch_url", "search_code", "list_files", "web_search", "project_search", "project_snapshot"]);
     const coordinatorTools = filteredWrappedTools.filter((t) => coordinatorAllowed.has(t.name));
+    // Coordinator tools (task, read_file, etc.) don't include run_command/write_file/edit_file,
+    // so applyHighRiskApproval is unnecessary here — skip it for performance.
     return [...coordinatorTools, taskTool as unknown as StructuredToolInterface];
   }
 
-  return [...filteredWrappedTools, taskTool as unknown as StructuredToolInterface];
+  const baseTools = [...filteredWrappedTools, taskTool as unknown as StructuredToolInterface];
+  return mainConvId ? applyHighRiskApproval(baseTools, mainConvId, "__main__", workspacePath, subagentRole, mainOnEvt) : baseTools;
 }
