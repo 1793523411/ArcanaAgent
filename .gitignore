@@ -45,7 +45,6 @@ apps/macos/.build-local/
 apps/macos/.swiftpm/
 apps/shared/MoltbotKit/.swiftpm/
 apps/shared/OpenClawKit/.swiftpm/
-Core/
 apps/ios/*.xcodeproj/
 apps/ios/*.xcworkspace/
 apps/ios/.swiftpm/

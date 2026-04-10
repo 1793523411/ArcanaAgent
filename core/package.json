@@ -1,0 +1,65 @@
+{
+  "name": "@arcana-agent/core",
+  "version": "0.1.0",
+  "description": "Core engine for Arcana Agent — LLM adapter, tools, harness, pruning, message processing",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./agent": {
+      "types": "./dist/agent/index.d.ts",
+      "import": "./dist/agent/index.js"
+    },
+    "./agent/*": {
+      "types": "./dist/agent/*.d.ts",
+      "import": "./dist/agent/*.js"
+    },
+    "./llm": {
+      "types": "./dist/llm/index.d.ts",
+      "import": "./dist/llm/index.js"
+    },
+    "./llm/*": {
+      "types": "./dist/llm/*.d.ts",
+      "import": "./dist/llm/*.js"
+    },
+    "./tools": {
+      "types": "./dist/tools/index.d.ts",
+      "import": "./dist/tools/index.js"
+    },
+    "./tools/*": {
+      "types": "./dist/tools/*.d.ts",
+      "import": "./dist/tools/*.js"
+    },
+    "./lib/*": {
+      "types": "./dist/lib/*.d.ts",
+      "import": "./dist/lib/*.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "^0.3.34",
+    "@langchain/core": "^0.3.28",
+    "@langchain/langgraph": "^0.2.74",
+    "@langchain/openai": "^0.3.14",
+    "minimatch": "^10.2.4",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
