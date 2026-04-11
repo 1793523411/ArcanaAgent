@@ -81,8 +81,10 @@ import {
   putAgentById as putGuildAgentById, deleteAgentById as deleteGuildAgentById,
   getAgentMemories, getAgentStats, postAgentAsset, deleteAgentAsset,
   getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
-  postAssignTask, postAutoBid, getTaskExecutionLog,
+  postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
+  postReleaseAgent,
 } from "./guild/routes.js";
+import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -189,6 +191,7 @@ app.post("/api/guild/groups/:groupId/tasks", postGroupTask);
 app.post("/api/guild/groups/:groupId/assign", postAssignTask);
 app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
 app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);
+app.delete("/api/guild/groups/:groupId/scheduler-log", deleteGroupSchedulerLog);
 app.put("/api/guild/tasks/:id", putGuildTask);
 app.delete("/api/guild/tasks/:id", deleteGuildTask);
 app.get("/api/guild/agents", getGuildAgents);
@@ -200,6 +203,7 @@ app.get("/api/guild/agents/:id/memories", getAgentMemories);
 app.get("/api/guild/agents/:id/stats", getAgentStats);
 app.post("/api/guild/agents/:id/assets", postAgentAsset);
 app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
+app.post("/api/guild/agents/:agentId/release", postReleaseAgent);
 
 // 提供前端静态文件（生产环境）
 const publicPath = join(__dirname, "..", "public");
@@ -222,4 +226,6 @@ app.listen(port, async () => {
   // 启动定时任务调度器
   serverLogger.info("Starting scheduler...");
   await schedulerManager.start();
+  serverLogger.info("Starting guild autonomous scheduler...");
+  guildAutonomousScheduler.start();
 });

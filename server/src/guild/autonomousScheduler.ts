@@ -1,0 +1,211 @@
+import type { GuildTask, Group, TaskStatus } from "./types.js";
+import { guildEventBus } from "./eventBus.js";
+import { listGroups } from "./guildManager.js";
+import { getGroupTasks, getTask } from "./taskBoard.js";
+import { autoBid } from "./bidding.js";
+import { executeAgentTask } from "./agentExecutor.js";
+import { reconcileGroupWorkingAgents, reconcileGroupOrphanTasks } from "./agentReconcile.js";
+import { serverLogger } from "../lib/logger.js";
+import { appendSchedulerDispatched, appendSchedulerStalled } from "./schedulerLogStore.js";
+
+interface SchedulerDeps {
+  listGroupsFn?: () => Group[];
+  getGroupTasksFn?: (groupId: string, status?: TaskStatus[]) => GuildTask[];
+  getTaskFn?: (groupId: string, taskId: string) => GuildTask | null;
+  autoBidFn?: (groupId: string, task: GuildTask) => import("./types.js").TaskBid | null;
+  executeAgentTaskFn?: (agentId: string, groupId: string, taskId: string) => Promise<unknown>;
+}
+
+const PRIORITY_RANK: Record<GuildTask["priority"], number> = {
+  urgent: 4,
+  high: 3,
+  medium: 2,
+  low: 1,
+};
+
+const RECONCILE_INTERVAL_MS = 60 * 1000;
+
+export class GuildAutonomousScheduler {
+  private started = false;
+  private scheduledGroups = new Set<string>();
+  private runningGroups = new Set<string>();
+  private pendingReruns = new Set<string>();
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly listGroupsFn: () => Group[];
+  private readonly getGroupTasksFn: (groupId: string, status?: TaskStatus[]) => GuildTask[];
+  private readonly getTaskFn: (groupId: string, taskId: string) => GuildTask | null;
+  private readonly autoBidFn: (groupId: string, task: GuildTask) => import("./types.js").TaskBid | null;
+  private readonly executeAgentTaskFn: (agentId: string, groupId: string, taskId: string) => Promise<unknown>;
+  private readonly onEventBound: (event: import("./types.js").GuildEvent) => void;
+
+  constructor(deps: SchedulerDeps = {}) {
+    this.listGroupsFn = deps.listGroupsFn ?? listGroups;
+    this.getGroupTasksFn = deps.getGroupTasksFn ?? getGroupTasks;
+    this.getTaskFn = deps.getTaskFn ?? getTask;
+    this.autoBidFn = deps.autoBidFn ?? autoBid;
+    this.executeAgentTaskFn = deps.executeAgentTaskFn ?? executeAgentTask;
+    this.onEventBound = this.onEvent.bind(this);
+  }
+
+  start(): void {
+    if (this.started) return;
+    this.started = true;
+    guildEventBus.onAll(this.onEventBound);
+
+    // Recover orphaned tasks/agents from prior process death before scheduling.
+    for (const group of this.listGroupsFn()) {
+      if (group.status !== "active") continue;
+      try {
+        reconcileGroupOrphanTasks(group.id);
+        reconcileGroupWorkingAgents(group.id);
+      } catch (e) {
+        serverLogger.error("[guild] startup reconcile failed", { groupId: group.id, error: String(e) });
+      }
+      this.scheduleGroup(group.id);
+    }
+
+    // Periodic sweep: catches stuck-in-process executions (model timeout, lost stream).
+    this.sweepTimer = setInterval(() => {
+      if (!this.started) return;
+      for (const group of this.listGroupsFn()) {
+        if (group.status !== "active") continue;
+        try {
+          const reset = reconcileGroupOrphanTasks(group.id);
+          reconcileGroupWorkingAgents(group.id);
+          if (reset > 0) this.scheduleGroup(group.id);
+        } catch (e) {
+          serverLogger.error("[guild] sweep reconcile failed", { groupId: group.id, error: String(e) });
+        }
+      }
+    }, RECONCILE_INTERVAL_MS);
+    if (typeof this.sweepTimer === "object" && this.sweepTimer && "unref" in this.sweepTimer) {
+      (this.sweepTimer as { unref: () => void }).unref();
+    }
+  }
+
+  stop(): void {
+    if (!this.started) return;
+    this.started = false;
+    guildEventBus.offAll(this.onEventBound);
+    this.scheduledGroups.clear();
+    this.runningGroups.clear();
+    this.pendingReruns.clear();
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+  }
+
+  private onEvent(event: import("./types.js").GuildEvent): void {
+    if (!this.started) return;
+    switch (event.type) {
+      case "task_created":
+        this.scheduleGroup(event.task.groupId);
+        break;
+      case "agent_status_changed":
+        if (event.status === "idle") this.scheduleGroupsForAgent(event.agentId);
+        break;
+      case "group_updated":
+        this.scheduleGroup(event.groupId);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private scheduleGroupsForAgent(agentId: string): void {
+    const groups = this.listGroupsFn();
+    for (const group of groups) {
+      if (group.status !== "active") continue;
+      if (group.agents.includes(agentId)) this.scheduleGroup(group.id);
+    }
+  }
+
+  private scheduleGroup(groupId: string): void {
+    if (!this.started) return;
+    if (this.runningGroups.has(groupId)) {
+      // A dispatch is in flight; ask it to re-run after it finishes so we don't
+      // drop task_created / status_changed events that arrive mid-dispatch.
+      this.pendingReruns.add(groupId);
+      return;
+    }
+    if (this.scheduledGroups.has(groupId)) return;
+    this.scheduledGroups.add(groupId);
+    queueMicrotask(() => {
+      void this.runGroupDispatch(groupId);
+    });
+  }
+
+  private async runGroupDispatch(groupId: string): Promise<void> {
+    this.scheduledGroups.delete(groupId);
+    if (!this.started || this.runningGroups.has(groupId)) return;
+    this.runningGroups.add(groupId);
+    try {
+      reconcileGroupOrphanTasks(groupId);
+      reconcileGroupWorkingAgents(groupId);
+      const openTasks = this.getGroupTasksFn(groupId, ["open", "bidding"]);
+      const sorted = [...openTasks].sort((a, b) => {
+        const byPriority = PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority];
+        if (byPriority !== 0) return byPriority;
+        return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+      });
+      if (sorted.length === 0) return;
+
+      let assignedAny = false;
+      for (const candidate of sorted) {
+        if (!this.started) break;
+        const task = this.getTaskFn(groupId, candidate.id);
+        if (!task || (task.status !== "open" && task.status !== "bidding")) continue;
+        const winner = this.autoBidFn(groupId, task);
+        if (!winner) continue;
+        assignedAny = true;
+        const atDispatched = new Date().toISOString();
+        const schedulerLogEntry = appendSchedulerDispatched(
+          groupId,
+          atDispatched,
+          task.id,
+          winner.agentId,
+          task.title,
+          winner.confidence,
+        );
+        guildEventBus.emit({
+          type: "scheduler_task_dispatched",
+          groupId,
+          taskId: task.id,
+          agentId: winner.agentId,
+          taskTitle: task.title,
+          confidence: winner.confidence,
+          schedulerLogEntry,
+        });
+        this.executeAgentTaskFn(winner.agentId, groupId, task.id).catch((e) => {
+          serverLogger.error("[guild] autonomous scheduler execution failed", {
+            groupId,
+            taskId: task.id,
+            agentId: winner.agentId,
+            error: String(e),
+          });
+        });
+      }
+
+      if (!assignedAny) {
+        const atStalled = new Date().toISOString();
+        const stallMessage = `仍有 ${sorted.length} 个待处理任务（open/bidding），但当前无法分配（无空闲 Agent 或无人达到竞标门槛）`;
+        const schedulerLogEntry = appendSchedulerStalled(groupId, atStalled, sorted.length, stallMessage);
+        guildEventBus.emit({
+          type: "scheduler_dispatch_stalled",
+          groupId,
+          openTaskCount: sorted.length,
+          message: stallMessage,
+          schedulerLogEntry,
+        });
+      }
+    } finally {
+      this.runningGroups.delete(groupId);
+      if (this.pendingReruns.delete(groupId) && this.started) {
+        this.scheduleGroup(groupId);
+      }
+    }
+  }
+}
+
+export const guildAutonomousScheduler = new GuildAutonomousScheduler();

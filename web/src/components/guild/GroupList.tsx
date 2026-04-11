@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Group, GuildAgent } from "../../types/guild";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   groups: Group[];
@@ -30,6 +31,7 @@ export default function GroupList({
   const poolAgents = agents.filter((a) => !a.groupId);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [assigningTo, setAssigningTo] = useState<string | null>(null);
+  const [deletingGroup, setDeletingGroup] = useState<Group | null>(null);
 
   return (
     <div className="flex flex-col h-full">
@@ -174,7 +176,7 @@ export default function GroupList({
                         style={{ color: "var(--color-text-muted)" }}
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (confirm(`确定删除小组「${group.name}」?`)) onDeleteGroup(group.id);
+                          setDeletingGroup(group);
                         }}
                       >
                         删除小组
@@ -221,6 +223,19 @@ export default function GroupList({
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={!!deletingGroup}
+        onOpenChange={(o) => { if (!o) setDeletingGroup(null); }}
+        onConfirm={() => {
+          const g = deletingGroup;
+          setDeletingGroup(null);
+          if (g) onDeleteGroup(g.id);
+        }}
+        title={deletingGroup ? `删除小组「${deletingGroup.name}」?` : "删除小组?"}
+        description="删除后无法恢复。组内的 Agent 会被移到空闲池，历史任务记录保留。"
+        confirmLabel="删除"
+        variant="danger"
+      />
     </div>
   );
 }

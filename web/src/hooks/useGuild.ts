@@ -10,6 +10,7 @@ import {
   createGuildAgent,
   updateGuildAgent,
   deleteGuildAgent,
+  releaseGuildAgent,
   createGroupTask,
   deleteGuildTask,
   assignGroupTask,
@@ -109,6 +110,17 @@ export function useGuild() {
     [loadAll]
   );
 
+  const handleReleaseAgent = useCallback(
+    async (agentId: string) => {
+      await releaseGuildAgent(agentId);
+      // SSE will broadcast agent_status_changed + task_updated; refresh agent
+      // list so the detail panel reflects the new state immediately.
+      await loadAll();
+      if (selectedGroupId) await loadTasks(selectedGroupId);
+    },
+    [loadAll, loadTasks, selectedGroupId]
+  );
+
   const handleAddAgentToGroup = useCallback(
     async (groupId: string, agentId: string) => {
       await addAgentToGroup(groupId, agentId);
@@ -135,7 +147,7 @@ export function useGuild() {
 
   const handleDeleteTask = useCallback(
     async (taskId: string) => {
-      await deleteGuildTask(taskId);
+      await deleteGuildTask(taskId, selectedGroupId ?? undefined);
       if (selectedGroupId) await loadTasks(selectedGroupId);
     },
     [selectedGroupId, loadTasks]
@@ -176,6 +188,7 @@ export function useGuild() {
     createAgent: handleCreateAgent,
     updateAgent: handleUpdateAgent,
     deleteAgent: handleDeleteAgent,
+    releaseAgent: handleReleaseAgent,
     addAgentToGroup: handleAddAgentToGroup,
     removeAgentFromGroup: handleRemoveAgentFromGroup,
     createTask: handleCreateTask,

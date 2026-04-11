@@ -9,6 +9,7 @@ import DetailPanel from "./DetailPanel";
 import CreateGroupModal from "./CreateGroupModal";
 import CreateAgentModal from "./CreateAgentModal";
 import LiveAgentPanel from "./LiveAgentPanel";
+import Select from "./Select";
 
 interface Props {
   onClose: () => void;
@@ -86,17 +87,27 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     };
   }, [leftResizing, resizing]);
 
-  // Merge stream agents with REST agents
+  // Prefer REST-backed guild.agents as the source of truth for identity and
+  // group membership (groupId, updatedAt, etc). Only overlay live-execution
+  // fields from the SSE stream — those flip rapidly during a run and aren't
+  // reflected in the REST snapshot until the next loadAll(). This prevents a
+  // stale stream copy from shadowing the fresh REST data after a membership
+  // change (e.g. after removing an agent from a group).
   const mergedAgents = guild.agents.map((a) => {
-    const streamAgent = stream.agents.find((sa) => sa.id === a.id);
-    return streamAgent ?? a;
+    const sa = stream.agents.find((s) => s.id === a.id);
+    if (!sa) return a;
+    return { ...a, status: sa.status, currentTaskId: sa.currentTaskId };
   });
 
-  // Merge stream tasks with REST tasks
+  // Merge stream tasks with REST tasks — only show tasks that belong to the
+  // selected group. Stream events can arrive for other groups too, and if we
+  // show them here the delete/assign flows would target the wrong group.
   const mergedTasks = guild.selectedGroupId
     ? (() => {
-        const base = guild.tasks.slice();
+        const gid = guild.selectedGroupId;
+        const base = guild.tasks.filter((t) => t.groupId === gid);
         for (const st of stream.tasks) {
+          if (st.groupId && st.groupId !== gid) continue;
           const idx = base.findIndex((t) => t.id === st.id);
           if (idx >= 0) base[idx] = st;
           else base.push(st);
@@ -113,13 +124,30 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     ? mergedTasks.find((t) => t.id === selectedDetail.id) ?? null
     : null;
 
-  const handleCreateTask = async (text: string) => {
+  /** Wrap a mutation with success / error toasts. Returns whatever the op returns (or undefined on failure). */
+  async function withToast<T>(
+    op: () => Promise<T>,
+    successMsg: string,
+    errorPrefix: string,
+  ): Promise<T | undefined> {
+    try {
+      const result = await op();
+      showToast(successMsg, "success");
+      return result;
+    } catch (e) {
+      showToast(`${errorPrefix}: ${e}`, "error");
+      return undefined;
+    }
+  }
+
+  const handleCreateTask = async (text: string, priority: "low" | "medium" | "high" | "urgent") => {
     if (!guild.selectedGroupId) return;
     setCreatingTask(true);
     try {
-      await guild.createTask(guild.selectedGroupId, { title: text, description: text, priority: "medium" });
-    } catch {
-      // ignore
+      await guild.createTask(guild.selectedGroupId, { title: text, description: text, priority });
+      showToast("任务已创建", "success");
+    } catch (e) {
+      showToast(`创建任务失败: ${e}`, "error");
     } finally {
       setCreatingTask(false);
     }
@@ -131,27 +159,57 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       const result = await guild.autoBid(guild.selectedGroupId, taskId);
       if (!result.assigned) {
         showToast(result.message ?? "没有 Agent 达到竞标门槛，请检查小组成员和资产配置", "info");
+      } else {
+        showToast("已自动分配给最合适的 Agent", "success");
       }
     } catch (e) {
       showToast(`竞标失败: ${e}`, "error");
     }
   };
 
-  const handleDeleteTask = async (taskId: string) => {
-    try {
-      await guild.deleteTask(taskId);
-    } catch {
-      // ignore
-    }
-  };
+  const handleDeleteTask = async (taskId: string) =>
+    void withToast(() => guild.deleteTask(taskId), "任务已删除", "删除任务失败");
 
   const handleAssignTask = async (taskId: string, agentId: string) => {
     if (!guild.selectedGroupId) return;
-    try {
-      await guild.assignTask(guild.selectedGroupId, taskId, agentId);
-    } catch (e) {
-      showToast(`分配失败: ${e}`, "error");
+    await withToast(
+      () => guild.assignTask(guild.selectedGroupId!, taskId, agentId),
+      "任务已分配",
+      "分配失败",
+    );
+  };
+
+  const handleCreateGroup = async (payload: { name: string; description: string; sharedContext?: string }) => {
+    await withToast(() => guild.createGroup(payload), "小组已创建", "创建小组失败");
+  };
+
+  const handleDeleteGroup = async (groupId: string) => {
+    await withToast(() => guild.deleteGroup(groupId), "小组已删除", "删除小组失败");
+  };
+
+  const handleAddAgentToGroup = async (groupId: string, agentId: string) => {
+    await withToast(() => guild.addAgentToGroup(groupId, agentId), "已添加成员", "添加成员失败");
+  };
+
+  const handleRemoveAgentFromGroup = async (groupId: string, agentId: string) => {
+    await withToast(() => guild.removeAgentFromGroup(groupId, agentId), "已移除成员", "移除成员失败");
+  };
+
+  const handleSaveAgent = async (payload: Parameters<typeof guild.createAgent>[0]) => {
+    if (editingAgent) {
+      await withToast(() => guild.updateAgent(editingAgent, payload), "Agent 已更新", "更新 Agent 失败");
+    } else {
+      await withToast(() => guild.createAgent(payload), "Agent 已创建", "创建 Agent 失败");
     }
+  };
+
+  const handleDeleteAgent = async (agentId: string) => {
+    const ok = await withToast(() => guild.deleteAgent(agentId), "Agent 已删除", "删除 Agent 失败");
+    if (ok !== undefined) setSelectedDetail(null);
+  };
+
+  const handleReleaseAgent = async (agentId: string) => {
+    await withToast(() => guild.releaseAgent(agentId), "Agent 已释放", "释放 Agent 失败");
   };
 
   // Check if this is a fresh/empty guild for onboarding
@@ -177,32 +235,30 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
         </div>
         <div className="flex items-center gap-3">
           {/* Global model selector */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs" style={{ color: "var(--color-text-muted)" }}>模型</span>
-            <select
-              className="px-2 py-1 rounded-lg text-xs"
-              style={{
-                background: "var(--color-bg)",
-                border: "1px solid var(--color-border)",
-                color: "var(--color-text)",
-                maxWidth: 200,
-              }}
-              value={globalModelId ?? ""}
-              onChange={(e) => setGlobalModelId(e.target.value)}
-            >
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <Select
+            value={globalModelId ?? ""}
+            onChange={setGlobalModelId}
+            leadingLabel="模型"
+            title="全局执行模型"
+            options={models.map((m) => ({
+              value: m.id,
+              label: m.name,
+              hint: m.provider,
+            }))}
+          />
           <button
             onClick={onClose}
-            className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
-            style={{ color: "var(--color-text-muted)" }}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{
+              color: "var(--color-text)",
+              border: "1px solid var(--color-border)",
+            }}
+            title="退出 Guild 模式，返回普通对话"
           >
-            ✕
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+              <path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>返回普通模式</span>
           </button>
         </div>
       </div>
@@ -230,9 +286,9 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               onSelectAgent={(id) => setSelectedDetail({ type: "agent", id })}
               onCreateGroup={() => setShowCreateGroup(true)}
               onCreateAgent={() => setShowCreateAgent(true)}
-              onAddAgentToGroup={guild.addAgentToGroup}
-              onRemoveAgentFromGroup={guild.removeAgentFromGroup}
-              onDeleteGroup={guild.deleteGroup}
+              onAddAgentToGroup={handleAddAgentToGroup}
+              onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
+              onDeleteGroup={handleDeleteGroup}
             />
           )}
         </div>
@@ -284,6 +340,8 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               <LiveAgentPanel
                 agents={mergedAgents}
                 taskExecutions={stream.taskExecutions}
+                schedulerLog={stream.schedulerLog}
+                onClearSchedulerLog={stream.clearSchedulerLog}
                 onCloseTab={(taskId) => {
                   stream.removeTaskExecution(taskId);
                   if (viewingLogTaskId === taskId) setViewingLogTaskId(null);
@@ -313,10 +371,8 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
             agentOutputs={stream.agentOutputs}
             onClose={() => setSelectedDetail(null)}
             onEditAgent={(id) => setEditingAgent(id)}
-            onDeleteAgent={async (id) => {
-              await guild.deleteAgent(id);
-              setSelectedDetail(null);
-            }}
+            onDeleteAgent={handleDeleteAgent}
+            onReleaseAgent={handleReleaseAgent}
             onViewLog={async (taskId) => {
               await stream.loadTaskLog(taskId);
               setViewingLogTaskId(taskId);
@@ -328,27 +384,21 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       {/* Modals */}
       {showCreateGroup && (
         <CreateGroupModal
-          onConfirm={guild.createGroup}
+          onConfirm={handleCreateGroup}
           onClose={() => setShowCreateGroup(false)}
         />
       )}
       {(showCreateAgent || editingAgent) && (
         <CreateAgentModal
           editAgent={editingAgent ? mergedAgents.find((a) => a.id === editingAgent) : undefined}
-          onConfirm={async (payload) => {
-            if (editingAgent) {
-              await guild.updateAgent(editingAgent, payload);
-            } else {
-              await guild.createAgent(payload as Parameters<typeof guild.createAgent>[0]);
-            }
-          }}
+          onConfirm={(payload) => handleSaveAgent(payload as Parameters<typeof guild.createAgent>[0])}
           onClose={() => { setShowCreateAgent(false); setEditingAgent(null); }}
         />
       )}
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] animate-fade-in">
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[60] animate-fade-in">
           <div
             className="px-4 py-2.5 rounded-xl shadow-lg text-sm flex items-center gap-2"
             style={{

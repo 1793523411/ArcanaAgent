@@ -9,7 +9,7 @@ interface Props {
   groupAgentIds: string[];
   selectedTaskId: string | null;
   onSelectTask: (id: string) => void;
-  onCreateTask: (text: string) => void;
+  onCreateTask: (text: string, priority: GuildTask["priority"]) => void;
   onAutoBid: (taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
   onAssignTask: (taskId: string, agentId: string) => void;
@@ -47,6 +47,16 @@ export default function TaskBoard({
     return () => window.clearTimeout(timer);
   }, [confirmingDeleteTask]);
 
+  const taskSortTime = (task: GuildTask): number => {
+    const t = task.status === "completed" || task.status === "failed" || task.status === "cancelled"
+      ? task.completedAt ?? task.startedAt ?? task.createdAt
+      : task.status === "in_progress" || task.status === "bidding"
+        ? task.startedAt ?? task.createdAt
+        : task.createdAt;
+    const ms = Date.parse(t);
+    return Number.isNaN(ms) ? 0 : ms;
+  };
+
   if (tasks.length === 0 && !creating) {
     return (
       <div className="flex flex-col h-full">
@@ -62,7 +72,7 @@ export default function TaskBoard({
             )}
           </div>
         </div>
-        <InstructionInput onSubmit={onCreateTask} loading={creating} />
+        <InstructionInput onSubmit={onCreateTask} loading={creating} showPriority />
       </div>
     );
   }
@@ -71,7 +81,9 @@ export default function TaskBoard({
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-1 grid grid-cols-3 gap-3 p-3 overflow-y-auto min-h-0">
         {COLUMNS.map((col) => {
-          const colTasks = tasks.filter((t) => (col.key as string[]).includes(t.status));
+          const colTasks = tasks
+            .filter((t) => (col.key as string[]).includes(t.status))
+            .sort((a, b) => taskSortTime(b) - taskSortTime(a));
           return (
             <div key={col.label} className="flex flex-col min-h-0">
               <div
@@ -186,7 +198,7 @@ export default function TaskBoard({
           );
         })}
       </div>
-      <InstructionInput onSubmit={onCreateTask} loading={creating} />
+      <InstructionInput onSubmit={onCreateTask} loading={creating} showPriority />
     </div>
   );
 }

@@ -127,6 +127,12 @@ export async function deleteGuildAgent(agentId: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
+export async function releaseGuildAgent(agentId: string): Promise<{ success: boolean; releasedTaskId: string | null }> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/release`, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getAgentMemories(agentId: string): Promise<AgentMemory[]> {
   const r = await fetch(`${BASE}/guild/agents/${agentId}/memories`);
   if (!r.ok) throw new Error(await r.text());
@@ -182,8 +188,9 @@ export async function updateGuildTask(taskId: string, groupId: string, payload: 
   return r.json();
 }
 
-export async function deleteGuildTask(taskId: string): Promise<void> {
-  const r = await fetch(`${BASE}/guild/tasks/${taskId}`, { method: "DELETE" });
+export async function deleteGuildTask(taskId: string, groupId?: string): Promise<void> {
+  const qs = groupId ? `?groupId=${encodeURIComponent(groupId)}` : "";
+  const r = await fetch(`${BASE}/guild/tasks/${taskId}${qs}`, { method: "DELETE" });
   if (!r.ok) throw new Error(await r.text());
 }
 
@@ -204,6 +211,11 @@ export async function getTaskExecutionLog(groupId: string, taskId: string): Prom
   const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks/${taskId}/logs`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
+}
+
+export async function clearGroupSchedulerLog(groupId: string): Promise<void> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/scheduler-log`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
 }
 
 export async function assignGroupTask(groupId: string, taskId: string, agentId: string): Promise<GuildTask> {

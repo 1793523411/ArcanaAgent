@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { GuildAgent, GuildTask } from "../../types/guild";
 import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   selectedAgent: GuildAgent | null;
@@ -11,6 +12,7 @@ interface Props {
   onClose: () => void;
   onEditAgent?: (id: string) => void;
   onDeleteAgent?: (id: string) => void;
+  onReleaseAgent?: (id: string) => void;
   onViewLog?: (taskId: string) => void;
 }
 
@@ -40,8 +42,10 @@ const PRIORITY_COLOR: Record<GuildTask["priority"], string> = {
   urgent: "#dc2626",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, agentOutputs, onClose, onEditAgent, onDeleteAgent, onViewLog }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
+  const [confirmRelease, setConfirmRelease] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   if (!selectedAgent && !selectedTask) {
     return (
@@ -91,8 +95,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
               <p className="text-sm" style={{ color: "var(--color-text-muted)" }}>{selectedAgent.description}</p>
             )}
 
-            {/* Edit / Delete actions */}
-            <div className="flex gap-2">
+            {/* Edit / Release / Delete actions */}
+            <div className="flex gap-2 flex-wrap">
               {onEditAgent && (
                 <button
                   className="text-xs px-3 py-1.5 rounded-lg"
@@ -102,18 +106,51 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
                   编辑 Agent
                 </button>
               )}
+              {onReleaseAgent && selectedAgent.status === "working" && (
+                <button
+                  className="text-xs px-3 py-1.5 rounded-lg"
+                  style={{ background: "#f59e0b22", color: "#d97706" }}
+                  title="终止当前任务并把 Agent 重置为空闲，自治调度器会重新分配任务"
+                  onClick={() => setConfirmRelease(true)}
+                >
+                  释放
+                </button>
+              )}
               {onDeleteAgent && (
                 <button
                   className="text-xs px-3 py-1.5 rounded-lg"
                   style={{ color: "var(--color-text-muted)" }}
-                  onClick={() => {
-                    if (confirm(`确定删除 Agent「${selectedAgent.name}」?`)) onDeleteAgent(selectedAgent.id);
-                  }}
+                  onClick={() => setConfirmDelete(true)}
                 >
                   删除
                 </button>
               )}
             </div>
+
+            <ConfirmDialog
+              open={confirmRelease}
+              onOpenChange={setConfirmRelease}
+              onConfirm={() => {
+                setConfirmRelease(false);
+                onReleaseAgent?.(selectedAgent.id);
+              }}
+              title={`释放 Agent「${selectedAgent.name}」?`}
+              description={"当前任务会被取消，Agent 重置为空闲。\n自治调度器会重新分配新任务。"}
+              confirmLabel="释放"
+              variant="warning"
+            />
+            <ConfirmDialog
+              open={confirmDelete}
+              onOpenChange={setConfirmDelete}
+              onConfirm={() => {
+                setConfirmDelete(false);
+                onDeleteAgent?.(selectedAgent.id);
+              }}
+              title={`删除 Agent「${selectedAgent.name}」?`}
+              description="删除后无法恢复，该 Agent 的历史任务记录仍会保留。"
+              confirmLabel="删除"
+              variant="danger"
+            />
 
             {/* Stats */}
             <div className="grid grid-cols-2 gap-2">

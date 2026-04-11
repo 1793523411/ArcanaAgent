@@ -1,7 +1,7 @@
 import type { GuildAgent, GuildTask, TaskBid, BiddingConfig } from "./types.js";
 import { getGroupAgents } from "./guildManager.js";
 import { searchRelevant } from "./memoryManager.js";
-import { assignTask } from "./taskBoard.js";
+import { assignTask, getTask, updateTask } from "./taskBoard.js";
 import { guildEventBus } from "./eventBus.js";
 
 const DEFAULT_CONFIG: BiddingConfig = {
@@ -22,7 +22,9 @@ export function getBiddingConfig(): BiddingConfig {
   return { ...biddingConfig };
 }
 
-/** Calculate confidence score for an agent on a task */
+/** Calculate confidence score for an agent on a task.
+ *  Pure semantic match — priority influence happens via the bidding *threshold*
+ *  in `evaluateTask`, not by inflating the score (which would bunch everything at 1.0). */
 export function calculateConfidence(agent: GuildAgent, task: GuildTask): number {
   let score = 0;
   const taskText = `${task.title} ${task.description}`.toLowerCase();
@@ -92,7 +94,15 @@ export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null
   const confidence = calculateConfidence(agent, task);
 
   // Below threshold — don't bid
-  if (confidence < biddingConfig.minConfidenceThreshold) return null;
+  const thresholdDelta = task.priority === "urgent"
+    ? -0.1
+    : task.priority === "high"
+      ? -0.05
+      : task.priority === "low"
+        ? 0.05
+        : 0;
+  const threshold = Math.max(0.1, Math.min(0.95, biddingConfig.minConfidenceThreshold + thresholdDelta));
+  if (confidence < threshold) return null;
 
   const relevantMemories = searchRelevant(agent.id, `${task.title} ${task.description}`, 3);
   const relevantAssets = agent.assets
@@ -143,7 +153,9 @@ export function selectWinner(bids: TaskBid[]): TaskBid | null {
   return sorted[0];
 }
 
-/** Run the full bidding process for a task within a group */
+/** Run the full bidding process for a task within a group.
+ *  Pure in-memory: collects bids and emits the start event but does NOT persist
+ *  the intermediate "bidding" status — `autoBid` writes the final state in one go. */
 export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
   const agents = getGroupAgents(groupId);
   const eligibleAgents = agents.filter(
@@ -161,30 +173,45 @@ export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
     const bid = evaluateTask(agent, task);
     if (bid) bids.push(bid);
   }
-
   return bids;
 }
 
 /** Run bidding and auto-assign the winner. Returns the winning bid or null.
- *  If no bid meets threshold but idle agents exist, falls back to a random idle agent. */
+ *  If no bid meets threshold but idle agents exist, falls back to a random idle agent.
+ *  At most one disk write per call: either via `assignTask` (assigned path) or
+ *  `updateTask` (no-idle-agents path). */
 export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
-  const bids = startBidding(groupId, task);
+  const fresh = getTask(groupId, task.id) ?? task;
+  if (
+    fresh.status === "in_progress" ||
+    fresh.status === "completed" ||
+    fresh.status === "failed" ||
+    fresh.status === "cancelled"
+  ) {
+    return null;
+  }
+
+  const bids = startBidding(groupId, fresh);
   const winner = selectWinner(bids);
 
   if (winner) {
-    assignTask(groupId, task.id, winner.agentId, winner);
+    assignTask(groupId, fresh.id, winner.agentId, winner, bids);
     return winner;
   }
 
-  // Fallback: no bid met threshold — assign to a random idle agent in the group
+  // No bid met threshold. Try fallback: random idle agent in the group.
   const agents = getGroupAgents(groupId);
   const idleAgents = agents.filter((a) => a.status === "idle" && !a.currentTaskId);
-  if (idleAgents.length === 0) return null;
+  if (idleAgents.length === 0) {
+    // Persist bids so the UI can still show the evidence; status stays "open".
+    if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
+    return null;
+  }
 
   const picked = idleAgents[Math.floor(Math.random() * idleAgents.length)];
   const fallbackBid: TaskBid = {
     agentId: picked.id,
-    taskId: task.id,
+    taskId: fresh.id,
     confidence: 0.1,
     reasoning: "自动回退分配：无 Agent 达到竞标门槛，随机选择空闲 Agent",
     estimatedComplexity: "medium",
@@ -192,6 +219,6 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
     relevantMemories: [],
     biddedAt: new Date().toISOString(),
   };
-  assignTask(groupId, task.id, picked.id, fallbackBid);
+  assignTask(groupId, fresh.id, picked.id, fallbackBid, [...bids, fallbackBid]);
   return fallbackBid;
 }

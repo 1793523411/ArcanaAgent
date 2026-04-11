@@ -1,13 +1,15 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, readdirSync } from "fs";
 import { join, resolve } from "path";
 import type { GuildTask, TaskStatus, TaskPriority, CreateTaskParams, TaskResult } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
 
 export interface ExecutionLogEntry {
-  type: "text" | "reasoning" | "tool_call" | "tool_result";
+  type: "text" | "reasoning" | "tool_call" | "tool_result" | "plan" | "harness";
   content: string;
   tool?: string;
   args?: string;
+  /** Structured payload for plan / harness entries (JSON-serializable) */
+  payload?: unknown;
   timestamp: string;
 }
 
@@ -92,17 +94,34 @@ export function updateTask(
   const tasks = loadTasks(groupId);
   const idx = tasks.findIndex((t) => t.id === taskId);
   if (idx < 0) return null;
+  const prevStatus = tasks[idx].status;
   Object.assign(tasks[idx], updates);
   saveTasks(groupId, tasks);
+  // Broadcast generic update so reconcile / status flips reach the SSE clients
+  // even when no specific event (assigned/completed/etc) is emitted by the caller.
+  if (updates.status !== undefined && updates.status !== prevStatus) {
+    guildEventBus.emit({ type: "task_updated", task: tasks[idx] });
+  }
   return tasks[idx];
 }
 
-export function assignTask(groupId: string, taskId: string, agentId: string, bid?: import("./types.js").TaskBid): GuildTask | null {
+function isTerminalStatus(status: TaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+export function assignTask(
+  groupId: string,
+  taskId: string,
+  agentId: string,
+  bid?: import("./types.js").TaskBid,
+  bids?: import("./types.js").TaskBid[],
+): GuildTask | null {
   const now = new Date().toISOString();
   const task = updateTask(groupId, taskId, {
     status: "in_progress",
     assignedAgentId: agentId,
     startedAt: now,
+    ...(bids !== undefined ? { bids } : {}),
   });
   if (task) {
     guildEventBus.emit({ type: "task_assigned", taskId, agentId, bid });
@@ -111,6 +130,8 @@ export function assignTask(groupId: string, taskId: string, agentId: string, bid
 }
 
 export function completeTask(groupId: string, taskId: string, agentId: string, result: TaskResult): GuildTask | null {
+  const existing = getTask(groupId, taskId);
+  if (existing && isTerminalStatus(existing.status)) return existing;
   const now = new Date().toISOString();
   const task = updateTask(groupId, taskId, {
     status: "completed",
@@ -124,6 +145,8 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
 }
 
 export function failTask(groupId: string, taskId: string, agentId: string, error: string): GuildTask | null {
+  const existing = getTask(groupId, taskId);
+  if (existing && isTerminalStatus(existing.status)) return existing;
   const now = new Date().toISOString();
   const task = updateTask(groupId, taskId, {
     status: "failed",
@@ -144,11 +167,37 @@ export function cancelTask(groupId: string, taskId: string): GuildTask | null {
   return task;
 }
 
+/**
+ * Hard-remove a task from the group store.
+ * Returns true if a task was removed. Unlike `cancelTask`, this actually
+ * deletes the record so it disappears from the UI.
+ */
+export function removeTask(groupId: string, taskId: string): boolean {
+  const tasks = loadTasks(groupId);
+  const idx = tasks.findIndex((t) => t.id === taskId);
+  if (idx < 0) return false;
+  tasks.splice(idx, 1);
+  saveTasks(groupId, tasks);
+  // Use task_removed (not task_cancelled) so SSE subscribers can splice the
+  // task out of their local state instead of just flipping its status.
+  guildEventBus.emit({ type: "task_removed", taskId, groupId });
+  return true;
+}
+
+/** Scan all groups to find which one owns a task. Slow but fine for MVP. */
+export function findTaskGroup(taskId: string): string | null {
+  if (!existsSync(GROUPS_DIR)) return null;
+  const groupIds = readdirSync(GROUPS_DIR) as string[];
+  for (const gid of groupIds) {
+    if (loadTasks(gid).some((t) => t.id === taskId)) return gid;
+  }
+  return null;
+}
+
 export function getAgentTasks(agentId: string): GuildTask[] {
   // Search across all groups — not optimal but fine for MVP
   const groupsDir = GROUPS_DIR;
   if (!existsSync(groupsDir)) return [];
-  const { readdirSync } = require("fs");
   const groupIds = readdirSync(groupsDir) as string[];
   const result: GuildTask[] = [];
   for (const gid of groupIds) {

@@ -8,13 +8,15 @@ import {
 } from "./guildManager.js";
 import {
   createTask, getTask, getGroupTasks, updateTask, cancelTask, assignTask, getExecutionLog,
+  removeTask, findTaskGroup,
 } from "./taskBoard.js";
 import { getMemories } from "./memoryManager.js";
-import { executeAgentTask } from "./agentExecutor.js";
+import { executeAgentTask, requestExecutionAbort, isExecutionActive } from "./agentExecutor.js";
 import { autoBid } from "./bidding.js";
 import { guildEventBus } from "./eventBus.js";
 import type { GuildEvent } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
+import { clearSchedulerLog, getSchedulerLog } from "./schedulerLogStore.js";
 
 /** Safely extract a single string from Express 5 params (string | string[]) */
 function p(val: string | string[] | undefined): string {
@@ -232,20 +234,8 @@ export function postGroupTask(req: Request, res: Response): void {
       return;
     }
     const task = createTask(groupId, req.body);
-
-    // Auto-dispatch: bid + execute asynchronously
-    setTimeout(() => {
-      try {
-        const winner = autoBid(groupId, task);
-        if (winner) {
-          executeAgentTask(winner.agentId, groupId, task.id).catch((err) => {
-            serverLogger.error(`[guild] Auto-dispatch execution failed`, { error: String(err) });
-          });
-        }
-      } catch (err) {
-        serverLogger.error(`[guild] Auto-dispatch bidding failed`, { error: String(err) });
-      }
-    }, 0);
+    // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
+    // to avoid double autoBid / race with in_progress tasks.
 
     res.status(201).json(task);
   } catch (e) {
@@ -273,10 +263,24 @@ export function putTask(req: Request, res: Response): void {
 
 export function deleteTask(req: Request, res: Response): void {
   try {
-    const groupId = req.query.groupId as string;
-    if (!groupId) { res.status(400).json({ error: "groupId query param required" }); return; }
-    const task = cancelTask(groupId, p(req.params.id));
-    if (!task) { res.status(404).json({ error: "Task not found" }); return; }
+    const taskId = p(req.params.id);
+    // groupId query param is a hint from the UI; verify it actually contains
+    // the task and fall back to a full scan. The merged task list can show
+    // tasks from other groups (via the SSE stream), so the hint may be wrong.
+    const hint = (req.query.groupId as string) || "";
+    let groupId: string | null = hint && getTask(hint, taskId) ? hint : null;
+    if (!groupId) groupId = findTaskGroup(taskId);
+    if (!groupId) { res.status(404).json({ error: "Task not found" }); return; }
+    // If the task is currently executing, abort the run before removing it
+    // so we don't leak an execution or stomp on an in-flight agent.
+    const existing = getTask(groupId, taskId);
+    if (existing && existing.status === "in_progress") {
+      if (isExecutionActive(groupId, taskId)) {
+        requestExecutionAbort(groupId, taskId);
+      }
+    }
+    const ok = removeTask(groupId, taskId);
+    if (!ok) { res.status(404).json({ error: "Task not found" }); return; }
     res.json({ success: true });
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -324,7 +328,19 @@ export function postAutoBid(req: Request, res: Response): void {
     }
     const winner = autoBid(groupId, task);
     if (!winner) {
-      res.json({ assigned: false, message: "No agent met the confidence threshold" });
+      const freshTask = getTask(groupId, taskId);
+      const status = freshTask?.status ?? task.status;
+      if (status === "in_progress" || status === "completed" || status === "failed" || status === "cancelled") {
+        res.json({ assigned: false, message: `任务已处于「${status}」状态，无需竞标` });
+        return;
+      }
+      const idleAgents = getGroupAgents(groupId).filter((a) => a.status === "idle" && !a.currentTaskId);
+      res.json({
+        assigned: false,
+        message: idleAgents.length === 0
+          ? "当前小组没有空闲 Agent，无法竞标"
+          : "所有 Agent 均未达到竞标门槛",
+      });
       return;
     }
 
@@ -353,6 +369,77 @@ export function getTaskExecutionLog(req: Request, res: Response): void {
   }
 }
 
+/**
+ * Manual safety valve: force-release an agent from its current task.
+ * Cancels the in-flight task (if any), signals the executor to abort, and
+ * resets the agent to idle so the autonomous scheduler can hand it new work.
+ */
+export function postReleaseAgent(req: Request, res: Response): void {
+  try {
+    const agentId = p(req.params.agentId);
+    const agent = getAgent(agentId);
+    if (!agent) {
+      res.status(404).json({ error: "Agent not found" });
+      return;
+    }
+
+    const taskId = agent.currentTaskId;
+    let releasedTaskId: string | null = null;
+    let cancelledGroupId: string | null = null;
+
+    if (taskId) {
+      // Locate the task across every group the agent belongs to so we can cancel it.
+      const candidateGroups = listGroups()
+        .filter((g) => g.agents.includes(agentId))
+        .map((g) => g.id);
+      if (agent.groupId && !candidateGroups.includes(agent.groupId)) {
+        candidateGroups.push(agent.groupId);
+      }
+      for (const groupId of candidateGroups) {
+        const t = getTask(groupId, taskId);
+        if (!t || t.assignedAgentId !== agentId) continue;
+        if (t.status === "in_progress" || t.status === "open") {
+          cancelTask(groupId, taskId);
+          releasedTaskId = taskId;
+          cancelledGroupId = groupId;
+        }
+        if (isExecutionActive(groupId, taskId)) {
+          requestExecutionAbort(groupId, taskId);
+        }
+        break;
+      }
+    }
+
+    updateAgent(agentId, { status: "idle", currentTaskId: undefined });
+    guildEventBus.emit({ type: "agent_status_changed", agentId, status: "idle" });
+    guildEventBus.emit({ type: "agent_updated", agentId });
+
+    serverLogger.warn("[guild] Agent released by user", {
+      agentId,
+      releasedTaskId,
+      cancelledGroupId,
+    });
+
+    res.json({ success: true, releasedTaskId });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function deleteGroupSchedulerLog(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.groupId);
+    if (!getGroup(groupId)) {
+      res.status(404).json({ error: "Group not found" });
+      return;
+    }
+    clearSchedulerLog(groupId);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
 // ─── SSE Stream ─────────────────────────────────────────────────
 
 export function getGroupStream(req: Request, res: Response): void {
@@ -372,12 +459,14 @@ export function getGroupStream(req: Request, res: Response): void {
   try {
     const tasks = getGroupTasks(groupId);
     const agents = getGroupAgents(groupId);
-    send("initial_state", { tasks, agents });
+    const schedulerLog = getSchedulerLog(groupId);
+    send("initial_state", { tasks, agents, schedulerLog });
   } catch {
     // ignore
   }
 
   // Listen for events related to this group
+  const groupAgentIds = new Set(getGroupAgents(groupId).map((a) => a.id));
   const handler = (event: GuildEvent) => {
     try {
       switch (event.type) {
@@ -385,42 +474,95 @@ export function getGroupStream(req: Request, res: Response): void {
           if (event.task.groupId === groupId) send("task_created", event.task);
           break;
         case "task_assigned": {
-          // Re-read the task to send full object
-          const task = getTask(event.taskId, event.taskId);
-          send("task_assigned", task ?? { taskId: event.taskId, agentId: event.agentId });
+          const task = getTask(groupId, event.taskId);
+          if (!task) break;
+          send("task_assigned", task);
           break;
         }
+        case "task_updated": {
+          if (event.task.groupId !== groupId) break;
+          send("task_updated", event.task);
+          break;
+        }
+        case "task_bidding_start": {
+          const task = getTask(groupId, event.taskId);
+          if (!task) break;
+          send("task_bidding_start", {
+            taskId: event.taskId,
+            agents: event.agents,
+            task,
+          });
+          break;
+        }
+        case "scheduler_task_dispatched":
+          if (event.groupId === groupId) {
+            send("scheduler_log", event.schedulerLogEntry);
+          }
+          break;
+        case "scheduler_dispatch_stalled":
+          if (event.groupId === groupId) {
+            send("scheduler_log", event.schedulerLogEntry);
+          }
+          break;
         case "task_completed": {
+          if (!getTask(groupId, event.taskId)) break;
           send("task_completed", { taskId: event.taskId, agentId: event.agentId, result: event.result });
           break;
         }
         case "task_failed": {
+          if (!getTask(groupId, event.taskId)) break;
           send("task_failed", { taskId: event.taskId, agentId: event.agentId, error: event.error });
           break;
         }
         case "task_cancelled":
+          if (!getTask(groupId, event.taskId)) break;
           send("task_cancelled", { taskId: event.taskId });
           break;
+        case "task_removed":
+          if (event.groupId !== groupId) break;
+          send("task_removed", { taskId: event.taskId });
+          break;
         case "agent_status_changed":
+          if (!groupAgentIds.has(event.agentId)) break;
           send("agent_status", { agentId: event.agentId, status: event.status });
           break;
         case "agent_output":
+          if (!groupAgentIds.has(event.agentId)) break;
           send("agent_token", { agentId: event.agentId, taskId: event.taskId, token: event.content });
           break;
         case "agent_reasoning":
+          if (!groupAgentIds.has(event.agentId)) break;
           send("agent_reasoning", { agentId: event.agentId, taskId: event.taskId, token: event.content });
           break;
         case "agent_tool_call":
+          if (!groupAgentIds.has(event.agentId)) break;
           send("agent_tool_call", { agentId: event.agentId, taskId: event.taskId, tool: event.tool, input: event.input });
           break;
         case "agent_tool_result":
+          if (!groupAgentIds.has(event.agentId)) break;
           send("agent_tool_result", { agentId: event.agentId, taskId: event.taskId, tool: event.tool, output: event.output });
           break;
+        case "agent_plan":
+          if (!groupAgentIds.has(event.agentId)) break;
+          send("agent_plan", { agentId: event.agentId, taskId: event.taskId, phase: event.phase, payload: event.payload });
+          break;
+        case "agent_harness":
+          if (!groupAgentIds.has(event.agentId)) break;
+          send("agent_harness", { agentId: event.agentId, taskId: event.taskId, kind: event.kind, payload: event.payload });
+          break;
         case "group_updated":
-          if (event.groupId === groupId) send("group_updated", { groupId });
+          if (event.groupId === groupId) {
+            const freshAgents = getGroupAgents(groupId);
+            groupAgentIds.clear();
+            for (const a of freshAgents) groupAgentIds.add(a.id);
+            send("group_updated", { groupId });
+          }
           break;
         case "agent_updated": {
           const agent = getAgent(event.agentId);
+          // Membership may have just changed (e.g. agent joined this group); fall back to live lookup.
+          if (!groupAgentIds.has(event.agentId) && agent?.groupId !== groupId) break;
+          if (agent) groupAgentIds.add(agent.id);
           send("agent_updated", agent ?? { agentId: event.agentId });
           break;
         }

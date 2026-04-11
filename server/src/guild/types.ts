@@ -130,23 +130,58 @@ export interface AgentMemory {
   lastAccessedAt?: string;
 }
 
+// ─── Scheduler log (persisted per group) ─────────────────────────
+
+export interface GuildSchedulerLogEntry {
+  id: string;
+  at: string;
+  kind: "dispatched" | "stalled";
+  groupId: string;
+  taskId?: string;
+  agentId?: string;
+  taskTitle?: string;
+  confidence?: number;
+  openTaskCount?: number;
+  message: string;
+}
+
 // ─── Event Types ────────────────────────────────────────────────
 
 export type GuildEvent =
   | { type: "task_created"; task: GuildTask }
+  | { type: "task_updated"; task: GuildTask }
   | { type: "task_bidding_start"; taskId: string; agents: string[] }
   | { type: "task_assigned"; taskId: string; agentId: string; bid?: TaskBid }
   | { type: "task_completed"; taskId: string; agentId: string; result: TaskResult }
   | { type: "task_failed"; taskId: string; agentId: string; error: string }
   | { type: "task_cancelled"; taskId: string }
+  | { type: "task_removed"; taskId: string; groupId: string }
   | { type: "agent_status_changed"; agentId: string; status: AgentStatus }
   | { type: "agent_output"; agentId: string; taskId: string; content: string }
   | { type: "agent_reasoning"; agentId: string; taskId: string; content: string }
   | { type: "agent_tool_call"; agentId: string; taskId: string; tool: string; input: unknown }
   | { type: "agent_tool_result"; agentId: string; taskId: string; tool: string; output: string }
+  | { type: "agent_plan"; agentId: string; taskId: string; phase: string; payload: unknown }
+  | { type: "agent_harness"; agentId: string; taskId: string; kind: string; payload: unknown }
   | { type: "agent_memory_settled"; agentId: string; memoryId: string }
   | { type: "group_updated"; groupId: string }
-  | { type: "agent_updated"; agentId: string };
+  | { type: "agent_updated"; agentId: string }
+  | {
+      type: "scheduler_task_dispatched";
+      groupId: string;
+      taskId: string;
+      agentId: string;
+      taskTitle: string;
+      confidence: number;
+      schedulerLogEntry: GuildSchedulerLogEntry;
+    }
+  | {
+      type: "scheduler_dispatch_stalled";
+      groupId: string;
+      openTaskCount: number;
+      message: string;
+      schedulerLogEntry: GuildSchedulerLogEntry;
+    };
 
 // ─── SSE Stream Event ───────────────────────────────────────────
 

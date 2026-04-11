@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import type { GuildAgent, AgentAsset, AssetType } from "../../types/guild";
 import { generateGuildAgent } from "../../api/guild";
 import { getModels, type ModelInfo } from "../../api";
+import Select from "./Select";
 
 type CreatePayload = Omit<GuildAgent, "id" | "status" | "currentTaskId" | "createdAt" | "updatedAt" | "stats">;
 
@@ -219,19 +220,15 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
           {/* Model selection */}
           <div>
             <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>执行模型（可选，留空使用全局默认）</label>
-            <select
-              className="w-full px-3 py-2 rounded-lg text-sm"
-              style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+            <Select
               value={modelId}
-              onChange={(e) => setModelId(e.target.value)}
-            >
-              <option value="">默认（跟随全局设置）</option>
-              {models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name} ({m.provider})
-                </option>
-              ))}
-            </select>
+              onChange={setModelId}
+              widthClass="w-full"
+              options={[
+                { value: "", label: "默认（跟随全局设置）" },
+                ...models.map((m) => ({ value: m.id, label: m.name, hint: m.provider })),
+              ]}
+            />
           </div>
 
           {/* Assets */}
@@ -251,16 +248,11 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
             )}
             <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
               <div className="flex gap-2">
-                <select
-                  className="px-2 py-1.5 rounded text-xs"
-                  style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                <Select<AssetType>
                   value={assetType}
-                  onChange={(e) => setAssetType(e.target.value as AssetType)}
-                >
-                  {ASSET_TYPE_OPTIONS.map((t) => (
-                    <option key={t} value={t}>{ASSET_TYPE_LABEL[t]}</option>
-                  ))}
-                </select>
+                  onChange={setAssetType}
+                  options={ASSET_TYPE_OPTIONS.map((t) => ({ value: t, label: ASSET_TYPE_LABEL[t] }))}
+                />
                 <input
                   className="flex-1 px-2 py-1.5 rounded text-xs"
                   style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}

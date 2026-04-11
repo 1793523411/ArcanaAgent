@@ -285,7 +285,6 @@ export function removeAgentFromGroup(agentId: string, fromGroupId?: string): boo
     group.agents = group.agents.filter((a) => a !== agentId);
     group.updatedAt = new Date().toISOString();
     writeJSON(groupMetaPath(groupId), group);
-    guildEventBus.emit({ type: "group_updated", groupId });
   }
 
   // Check if agent is still in any other group
@@ -308,7 +307,12 @@ export function removeAgentFromGroup(agentId: string, fromGroupId?: string): boo
 
   agent.updatedAt = new Date().toISOString();
   writeJSON(agentProfilePath(agentId), agent);
+  // Emit agent_updated BEFORE group_updated. The SSE stream handler rebuilds
+  // its groupAgentIds cache on group_updated, so if group_updated fired first
+  // the agent_updated event would be filtered out and the client would never
+  // see the leaver's fresh groupId / pool state.
   guildEventBus.emit({ type: "agent_updated", agentId });
+  if (group) guildEventBus.emit({ type: "group_updated", groupId });
   return true;
 }
 
