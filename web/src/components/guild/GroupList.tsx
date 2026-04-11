@@ -65,7 +65,7 @@ export default function GroupList({
           return (
             <div key={group.id}>
               <div
-                className="w-full text-left px-3 py-2.5 rounded-lg transition-colors cursor-pointer"
+                className="w-full text-left px-3 py-2.5 rounded-lg transition-colors cursor-pointer hover:bg-[var(--color-surface-hover)]"
                 style={{
                   background: selected ? "var(--color-accent-alpha)" : "transparent",
                   border: `1px solid ${selected ? "var(--color-accent)" : "transparent"}`,
@@ -74,6 +74,8 @@ export default function GroupList({
                   onSelectGroup(group.id);
                   setExpandedGroup(expanded ? null : group.id);
                 }}
+                aria-expanded={expanded}
+                role="button"
               >
                 <div className="flex items-center gap-2">
                   <span
@@ -84,9 +86,23 @@ export default function GroupList({
                   <span className="flex-1 text-sm truncate font-medium" style={{ color: "var(--color-text)" }}>
                     {group.name}
                   </span>
-                  <span className="text-xs shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                  <span className="text-[11px] shrink-0" style={{ color: "var(--color-text-muted)" }}>
                     {memberCount}人
                   </span>
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    fill="none"
+                    className="shrink-0 transition-transform duration-150"
+                    style={{
+                      color: "var(--color-text-muted)",
+                      transform: expanded ? "rotate(90deg)" : "rotate(0deg)",
+                    }}
+                    aria-hidden
+                  >
+                    <path d="M4 2.5L7.5 6L4 9.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
                 {group.description && (
                   <div className="text-xs mt-0.5 truncate ml-4" style={{ color: "var(--color-text-muted)" }}>

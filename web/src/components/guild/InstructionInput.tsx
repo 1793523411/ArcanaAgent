@@ -27,8 +27,6 @@ export default function InstructionInput({ onSubmit, loading, placeholder, showP
     setText("");
   };
 
-  const current = PRIORITY_OPTIONS.find((p) => p.value === priority) ?? PRIORITY_OPTIONS[1];
-
   return (
     <div
       className="flex flex-col gap-2 p-3 border-t"
@@ -62,7 +60,6 @@ export default function InstructionInput({ onSubmit, loading, placeholder, showP
             onChange={setPriority}
             disabled={loading}
             title="任务优先级"
-            icon={<span className="text-sm leading-none">{current.icon}</span>}
             leadingLabel="优先级"
             options={PRIORITY_OPTIONS.map((p) => ({
               value: p.value,
