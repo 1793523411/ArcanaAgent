@@ -73,6 +73,16 @@ import {
   getAllExecutions,
 } from "./scheduler/routes.js";
 import { schedulerManager } from "./scheduler/manager.js";
+import {
+  getGuildInfo, putGuildInfo,
+  getGroups, postGroup, getGroupById, putGroupById, deleteGroupById,
+  postGroupAgent, deleteGroupAgent, getGroupStream,
+  getAgents as getGuildAgents, postAgent, getAgentById as getGuildAgentById,
+  putAgentById as putGuildAgentById, deleteAgentById as deleteGuildAgentById,
+  getAgentMemories, getAgentStats, postAgentAsset, deleteAgentAsset,
+  getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
+  postAssignTask, postAutoBid, getTaskExecutionLog,
+} from "./guild/routes.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -162,6 +172,34 @@ app.post("/api/scheduled-tasks/:id/toggle", toggleTask);
 app.post("/api/scheduled-tasks/:id/execute", executeTaskNow);
 app.get("/api/scheduled-tasks/:id/executions", getTaskExecutions);
 app.get("/api/scheduled-executions", getAllExecutions);
+
+// Guild Mode API
+app.get("/api/guild", getGuildInfo);
+app.put("/api/guild", putGuildInfo);
+app.get("/api/guild/groups", getGroups);
+app.post("/api/guild/groups", postGroup);
+app.get("/api/guild/groups/:id", getGroupById);
+app.put("/api/guild/groups/:id", putGroupById);
+app.delete("/api/guild/groups/:id", deleteGroupById);
+app.post("/api/guild/groups/:id/agents", postGroupAgent);
+app.delete("/api/guild/groups/:id/agents/:agentId", deleteGroupAgent);
+app.get("/api/guild/groups/:groupId/stream", getGroupStream);
+app.get("/api/guild/groups/:groupId/tasks", getGroupTaskList);
+app.post("/api/guild/groups/:groupId/tasks", postGroupTask);
+app.post("/api/guild/groups/:groupId/assign", postAssignTask);
+app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
+app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);
+app.put("/api/guild/tasks/:id", putGuildTask);
+app.delete("/api/guild/tasks/:id", deleteGuildTask);
+app.get("/api/guild/agents", getGuildAgents);
+app.post("/api/guild/agents", postAgent);
+app.get("/api/guild/agents/:id", getGuildAgentById);
+app.put("/api/guild/agents/:id", putGuildAgentById);
+app.delete("/api/guild/agents/:id", deleteGuildAgentById);
+app.get("/api/guild/agents/:id/memories", getAgentMemories);
+app.get("/api/guild/agents/:id/stats", getAgentStats);
+app.post("/api/guild/agents/:id/assets", postAgentAsset);
+app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
 
 // 提供前端静态文件（生产环境）
 const publicPath = join(__dirname, "..", "public");
