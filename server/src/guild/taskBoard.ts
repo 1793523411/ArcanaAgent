@@ -57,6 +57,7 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
   const task: GuildTask = {
     id: genId("task"),
     groupId,
+    kind: params.kind ?? "adhoc",
     title: params.title,
     description: params.description,
     status: "open",
@@ -64,6 +65,11 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
     dependsOn: params.dependsOn,
     createdBy: params.createdBy ?? "user",
     createdAt: now,
+    parentTaskId: params.parentTaskId,
+    suggestedSkills: params.suggestedSkills,
+    suggestedAgentId: params.suggestedAgentId,
+    acceptanceCriteria: params.acceptanceCriteria,
+    workspaceRef: params.workspaceRef,
   };
   tasks.push(task);
   saveTasks(groupId, tasks);
@@ -89,7 +95,12 @@ export function getOpenTasks(groupId: string): GuildTask[] {
 export function updateTask(
   groupId: string,
   taskId: string,
-  updates: Partial<Pick<GuildTask, "title" | "description" | "status" | "priority" | "assignedAgentId" | "result" | "startedAt" | "completedAt" | "bids" | "blockedBy">>
+  updates: Partial<Pick<GuildTask,
+    | "title" | "description" | "status" | "priority" | "assignedAgentId"
+    | "result" | "startedAt" | "completedAt" | "bids" | "blockedBy"
+    | "kind" | "parentTaskId" | "subtaskIds" | "suggestedSkills"
+    | "suggestedAgentId" | "acceptanceCriteria" | "workspaceRef" | "handoff"
+  >>
 ): GuildTask | null {
   const tasks = loadTasks(groupId);
   const idx = tasks.findIndex((t) => t.id === taskId);
@@ -140,8 +151,50 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
   });
   if (task) {
     guildEventBus.emit({ type: "task_completed", taskId, agentId, result });
+    rollupParentRequirement(groupId, task);
   }
   return task;
+}
+
+/**
+ * After a subtask completes, check if its parent requirement has all subtasks
+ * in terminal state. If so, roll the parent up to "completed" with a summary
+ * aggregating the children. Failed subtasks roll the parent up to "failed".
+ */
+function rollupParentRequirement(groupId: string, child: GuildTask): void {
+  const parentId = child.parentTaskId;
+  if (!parentId) return;
+  const parent = getTask(groupId, parentId);
+  if (!parent || parent.kind !== "requirement") return;
+  if (isTerminalStatus(parent.status)) return;
+  const siblings = getSubtasks(groupId, parentId);
+  if (siblings.length === 0) return;
+  if (!siblings.every((s) => isTerminalStatus(s.status))) return;
+  const failed = siblings.filter((s) => s.status === "failed");
+  const completedCount = siblings.filter((s) => s.status === "completed").length;
+  const now = new Date().toISOString();
+  const lines = siblings.map((s, i) => {
+    const mark = s.status === "completed" ? "✓" : s.status === "failed" ? "✗" : "·";
+    return `${mark} ${i + 1}. ${s.title}`;
+  });
+  const summary =
+    failed.length > 0
+      ? `需求拆解的 ${siblings.length} 个子任务已全部结束（${completedCount} 完成 / ${failed.length} 失败）：\n${lines.join("\n")}`
+      : `需求拆解的 ${siblings.length} 个子任务已全部完成：\n${lines.join("\n")}`;
+  const result: TaskResult = { summary };
+  const finalStatus = failed.length > 0 ? "failed" : "completed";
+  const updated = updateTask(groupId, parentId, {
+    status: finalStatus,
+    completedAt: now,
+    result,
+  });
+  if (updated) {
+    if (finalStatus === "completed") {
+      guildEventBus.emit({ type: "task_completed", taskId: parentId, agentId: parent.assignedAgentId ?? "lead", result });
+    } else {
+      guildEventBus.emit({ type: "task_failed", taskId: parentId, agentId: parent.assignedAgentId ?? "lead", error: `${failed.length} 个子任务失败` });
+    }
+  }
 }
 
 export function failTask(groupId: string, taskId: string, agentId: string, error: string): GuildTask | null {
@@ -155,6 +208,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
   });
   if (task) {
     guildEventBus.emit({ type: "task_failed", taskId, agentId, error });
+    rollupParentRequirement(groupId, task);
   }
   return task;
 }
@@ -182,6 +236,66 @@ export function removeTask(groupId: string, taskId: string): boolean {
   // task out of their local state instead of just flipping its status.
   guildEventBus.emit({ type: "task_removed", taskId, groupId });
   return true;
+}
+
+// ─── Subtask / Dependency helpers ───────────────────────────
+
+/** Return the immediate subtasks of a parent requirement (order of creation). */
+export function getSubtasks(groupId: string, parentTaskId: string): GuildTask[] {
+  return loadTasks(groupId).filter((t) => t.parentTaskId === parentTaskId);
+}
+
+/**
+ * All dependencies of a task must be `completed` for the task to be eligible.
+ * Unknown deps (task id not in the group) are treated as completed so stale
+ * references don't indefinitely block the DAG.
+ */
+export function areDepsReady(groupId: string, task: GuildTask): boolean {
+  if (!task.dependsOn || task.dependsOn.length === 0) return true;
+  const tasks = loadTasks(groupId);
+  const byId = new Map(tasks.map((t) => [t.id, t] as const));
+  for (const depId of task.dependsOn) {
+    const dep = byId.get(depId);
+    if (!dep) continue;
+    if (dep.status !== "completed") return false;
+  }
+  return true;
+}
+
+/**
+ * Scan a group for requirement tasks whose subtasks are all in terminal state
+ * but the parent itself was never rolled up (e.g. data created before the
+ * rollup logic existed). Roll them up now.
+ */
+export function reconcileRequirementRollups(groupId: string): number {
+  const tasks = loadTasks(groupId);
+  const subtasksByParent = new Map<string, GuildTask[]>();
+  for (const t of tasks) {
+    if (!t.parentTaskId) continue;
+    const arr = subtasksByParent.get(t.parentTaskId) ?? [];
+    arr.push(t);
+    subtasksByParent.set(t.parentTaskId, arr);
+  }
+  let rolled = 0;
+  for (const t of tasks) {
+    if (t.kind !== "requirement") continue;
+    if (isTerminalStatus(t.status)) continue;
+    const subs = subtasksByParent.get(t.id) ?? [];
+    if (subs.length === 0) continue;
+    if (!subs.every((s) => isTerminalStatus(s.status))) continue;
+    rollupParentRequirement(groupId, subs[0]);
+    rolled += 1;
+  }
+  return rolled;
+}
+
+/** Return requirement-kind tasks that have not yet been decomposed. */
+export function getUnplannedRequirements(groupId: string): GuildTask[] {
+  return loadTasks(groupId).filter((t) =>
+    t.kind === "requirement" &&
+    (t.status === "open" || t.status === "planning") &&
+    (!t.subtaskIds || t.subtaskIds.length === 0),
+  );
 }
 
 /** Scan all groups to find which one owns a task. Slow but fine for MVP. */

@@ -425,6 +425,17 @@ export function useGuildStream(groupId: string | null) {
       try {
         const data: { agentId: string; taskId: string; phase: string; payload: unknown } = JSON.parse(e.data);
         appendEvent(data.taskId, data.agentId, "plan", data.phase, { payload: data.payload });
+        // Planner runs aren't backed by a real task lifecycle, so transition the
+        // TaskExecution status manually when the planner finishes.
+        if (data.phase === "planner_done" || data.phase === "planner_failed") {
+          const now = new Date().toISOString();
+          const nextStatus: TaskExecution["status"] = data.phase === "planner_done" ? "completed" : "failed";
+          setTaskExecutions((prev) => {
+            const exec = prev[data.taskId];
+            if (!exec) return prev;
+            return { ...prev, [data.taskId]: { ...exec, status: nextStatus, completedAt: now } };
+          });
+        }
       } catch {
         // ignore
       }

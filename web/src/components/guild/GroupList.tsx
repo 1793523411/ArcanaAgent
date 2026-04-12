@@ -13,6 +13,7 @@ interface Props {
   onAddAgentToGroup: (groupId: string, agentId: string) => Promise<void>;
   onRemoveAgentFromGroup: (groupId: string, agentId: string) => Promise<void>;
   onDeleteGroup: (groupId: string) => Promise<void>;
+  onSetGroupLead: (groupId: string, agentId: string | null) => Promise<void>;
 }
 
 function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
@@ -25,7 +26,7 @@ function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
 export default function GroupList({
   groups, agents, selectedGroupId,
   onSelectGroup, onSelectAgent, onCreateGroup, onCreateAgent,
-  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup,
+  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup, onSetGroupLead,
 }: Props) {
   // Pool: agents not in any group, plus all agents for multi-group assignment
   const poolAgents = agents.filter((a) => !a.groupId);
@@ -139,6 +140,36 @@ export default function GroupList({
                       </button>
                     </div>
                   ))}
+
+                  {/* Lead selector */}
+                  {groupAgents.length > 0 && (
+                    <div className="px-2 pt-1">
+                      <div className="text-[10px] font-medium mb-1" style={{ color: "var(--color-text-muted)" }}>
+                        Lead（需求分解）
+                      </div>
+                      <select
+                        value={group.leadAgentId ?? ""}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          onSetGroupLead(group.id, val === "" ? null : val);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full text-xs px-2 py-1 rounded"
+                        style={{
+                          background: "var(--color-bg)",
+                          border: "1px solid var(--color-border)",
+                          color: "var(--color-text)",
+                        }}
+                      >
+                        <option value="">未设置（任务直接竞标）</option>
+                        {groupAgents.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.icon} {a.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
                   {/* Assign agent dropdown */}
                   {assigningTo === group.id ? (

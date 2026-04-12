@@ -1,11 +1,14 @@
 import type { Request, Response } from "express";
 import {
   getGuild, updateGuild,
-  createGroup, getGroup, listGroups, updateGroup, archiveGroup,
+  createGroup, getGroup, listGroups, updateGroup, archiveGroup, deleteGroup,
   createAgent, getAgent, listAgents, updateAgent, deleteAgent,
   assignAgentToGroup, removeAgentFromGroup, getGroupAgents, getUnassignedAgents,
   addAsset, removeAsset,
+  addGroupAsset, removeGroupAsset, getGroupAssetPool, setGroupLead,
+  getAggregatedGroupAssets,
 } from "./guildManager.js";
+import { readWorkspaceRaw, readWorkspace } from "./workspace.js";
 import {
   createTask, getTask, getGroupTasks, updateTask, cancelTask, assignTask, getExecutionLog,
   removeTask, findTaskGroup,
@@ -89,7 +92,7 @@ export function putGroupById(req: Request, res: Response): void {
 
 export function deleteGroupById(req: Request, res: Response): void {
   try {
-    const ok = archiveGroup(p(req.params.id));
+    const ok = deleteGroup(p(req.params.id));
     if (!ok) { res.status(404).json({ error: "Group not found" }); return; }
     res.json({ success: true });
   } catch (e) {
@@ -421,6 +424,75 @@ export function postReleaseAgent(req: Request, res: Response): void {
     });
 
     res.json({ success: true, releasedTaskId });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── Group Assets & Lead ───────────────────────────────────────
+
+export function getGroupAssetList(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.id);
+    if (!getGroup(groupId)) { res.status(404).json({ error: "Group not found" }); return; }
+    res.json({
+      groupAssets: getGroupAssetPool(groupId),
+      aggregated: getAggregatedGroupAssets(groupId),
+    });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function postGroupAsset(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.id);
+    const asset = addGroupAsset(groupId, req.body);
+    if (!asset) { res.status(404).json({ error: "Group not found" }); return; }
+    res.status(201).json(asset);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function deleteGroupAssetById(req: Request, res: Response): void {
+  try {
+    const ok = removeGroupAsset(p(req.params.id), p(req.params.assetId));
+    if (!ok) { res.status(404).json({ error: "Asset not found" }); return; }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function putGroupLead(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.id);
+    const { agentId } = req.body ?? {};
+    const group = setGroupLead(groupId, agentId ?? undefined);
+    if (!group) { res.status(404).json({ error: "Group not found" }); return; }
+    res.json(group);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── Workspace reader ──────────────────────────────────────────
+
+export function getTaskWorkspace(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.groupId);
+    const taskId = p(req.params.taskId);
+    const format = String(req.query.format ?? "raw");
+    if (format === "parsed") {
+      const ws = readWorkspace(groupId, taskId);
+      if (!ws) { res.status(404).json({ error: "Workspace not found" }); return; }
+      res.json(ws);
+      return;
+    }
+    const raw = readWorkspaceRaw(groupId, taskId);
+    if (raw === null) { res.status(404).json({ error: "Workspace not found" }); return; }
+    res.type("text/markdown").send(raw);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

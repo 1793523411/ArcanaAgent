@@ -168,7 +168,7 @@ export async function getGroupTasks(groupId: string): Promise<GuildTask[]> {
   return r.json();
 }
 
-export async function createGroupTask(groupId: string, payload: { title: string; description: string; priority?: GuildTask["priority"]; dependsOn?: string[] }): Promise<GuildTask> {
+export async function createGroupTask(groupId: string, payload: { title: string; description: string; priority?: GuildTask["priority"]; dependsOn?: string[]; kind?: GuildTask["kind"]; acceptanceCriteria?: string; suggestedSkills?: string[]; suggestedAgentId?: string; parentTaskId?: string }): Promise<GuildTask> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -224,6 +224,58 @@ export async function assignGroupTask(groupId: string, taskId: string, agentId: 
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ taskId, agentId }),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Group Lead / Assets / Workspace ───────────────────
+
+export async function setGroupLead(groupId: string, agentId: string | null): Promise<Group> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/lead`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agentId }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function listGroupAssets(groupId: string): Promise<{ groupAssets: AgentAsset[]; aggregated: AgentAsset[] }> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/assets`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function addGroupAsset(groupId: string, payload: { type: AssetType; name: string; uri: string; description?: string; metadata?: Record<string, unknown>; ownerAgentId?: string; tags?: string[] }): Promise<AgentAsset> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/assets`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function removeGroupAsset(groupId: string, assetId: string): Promise<void> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/assets/${assetId}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function getTaskWorkspaceRaw(groupId: string, taskId: string): Promise<string> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks/${taskId}/workspace?format=raw`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.text();
+}
+
+export async function getTaskWorkspaceParsed(groupId: string, taskId: string): Promise<{
+  goal?: string;
+  scope?: string;
+  plan?: Array<{ id: string; title: string; owner?: string; status?: string }>;
+  decisions?: string[];
+  openQuestions?: string[];
+  handoffs?: Array<{ fromTaskId: string; content: string }>;
+}> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks/${taskId}/workspace?format=parsed`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

@@ -1,12 +1,14 @@
 import type { GuildTask, Group, TaskStatus } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
 import { listGroups } from "./guildManager.js";
-import { getGroupTasks, getTask } from "./taskBoard.js";
+import { getGroupTasks, getTask, findTaskGroup } from "./taskBoard.js";
 import { autoBid } from "./bidding.js";
 import { executeAgentTask } from "./agentExecutor.js";
 import { reconcileGroupWorkingAgents, reconcileGroupOrphanTasks } from "./agentReconcile.js";
 import { serverLogger } from "../lib/logger.js";
 import { appendSchedulerDispatched, appendSchedulerStalled } from "./schedulerLogStore.js";
+import { planRequirement } from "./planner.js";
+import { areDepsReady } from "./taskBoard.js";
 
 interface SchedulerDeps {
   listGroupsFn?: () => Group[];
@@ -105,6 +107,10 @@ export class GuildAutonomousScheduler {
       case "agent_status_changed":
         if (event.status === "idle") this.scheduleGroupsForAgent(event.agentId);
         break;
+      case "task_completed":
+      case "task_failed":
+        this.scheduleGroupForTask(event.taskId);
+        break;
       case "group_updated":
         this.scheduleGroup(event.groupId);
         break;
@@ -119,6 +125,11 @@ export class GuildAutonomousScheduler {
       if (group.status !== "active") continue;
       if (group.agents.includes(agentId)) this.scheduleGroup(group.id);
     }
+  }
+
+  private scheduleGroupForTask(taskId: string): void {
+    const groupId = findTaskGroup(taskId);
+    if (groupId) this.scheduleGroup(groupId);
   }
 
   private scheduleGroup(groupId: string): void {
@@ -143,7 +154,7 @@ export class GuildAutonomousScheduler {
     try {
       reconcileGroupOrphanTasks(groupId);
       reconcileGroupWorkingAgents(groupId);
-      const openTasks = this.getGroupTasksFn(groupId, ["open", "bidding"]);
+      const openTasks = this.getGroupTasksFn(groupId, ["open", "bidding", "planning"]);
       const sorted = [...openTasks].sort((a, b) => {
         const byPriority = PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority];
         if (byPriority !== 0) return byPriority;
@@ -151,8 +162,40 @@ export class GuildAutonomousScheduler {
       });
       if (sorted.length === 0) return;
 
+      // 1) Route requirement-kind tasks to the planner (skip anything already decomposed).
+      const requirementsToPlan = sorted.filter(
+        (t) => t.kind === "requirement" && (!t.subtaskIds || t.subtaskIds.length === 0),
+      );
+      for (const req of requirementsToPlan) {
+        if (!this.started) break;
+        try {
+          const outcome = await planRequirement(groupId, req);
+          if (!outcome.ok) {
+            serverLogger.warn("[guild] planner failed, task left for bidding fallback", {
+              groupId,
+              taskId: req.id,
+              reason: outcome.reason,
+            });
+          }
+        } catch (e) {
+          serverLogger.error("[guild] planner threw", { groupId, taskId: req.id, error: String(e) });
+        }
+      }
+
+      // 2) After planning, refresh eligible tasks: adhoc + subtask with deps ready,
+      //    skipping requirements (they stay as orchestration nodes).
+      const refreshed = this.getGroupTasksFn(groupId, ["open", "bidding"]).sort((a, b) => {
+        const byPriority = PRIORITY_RANK[b.priority] - PRIORITY_RANK[a.priority];
+        if (byPriority !== 0) return byPriority;
+        return Date.parse(a.createdAt) - Date.parse(b.createdAt);
+      });
+      const eligible = refreshed.filter((t) => {
+        if (t.kind === "requirement") return false;
+        return areDepsReady(groupId, t);
+      });
+
       let assignedAny = false;
-      for (const candidate of sorted) {
+      for (const candidate of eligible) {
         if (!this.started) break;
         const task = this.getTaskFn(groupId, candidate.id);
         if (!task || (task.status !== "open" && task.status !== "bidding")) continue;

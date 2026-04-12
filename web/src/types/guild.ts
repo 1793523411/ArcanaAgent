@@ -1,7 +1,17 @@
 export type AssetType = "repo" | "document" | "api" | "database" | "prompt" | "config" | "mcp_server" | "custom";
+export type AssetScope = "agent" | "group";
 export type AgentStatus = "idle" | "working" | "offline";
-export type TaskStatus = "open" | "bidding" | "in_progress" | "completed" | "failed" | "cancelled";
+export type TaskStatus =
+  | "open"
+  | "bidding"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "planning"
+  | "blocked";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
+export type TaskKind = "requirement" | "subtask" | "adhoc";
 
 export interface AgentAsset {
   id: string;
@@ -11,6 +21,10 @@ export interface AgentAsset {
   description?: string;
   metadata?: Record<string, unknown>;
   addedAt: string;
+  lastAccessedAt?: string;
+  scope?: AssetScope;
+  ownerAgentId?: string;
+  tags?: string[];
 }
 
 export interface AgentStats {
@@ -47,6 +61,8 @@ export interface Group {
   description: string;
   guildId: string;
   agents: string[];
+  leadAgentId?: string;
+  assets?: AgentAsset[];
   sharedContext?: string;
   status: "active" | "archived";
   createdAt: string;
@@ -63,11 +79,40 @@ export interface Guild {
   updatedAt: string;
 }
 
+export interface TaskHandoffArtifact {
+  kind: "commit" | "file" | "url" | "note";
+  ref: string;
+  description?: string;
+}
+
+export interface TaskHandoff {
+  fromAgentId: string;
+  toSubtaskId?: string;
+  summary: string;
+  artifacts: TaskHandoffArtifact[];
+  inputsConsumed?: string[];
+  openQuestions?: string[];
+  createdAt: string;
+}
+
 export interface TaskResult {
   summary: string;
   artifacts?: string[];
   agentNotes?: string;
   memoryCreated?: string[];
+  handoff?: TaskHandoff;
+}
+
+export interface ScoreBreakdown {
+  asset: number;
+  memory: number;
+  skill: number;
+  success: number;
+  ownerBonus: number;
+  assetBonus: number;
+  loadPenalty: number;
+  threshold: number;
+  final: number;
 }
 
 export interface TaskBid {
@@ -79,11 +124,14 @@ export interface TaskBid {
   relevantAssets: string[];
   relevantMemories: string[];
   biddedAt: string;
+  scoreBreakdown?: ScoreBreakdown;
+  via?: "bidding" | "fallback";
 }
 
 export interface GuildTask {
   id: string;
   groupId: string;
+  kind?: TaskKind;
   title: string;
   description: string;
   status: TaskStatus;
@@ -91,7 +139,15 @@ export interface GuildTask {
   assignedAgentId?: string;
   bids?: TaskBid[];
   dependsOn?: string[];
+  blockedBy?: string[];
   result?: TaskResult;
+  parentTaskId?: string;
+  subtaskIds?: string[];
+  suggestedSkills?: string[];
+  suggestedAgentId?: string;
+  acceptanceCriteria?: string;
+  workspaceRef?: string;
+  handoff?: TaskHandoff;
   createdBy: string;
   createdAt: string;
   startedAt?: string;
@@ -102,8 +158,17 @@ export interface AgentMemory {
   id: string;
   type: "experience" | "knowledge" | "preference";
   title: string;
+  summary?: string;
   content: string;
   tags: string[];
+  relatedAssets?: string[];
+  sourceTaskId?: string;
+  groupId?: string;
+  strength: number;
+  pinned: boolean;
   createdAt: string;
+  updatedAt: string;
   accessCount: number;
+  lastAccessedAt?: string;
+  v: 2;
 }

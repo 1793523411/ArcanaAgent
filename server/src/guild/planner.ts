@@ -1,0 +1,418 @@
+import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import type { GuildTask, GuildAgent, AgentAsset, CreateTaskParams, Group } from "./types.js";
+import { getGroup, getGroupAgents, getAggregatedGroupAssets, getAgent } from "./guildManager.js";
+import { createTask, updateTask, getSubtasks, getTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
+import {
+  createWorkspace,
+  updatePlanSection,
+  updateScopeSection,
+  appendDecision,
+  setWorkspaceStatus,
+  setOpenQuestions,
+  getWorkspaceRef,
+} from "./workspace.js";
+import { getModelAdapter } from "../llm/adapter.js";
+import { loadUserConfig } from "../config/userConfig.js";
+import { serverLogger } from "../lib/logger.js";
+import { guildEventBus } from "./eventBus.js";
+
+/**
+ * Tech-lead decomposition: turn a user-submitted requirement into a DAG of
+ * subtasks. The planner runs one LLM call (using the user-selected model),
+ * parses a strict JSON response, and writes subtasks + workspace.
+ *
+ * Design choices:
+ *  - Model selection honors Group.leadAgentId → agent.modelId → userConfig.modelId
+ *    → hardcoded default. This matches the user's requirement that the planner
+ *    use whichever model the user has configured.
+ *  - On JSON parse failure we retry once. If retry still fails we downgrade the
+ *    requirement to `adhoc` kind so the normal bidding path can pick it up,
+ *    logging the failure so the user can inspect it later.
+ */
+
+export interface PlannerSubtaskSpec {
+  title: string;
+  description: string;
+  suggestedSkills?: string[];
+  suggestedAgentId?: string | null;
+  dependsOn?: number[];
+  acceptanceCriteria?: string;
+  priority?: "low" | "medium" | "high" | "urgent";
+}
+
+export interface PlannerResult {
+  goal: string;
+  scope: { repos?: string[]; outOfScope?: string[] };
+  subtasks: PlannerSubtaskSpec[];
+  risks?: string[];
+  acceptanceCriteria?: string;
+  openQuestions?: string[];
+}
+
+export interface PlanRequirementOutcome {
+  ok: boolean;
+  subtaskIds?: string[];
+  reason?: string;
+  raw?: string;
+  result?: PlannerResult;
+}
+
+// ─── Model selection ──────────────────────────────────────────
+
+function resolvePlannerModelId(group: Group): string | undefined {
+  if (group.leadAgentId) {
+    const lead = getAgent(group.leadAgentId);
+    if (lead?.modelId) return lead.modelId;
+  }
+  const cfg = loadUserConfig();
+  return cfg.modelId;
+}
+
+// ─── Prompt builders ──────────────────────────────────────────
+
+function renderAssetLine(a: AgentAsset): string {
+  const owner = a.ownerAgentId ? ` · owner: \`${a.ownerAgentId}\`` : "";
+  const tags = a.tags && a.tags.length > 0 ? ` · tags: ${a.tags.join(", ")}` : "";
+  const desc = a.description ? ` — ${a.description}` : "";
+  return `- \`${a.name}\` (${a.type}, ${a.uri})${desc}${owner}${tags}`;
+}
+
+function renderAgentLine(a: GuildAgent): string {
+  const desc = (a.description ?? "").replace(/\s+/g, " ").trim() || "(no description)";
+  const assetNames = a.assets.map((x) => x.name).slice(0, 5).join(", ");
+  const ownedStr = assetNames ? ` · private assets: ${assetNames}` : "";
+  return `- \`${a.id}\` **${a.name}**: ${desc}${ownedStr}`;
+}
+
+function buildPlannerSystemPrompt(group: Group): string {
+  const agents = getGroupAgents(group.id);
+  const assets = getAggregatedGroupAssets(group.id);
+
+  const sections: string[] = [];
+  sections.push(`你是 Guild 小组 "${group.name}" 的 Tech Lead。职责：把一条需求拆成最小可并行的 subtask DAG，分派给最合适的同事。`);
+  sections.push(``);
+  sections.push(`## 小组成员`);
+  if (agents.length === 0) {
+    sections.push(`- (暂无)`);
+  } else {
+    for (const a of agents) sections.push(renderAgentLine(a));
+  }
+  sections.push(``);
+  sections.push(`## 小组资源（repos、文档、API、MCP 等）`);
+  if (assets.length === 0) {
+    sections.push(`- (暂无)`);
+  } else {
+    for (const a of assets) sections.push(renderAssetLine(a));
+  }
+  sections.push(``);
+  if (group.sharedContext) {
+    sections.push(`## 小组共识/约定`);
+    sections.push(group.sharedContext);
+    sections.push(``);
+  }
+  sections.push(`## 输出格式（必须是严格的 JSON，不要用 markdown 代码块包裹）`);
+  sections.push(`{
+  "goal": "把用户需求用一句话精炼地重述",
+  "scope": {
+    "repos": ["可能涉及的仓库/资产名称"],
+    "outOfScope": ["本次明确不做的事"]
+  },
+  "subtasks": [
+    {
+      "title": "短标题",
+      "description": "具体说明该子任务要做什么，要具体到文件/API/验收标准",
+      "suggestedSkills": ["backend", "repo:foo"],
+      "suggestedAgentId": "<小组内 agent id 或 null>",
+      "dependsOn": [],
+      "priority": "medium",
+      "acceptanceCriteria": "如何判定这个子任务完成"
+    }
+  ],
+  "risks": ["潜在风险"],
+  "acceptanceCriteria": "整体验收标准",
+  "openQuestions": ["需要用户澄清的问题"]
+}`);
+  sections.push(``);
+  sections.push(`## 强制规则`);
+  sections.push(`1. 每个 subtask 必须能被单个 agent 独立完成。跨仓库的工作必须拆成不同 subtask。`);
+  sections.push(`2. dependsOn 使用数组下标（从 0 开始）引用前面的 subtask，形成 DAG。不允许环。`);
+  sections.push(`3. suggestedAgentId 只能是上方"小组成员"列出的真实 id；若不确定可填 null。`);
+  sections.push(`4. 不要输出任何 JSON 之外的文字（不要解释、不要道歉、不要 markdown）。`);
+  sections.push(`5. 如果信息不足无法拆解，返回 "subtasks": []，并在 openQuestions / risks 里说明原因。`);
+  return sections.join("\n");
+}
+
+function buildPlannerUserPrompt(requirement: GuildTask): string {
+  return [
+    `## 需求`,
+    `标题: ${requirement.title}`,
+    `优先级: ${requirement.priority}`,
+    ``,
+    `## 描述`,
+    requirement.description,
+    ``,
+    `请立即输出 JSON 拆解结果。`,
+  ].join("\n");
+}
+
+// ─── Response parsing ─────────────────────────────────────────
+
+function extractJson(raw: string): string | null {
+  const trimmed = raw.trim();
+  // Strip ```json ... ``` if the model ignored instructions
+  const fence = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/);
+  if (fence) return fence[1].trim();
+  // Find first { and its matching last }
+  const start = trimmed.indexOf("{");
+  const end = trimmed.lastIndexOf("}");
+  if (start < 0 || end < 0 || end < start) return null;
+  return trimmed.slice(start, end + 1);
+}
+
+function parsePlannerResponse(raw: string): PlannerResult | null {
+  const jsonStr = extractJson(raw);
+  if (!jsonStr) return null;
+  try {
+    const parsed = JSON.parse(jsonStr);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    if (!Array.isArray(parsed.subtasks)) return null;
+    return parsed as PlannerResult;
+  } catch {
+    return null;
+  }
+}
+
+// ─── LLM call ─────────────────────────────────────────────────
+
+async function callPlanner(modelId: string | undefined, system: string, user: string): Promise<string> {
+  const adapter = getModelAdapter(modelId);
+  const llm = adapter.getLLM();
+  const response = await llm.invoke([new SystemMessage(system), new HumanMessage(user)]);
+  const content = response.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((c) => (typeof c === "string" ? c : (c as { text?: string }).text ?? ""))
+      .join("");
+  }
+  return String(content);
+}
+
+// ─── Plan rendering ───────────────────────────────────────────
+
+function renderPlanTable(subtasks: GuildTask[]): string {
+  if (subtasks.length === 0) return "_No subtasks._";
+  const header = "| ID | Title | Owner | Depends | Status | Acceptance |";
+  const divider = "|----|-------|-------|---------|--------|------------|";
+  const rows = subtasks.map((t) => {
+    const owner = t.suggestedAgentId ?? t.assignedAgentId ?? "—";
+    const deps = (t.dependsOn ?? []).join(", ") || "—";
+    const acc = (t.acceptanceCriteria ?? "—").replace(/\|/g, "\\|").slice(0, 80);
+    return `| \`${t.id}\` | ${escapePipe(t.title)} | ${owner} | ${escapePipe(deps)} | ${t.status} | ${acc} |`;
+  });
+  return [header, divider, ...rows].join("\n");
+}
+
+function escapePipe(s: string): string {
+  return s.replace(/\|/g, "\\|");
+}
+
+function renderScopeMd(result: PlannerResult): string {
+  const lines: string[] = [];
+  if (result.scope?.repos && result.scope.repos.length > 0) {
+    lines.push(`- **Repos**: ${result.scope.repos.map((r) => `\`${r}\``).join(", ")}`);
+  }
+  if (result.scope?.outOfScope && result.scope.outOfScope.length > 0) {
+    lines.push(`- **Out of scope**:`);
+    for (const o of result.scope.outOfScope) lines.push(`  - ${o}`);
+  }
+  if (result.acceptanceCriteria) {
+    lines.push(`- **Acceptance**: ${result.acceptanceCriteria}`);
+  }
+  return lines.length > 0 ? lines.join("\n") : "_Scope to be defined._";
+}
+
+// ─── Public entry point ───────────────────────────────────────
+
+/**
+ * Decompose a requirement task: call the LLM, persist subtasks, set up
+ * workspace, flip the requirement to in_progress. Safe to call multiple
+ * times — if the requirement already has subtasks it becomes a no-op.
+ */
+export async function planRequirement(
+  groupId: string,
+  requirement: GuildTask,
+): Promise<PlanRequirementOutcome> {
+  const group = getGroup(groupId);
+  if (!group) return { ok: false, reason: "Group not found" };
+  if (requirement.kind !== "requirement") {
+    return { ok: false, reason: "Not a requirement-kind task" };
+  }
+  const existing = getSubtasks(groupId, requirement.id);
+  if (existing.length > 0) {
+    return { ok: true, subtaskIds: existing.map((t) => t.id), reason: "Already planned" };
+  }
+
+  // Mark as planning so the scheduler stops touching it
+  updateTask(groupId, requirement.id, { status: "planning" });
+  guildEventBus.emit({ type: "task_updated", task: { ...requirement, status: "planning" } });
+
+  const modelId = resolvePlannerModelId(group);
+  const system = buildPlannerSystemPrompt(group);
+  const user = buildPlannerUserPrompt(requirement);
+
+  // Ensure a workspace exists up-front so the lead's work is visible even if
+  // the LLM call fails mid-flight.
+  const workspaceRef = createWorkspace(
+    groupId,
+    requirement.id,
+    requirement.title,
+    requirement.description,
+    group.leadAgentId ?? "lead",
+  );
+  updateTask(groupId, requirement.id, { workspaceRef });
+
+  // Surface planner work in the live execution panel. We re-use the agent
+  // event channel so the existing log UI can render it without changes —
+  // agentId is the configured Lead (or the synthetic "lead" id when none).
+  const leadAgentId = group.leadAgentId ?? "lead";
+
+  // Persist execution log server-side so it survives page refreshes.
+  initExecutionLog(groupId, requirement.id, leadAgentId);
+  const logPlan = (phase: string, payload?: unknown) => {
+    appendExecutionLog(groupId, requirement.id, { type: "plan", content: phase, payload, timestamp: new Date().toISOString() });
+  };
+  const logText = (content: string) => {
+    appendExecutionLog(groupId, requirement.id, { type: "text", content, timestamp: new Date().toISOString() });
+  };
+
+  guildEventBus.emit({
+    type: "agent_plan",
+    agentId: leadAgentId,
+    taskId: requirement.id,
+    phase: "planner_start",
+    payload: { model: modelId ?? "(default)", title: requirement.title },
+  });
+  logPlan("planner_start", { model: modelId ?? "(default)", title: requirement.title });
+  const startMsg = `▶ Lead 开始拆解需求\n模型: ${modelId ?? "(default)"}\n\n--- system prompt ---\n${system}\n\n--- user prompt ---\n${user}\n`;
+  guildEventBus.emit({
+    type: "agent_output",
+    agentId: leadAgentId,
+    taskId: requirement.id,
+    content: startMsg,
+  });
+  logText(startMsg);
+
+  let raw = "";
+  let parsed: PlannerResult | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      raw = await callPlanner(modelId, system, user);
+      const rawMsg = `\n--- LLM raw response (attempt ${attempt + 1}) ---\n${raw}\n`;
+      guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: rawMsg });
+      logText(rawMsg);
+      parsed = parsePlannerResponse(raw);
+      if (parsed) break;
+      serverLogger.warn("[guild.planner] JSON parse failed", { attempt, rawPreview: raw.slice(0, 300) });
+      const parseMsg = `\n⚠ JSON 解析失败 (attempt ${attempt + 1})，正在重试...\n`;
+      guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: parseMsg });
+      logText(parseMsg);
+    } catch (e) {
+      serverLogger.error("[guild.planner] LLM call failed", { attempt, error: String(e) });
+      const errMsg = `\n✖ LLM 调用失败 (attempt ${attempt + 1}): ${String(e)}\n`;
+      guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: errMsg });
+      logText(errMsg);
+    }
+  }
+
+  if (!parsed) {
+    // Downgrade to adhoc so the bidding path can still pick it up.
+    updateTask(groupId, requirement.id, { kind: "adhoc", status: "open" });
+    appendDecision(groupId, requirement.id, "lead", "Planner 拆解失败，降级为 adhoc 任务由 bidding 兜底");
+    setWorkspaceStatus(groupId, requirement.id, "blocked");
+    guildEventBus.emit({
+      type: "agent_plan",
+      agentId: leadAgentId,
+      taskId: requirement.id,
+      phase: "planner_failed",
+      payload: { rawPreview: raw.slice(0, 300) },
+    });
+    logPlan("planner_failed", { rawPreview: raw.slice(0, 300) });
+    finalizeExecutionLog(groupId, requirement.id, "failed");
+    return { ok: false, reason: "Planner failed to produce valid JSON", raw };
+  }
+
+  // Persist subtasks in definition order so dependsOn indices line up.
+  const createdSubtasks: GuildTask[] = [];
+  const idByIndex = new Map<number, string>();
+  for (let i = 0; i < parsed.subtasks.length; i++) {
+    const spec = parsed.subtasks[i];
+    const depIds = (spec.dependsOn ?? [])
+      .map((idx) => idByIndex.get(idx))
+      .filter((x): x is string => !!x);
+    const params: CreateTaskParams = {
+      title: spec.title,
+      description: spec.description,
+      kind: "subtask",
+      priority: spec.priority ?? requirement.priority,
+      parentTaskId: requirement.id,
+      suggestedSkills: spec.suggestedSkills,
+      suggestedAgentId: spec.suggestedAgentId ?? undefined,
+      acceptanceCriteria: spec.acceptanceCriteria,
+      workspaceRef,
+      dependsOn: depIds,
+      createdBy: group.leadAgentId ?? "lead",
+    };
+    const sub = createTask(groupId, params);
+    createdSubtasks.push(sub);
+    idByIndex.set(i, sub.id);
+  }
+
+  // Update requirement with subtaskIds and status. A requirement with children
+  // stays in a non-terminal "planning_done" state — we reuse "open" here but
+  // bidding.ts will refuse to bid on it (kind === "requirement").
+  const subtaskIds = createdSubtasks.map((t) => t.id);
+  updateTask(groupId, requirement.id, {
+    status: "open",
+    subtaskIds,
+  });
+
+  // Workspace: write plan + scope + open questions
+  updatePlanSection(groupId, requirement.id, renderPlanTable(createdSubtasks));
+  updateScopeSection(groupId, requirement.id, renderScopeMd(parsed));
+  if (parsed.openQuestions && parsed.openQuestions.length > 0) {
+    setOpenQuestions(groupId, requirement.id, parsed.openQuestions);
+  }
+  appendDecision(
+    groupId,
+    requirement.id,
+    group.leadAgentId ?? "lead",
+    `拆解为 ${subtaskIds.length} 个子任务：${subtaskIds.join(", ")}`,
+  );
+  setWorkspaceStatus(groupId, requirement.id, "in_progress");
+
+  const doneMsg = `\n✓ 拆解完成：${subtaskIds.length} 个子任务\n${createdSubtasks.map((s, i) => `  ${i + 1}. ${s.title}`).join("\n")}\n`;
+  guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: doneMsg });
+  logText(doneMsg);
+  guildEventBus.emit({
+    type: "agent_plan",
+    agentId: leadAgentId,
+    taskId: requirement.id,
+    phase: "planner_done",
+    payload: { subtaskIds, goal: parsed.goal },
+  });
+  logPlan("planner_done", { subtaskIds, goal: parsed.goal });
+  finalizeExecutionLog(groupId, requirement.id, "completed");
+
+  // Let the scheduler know there's new work
+  for (const sub of createdSubtasks) {
+    guildEventBus.emit({ type: "task_created", task: sub });
+  }
+
+  return { ok: true, subtaskIds, result: parsed, raw };
+}
+
+/** Utility exposed for testing / UI: re-resolve workspaceRef for a requirement. */
+export function workspaceRefFor(groupId: string, parentTaskId: string): string {
+  return getWorkspaceRef(groupId, parentTaskId);
+}

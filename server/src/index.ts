@@ -83,8 +83,11 @@ import {
   getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
   postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
   postReleaseAgent,
+  getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead,
+  getTaskWorkspace,
 } from "./guild/routes.js";
 import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
+import { listGroups, reconcileRequirementRollups } from "./guild/index.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -204,6 +207,11 @@ app.get("/api/guild/agents/:id/stats", getAgentStats);
 app.post("/api/guild/agents/:id/assets", postAgentAsset);
 app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
 app.post("/api/guild/agents/:agentId/release", postReleaseAgent);
+app.get("/api/guild/groups/:id/assets", getGroupAssetList);
+app.post("/api/guild/groups/:id/assets", postGroupAsset);
+app.delete("/api/guild/groups/:id/assets/:assetId", deleteGroupAssetById);
+app.put("/api/guild/groups/:id/lead", putGroupLead);
+app.get("/api/guild/groups/:groupId/tasks/:taskId/workspace", getTaskWorkspace);
 
 // 提供前端静态文件（生产环境）
 const publicPath = join(__dirname, "..", "public");
@@ -228,4 +236,14 @@ app.listen(port, async () => {
   await schedulerManager.start();
   serverLogger.info("Starting guild autonomous scheduler...");
   guildAutonomousScheduler.start();
+
+  // Backfill: roll up any historical requirements whose subtasks finished
+  // before the rollup logic existed.
+  try {
+    let total = 0;
+    for (const g of listGroups()) total += reconcileRequirementRollups(g.id);
+    if (total > 0) serverLogger.info(`Reconciled ${total} requirement task(s) on startup`);
+  } catch (err) {
+    serverLogger.warn(`Requirement reconcile skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
 });

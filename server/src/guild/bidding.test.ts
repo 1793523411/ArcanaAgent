@@ -18,8 +18,15 @@ describe("guild bidding", () => {
   });
 
   it("priority widens the bidding threshold without inflating confidence", () => {
-    // High-ish threshold so a borderline agent gets gated by priority alone.
-    setBiddingConfig({ minConfidenceThreshold: 0.45, assetBonusWeight: 0.15, loadDecayFactor: 0.9 });
+    // Zero out bonuses that would push a borderline agent above any realistic
+    // threshold — this test only cares about priority → threshold movement.
+    setBiddingConfig({
+      minConfidenceThreshold: 0.45,
+      assetBonusWeight: 0.15,
+      ownerBonusWeight: 0,
+      successRatePrior: 0,
+      loadDecayFactor: 0.9,
+    });
 
     const agent = createAgent({
       name: "Borderline Worker",
@@ -75,5 +82,62 @@ describe("guild bidding", () => {
     expect(saved?.status).toBe("in_progress");
     expect(saved?.assignedAgentId).toBe(agent.id);
     expect(saved?.bids?.length).toBeGreaterThan(0);
+  });
+
+  it("owner bonus steers a task to the agent who owns the relevant asset", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.3,
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0.5,
+      successRatePrior: 0,
+    });
+
+    const group = createGroup({ name: "Fullstack", description: "web" });
+    const backend = createAgent({
+      name: "Backend Lee",
+      description: "backend engineer",
+      systemPrompt: "I work on APIs and databases",
+      assets: [{ type: "repo", name: "backend", uri: "file:///repos/backend", description: "backend service" }],
+    });
+    const frontend = createAgent({
+      name: "Frontend Sun",
+      description: "frontend engineer",
+      systemPrompt: "I work on UI and backend alike, very general",
+      assets: [{ type: "repo", name: "frontend", uri: "file:///repos/frontend", description: "frontend ui" }],
+    });
+    assignAgentToGroup(backend.id, group.id);
+    assignAgentToGroup(frontend.id, group.id);
+
+    const task = createTask(group.id, {
+      title: "Add backend endpoint",
+      description: "add a new backend endpoint to the backend service",
+      priority: "medium",
+    });
+
+    const backendBid = evaluateTask(backend, task);
+    const frontendBid = evaluateTask(frontend, task);
+    expect(backendBid).not.toBeNull();
+    expect(backendBid!.confidence).toBeGreaterThan(frontendBid?.confidence ?? 0);
+    expect(backendBid!.scoreBreakdown?.ownerBonus).toBeGreaterThan(0);
+  });
+
+  it("calculateConfidence never bunches veteran agents at 1.0", () => {
+    setBiddingConfig({ minConfidenceThreshold: 0.3, loadDecayFactor: 0.9, successRatePrior: 0.5 });
+    const agent = createAgent({
+      name: "Veteran",
+      description: "senior",
+      systemPrompt: "experienced engineer",
+    });
+    // Simulate a veteran who already has many completed tasks.
+    (agent.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    (agent.stats as { successRate: number }).successRate = 1;
+    const task = createTask(createGroup({ name: "g", description: "d" }).id, {
+      title: "generic task",
+      description: "do some work",
+      priority: "medium",
+    });
+    const c = calculateConfidence(agent, task);
+    expect(c).toBeGreaterThanOrEqual(0);
+    expect(c).toBeLessThanOrEqual(1);
   });
 });

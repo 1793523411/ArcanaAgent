@@ -140,17 +140,25 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     }
   }
 
-  const handleCreateTask = async (text: string, priority: "low" | "medium" | "high" | "urgent") => {
+  const handleCreateTask = async (
+    text: string,
+    priority: "low" | "medium" | "high" | "urgent",
+    kind: "requirement" | "subtask" | "adhoc",
+  ) => {
     if (!guild.selectedGroupId) return;
     setCreatingTask(true);
     try {
-      await guild.createTask(guild.selectedGroupId, { title: text, description: text, priority });
-      showToast("任务已创建", "success");
+      await guild.createTask(guild.selectedGroupId, { title: text, description: text, priority, kind });
+      showToast(kind === "requirement" ? "需求已提交，Lead 将开始分解" : "任务已创建", "success");
     } catch (e) {
       showToast(`创建任务失败: ${e}`, "error");
     } finally {
       setCreatingTask(false);
     }
+  };
+
+  const handleSetGroupLead = async (groupId: string, agentId: string | null) => {
+    await withToast(() => guild.setGroupLead(groupId, agentId), agentId ? "Lead 已设置" : "已清除 Lead", "设置 Lead 失败");
   };
 
   const handleAutoBid = async (taskId: string) => {
@@ -289,6 +297,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               onAddAgentToGroup={handleAddAgentToGroup}
               onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
               onDeleteGroup={handleDeleteGroup}
+              onSetGroupLead={handleSetGroupLead}
             />
           )}
         </div>

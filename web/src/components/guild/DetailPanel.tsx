@@ -1,8 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { GuildAgent, GuildTask } from "../../types/guild";
 import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
+import { getTaskWorkspaceRaw } from "../../api/guild";
 
 interface Props {
   selectedAgent: GuildAgent | null;
@@ -44,8 +45,44 @@ const PRIORITY_COLOR: Record<GuildTask["priority"], string> = {
 
 export default function DetailPanel({ selectedAgent, selectedTask, agents, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
+  const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [workspaceMd, setWorkspaceMd] = useState<string | null>(null);
+  const [workspaceError, setWorkspaceError] = useState<string | null>(null);
+  const [expandedBid, setExpandedBid] = useState<string | null>(null);
+
+  // Fetch workspace markdown whenever a requirement task is selected.
+  // Subtasks carry their parent's workspaceRef, so we resolve the viewer
+  // target off whichever id the task exposes.
+  useEffect(() => {
+    setWorkspaceMd(null);
+    setWorkspaceError(null);
+    setExpandedBid(null);
+    if (!selectedTask) return;
+    const parentId = selectedTask.kind === "requirement"
+      ? selectedTask.id
+      : selectedTask.parentTaskId;
+    if (!parentId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const md = await getTaskWorkspaceRaw(selectedTask.groupId, parentId);
+        if (!cancelled) setWorkspaceMd(md);
+      } catch (e) {
+        if (!cancelled) {
+          const msg = String(e);
+          // Friendlier message for the common "no workspace yet" case.
+          if (/Workspace not found|404/.test(msg)) {
+            setWorkspaceMd("");
+          } else {
+            setWorkspaceError(msg);
+          }
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [selectedTask?.id, selectedTask?.kind, selectedTask?.parentTaskId, selectedTask?.groupId]);
 
   if (!selectedAgent && !selectedTask) {
     return (
@@ -241,6 +278,49 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
               <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--color-text)" }}>{selectedTask.description}</p>
             )}
 
+            {selectedTask.acceptanceCriteria && (
+              <div
+                className="rounded-lg px-3 py-2 text-xs"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+              >
+                <div className="font-semibold mb-1" style={{ color: "var(--color-text-muted)" }}>验收标准</div>
+                <div className="whitespace-pre-wrap" style={{ color: "var(--color-text)" }}>{selectedTask.acceptanceCriteria}</div>
+              </div>
+            )}
+
+            {(selectedTask.kind === "requirement" || selectedTask.parentTaskId) && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                    协作工作区（{selectedTask.kind === "requirement" ? "本需求" : "父需求"}）
+                  </div>
+                  {workspaceMd && workspaceMd.trim() !== "" && (
+                    <button
+                      className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                      style={{ color: "var(--color-accent)" }}
+                      onClick={() => setExpandedWorkspace(true)}
+                    >
+                      全屏查看
+                    </button>
+                  )}
+                </div>
+                <div
+                  className="rounded-lg px-3 py-2 text-xs overflow-y-auto"
+                  style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", maxHeight: 260 }}
+                >
+                  {workspaceError ? (
+                    <div style={{ color: "#ef4444" }}>加载失败：{workspaceError}</div>
+                  ) : workspaceMd === null ? (
+                    <div style={{ color: "var(--color-text-muted)" }}>加载中…</div>
+                  ) : workspaceMd.trim() === "" ? (
+                    <div style={{ color: "var(--color-text-muted)" }}>工作区为空</div>
+                  ) : (
+                    <MarkdownContent>{workspaceMd}</MarkdownContent>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Assigned agent */}
             {selectedTask.assignedAgentId && (() => {
               const agent = agents.find((a) => a.id === selectedTask.assignedAgentId);
@@ -263,19 +343,60 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
                 <div className="space-y-1.5">
                   {selectedTask.bids.map((bid) => {
                     const agent = agents.find((a) => a.id === bid.agentId);
+                    const expanded = expandedBid === bid.agentId;
+                    const sb = bid.scoreBreakdown;
                     return (
                       <div
                         key={bid.agentId}
                         className="rounded-lg px-3 py-2 text-xs space-y-1"
                         style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium" style={{ color: agent?.color ?? "var(--color-text)" }}>
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium truncate" style={{ color: agent?.color ?? "var(--color-text)" }}>
                             {agent ? `${agent.icon} ${agent.name}` : bid.agentId}
                           </span>
-                          <span style={{ color: "var(--color-accent)" }}>置信度 {Math.round(bid.confidence * 100)}%</span>
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {bid.via === "fallback" && (
+                              <span
+                                className="text-[9px] px-1 py-0.5 rounded"
+                                style={{ background: "#f59e0b22", color: "#d97706" }}
+                                title="未达竞标门槛，通过兜底策略分配"
+                              >
+                                兜底
+                              </span>
+                            )}
+                            <span style={{ color: "var(--color-accent)" }}>置信度 {Math.round(bid.confidence * 100)}%</span>
+                          </div>
                         </div>
                         <div style={{ color: "var(--color-text-muted)" }}>{bid.reasoning}</div>
+                        {sb && (
+                          <>
+                            <button
+                              className="text-[10px] underline"
+                              style={{ color: "var(--color-text-muted)" }}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setExpandedBid(expanded ? null : bid.agentId);
+                              }}
+                            >
+                              {expanded ? "收起" : "打分细节"}
+                            </button>
+                            {expanded && (
+                              <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                                <div>资产匹配</div><div className="text-right tabular-nums">{sb.asset.toFixed(3)}</div>
+                                <div>记忆匹配</div><div className="text-right tabular-nums">{sb.memory.toFixed(3)}</div>
+                                <div>技能匹配</div><div className="text-right tabular-nums">{sb.skill.toFixed(3)}</div>
+                                <div>历史胜率</div><div className="text-right tabular-nums">{sb.success.toFixed(3)}</div>
+                                <div>所有者奖励</div><div className="text-right tabular-nums">{sb.ownerBonus.toFixed(3)}</div>
+                                <div>资产奖励</div><div className="text-right tabular-nums">{sb.assetBonus.toFixed(3)}</div>
+                                <div>负载惩罚</div><div className="text-right tabular-nums">-{sb.loadPenalty.toFixed(3)}</div>
+                                <div>门槛</div><div className="text-right tabular-nums">{sb.threshold.toFixed(3)}</div>
+                                <div className="font-semibold" style={{ color: "var(--color-text)" }}>最终得分</div>
+                                <div className="text-right tabular-nums font-semibold" style={{ color: "var(--color-accent)" }}>{sb.final.toFixed(3)}</div>
+                              </div>
+                            )}
+                          </>
+                        )}
                       </div>
                     );
                   })}
@@ -308,6 +429,41 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
               </div>
             )}
 
+            {/* Handoff — structured output from a completed subtask */}
+            {selectedTask.result?.handoff && (
+              <div
+                className="rounded-lg px-3 py-2 text-xs space-y-1.5"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+              >
+                <div className="font-semibold" style={{ color: "var(--color-text-muted)" }}>交接 Handoff</div>
+                <div style={{ color: "var(--color-text)" }}>{selectedTask.result.handoff.summary}</div>
+                {selectedTask.result.handoff.artifacts.length > 0 && (
+                  <div>
+                    <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>产出物</div>
+                    <ul className="list-disc pl-4 space-y-0.5">
+                      {selectedTask.result.handoff.artifacts.map((a, i) => (
+                        <li key={i} style={{ color: "var(--color-text)" }}>
+                          <span className="font-mono text-[10px] mr-1" style={{ color: "var(--color-accent)" }}>{a.kind}</span>
+                          <span>{a.ref}</span>
+                          {a.description && <span style={{ color: "var(--color-text-muted)" }}> — {a.description}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {selectedTask.result.handoff.openQuestions && selectedTask.result.handoff.openQuestions.length > 0 && (
+                  <div>
+                    <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>待澄清</div>
+                    <ul className="list-disc pl-4 space-y-0.5">
+                      {selectedTask.result.handoff.openQuestions.map((q, i) => (
+                        <li key={i} style={{ color: "var(--color-text)" }}>{q}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Expanded result modal */}
             {expandedResult && selectedTask.result && (
               <div className="fixed inset-0 z-[70] flex items-center justify-center">
@@ -330,6 +486,33 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
                   </div>
                   <div className="flex-1 overflow-y-auto p-6">
                     <MarkdownContent>{selectedTask.result.summary}</MarkdownContent>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Expanded workspace modal */}
+            {expandedWorkspace && workspaceMd && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center">
+                <div className="absolute inset-0 bg-black/50" onClick={() => setExpandedWorkspace(false)} />
+                <div
+                  className="relative w-full max-w-3xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
+                  style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "85vh" }}
+                >
+                  <div className="flex items-center justify-between px-5 py-3 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
+                    <h3 className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
+                      {selectedTask.title} — 协作工作区
+                    </h3>
+                    <button
+                      onClick={() => setExpandedWorkspace(false)}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+                      style={{ color: "var(--color-text-muted)" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-6">
+                    <MarkdownContent>{workspaceMd}</MarkdownContent>
                   </div>
                 </div>
               </div>

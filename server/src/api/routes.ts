@@ -2118,3 +2118,4 @@ export function getSharedContent(req: Request, res: Response): void {
   }
   res.json(record);
 }
+

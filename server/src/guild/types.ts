@@ -10,6 +10,8 @@ export type AssetType =
   | "mcp_server"
   | "custom";
 
+export type AssetScope = "agent" | "group";
+
 export interface AgentAsset {
   id: string;
   type: AssetType;
@@ -19,6 +21,12 @@ export interface AgentAsset {
   metadata?: Record<string, unknown>;
   addedAt: string;
   lastAccessedAt?: string;
+  /** "agent" = private to an agent; "group" = shared resource pool on the group. */
+  scope?: AssetScope;
+  /** Primary responsible agent for a group-scoped asset. */
+  ownerAgentId?: string;
+  /** Domain/tech tags used by the planner and bidding for targeting. */
+  tags?: string[];
 }
 
 export interface AgentStats {
@@ -57,6 +65,10 @@ export interface Group {
   description: string;
   guildId: string;
   agents: string[];
+  /** Optional lead agent used by the planner when decomposing requirements. */
+  leadAgentId?: string;
+  /** Group-level shared resource pool (repos, specs, docs). */
+  assets?: AgentAsset[];
   sharedContext?: string;
   status: "active" | "archived";
   createdAt: string;
@@ -75,8 +87,34 @@ export interface Guild {
 
 // ─── Task Types ─────────────────────────────────────────────────
 
-export type TaskStatus = "open" | "bidding" | "in_progress" | "completed" | "failed" | "cancelled";
+export type TaskStatus =
+  | "open"
+  | "bidding"
+  | "in_progress"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "planning"   // requirement waiting for lead decomposition
+  | "blocked";   // subtask waiting for upstream deps
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
+export type TaskKind = "requirement" | "subtask" | "adhoc";
+
+export interface TaskHandoffArtifact {
+  kind: "commit" | "file" | "url" | "note";
+  ref: string;
+  description?: string;
+}
+
+export interface TaskHandoff {
+  fromAgentId: string;
+  /** Target subtask id if directed; undefined means parent/lead aggregation. */
+  toSubtaskId?: string;
+  summary: string;
+  artifacts: TaskHandoffArtifact[];
+  inputsConsumed?: string[];
+  openQuestions?: string[];
+  createdAt: string;
+}
 
 export interface TaskBid {
   agentId: string;
@@ -87,6 +125,10 @@ export interface TaskBid {
   relevantAssets: string[];
   relevantMemories: string[];
   biddedAt: string;
+  /** Detailed per-dimension score breakdown for UI/debug. */
+  scoreBreakdown?: ScoreBreakdown;
+  /** "bidding" = won via normal path, "fallback" = round-robin idle rescue. */
+  via?: "bidding" | "fallback";
 }
 
 export interface TaskResult {
@@ -94,11 +136,14 @@ export interface TaskResult {
   artifacts?: string[];
   agentNotes?: string;
   memoryCreated?: string[];
+  handoff?: TaskHandoff;
 }
 
 export interface GuildTask {
   id: string;
   groupId: string;
+  /** Defaults to "adhoc" for backward compatibility with pre-collab tasks. */
+  kind?: TaskKind;
   title: string;
   description: string;
   status: TaskStatus;
@@ -108,6 +153,16 @@ export interface GuildTask {
   dependsOn?: string[];
   blockedBy?: string[];
   result?: TaskResult;
+  /** Collaboration fields */
+  parentTaskId?: string;
+  subtaskIds?: string[];
+  suggestedSkills?: string[];
+  suggestedAgentId?: string;
+  acceptanceCriteria?: string;
+  /** Path of the workspace markdown this task lives under. */
+  workspaceRef?: string;
+  /** Handoff produced when a subtask completes. */
+  handoff?: TaskHandoff;
   createdBy: string;
   createdAt: string;
   startedAt?: string;
@@ -122,12 +177,26 @@ export interface AgentMemory {
   id: string;
   type: MemoryType;
   title: string;
+  /** Short (≤400 char) distilled takeaway — what to recall at a glance. */
+  summary?: string;
+  /** Full body — task description, handoff details, notes, etc. */
   content: string;
   tags: string[];
   relatedAssets?: string[];
+  /** Task id this memory was distilled from, if any. */
+  sourceTaskId?: string;
+  /** Group id this memory belongs to, if any — lets us scope recall. */
+  groupId?: string;
+  /** Reinforcement score (0..10). Incremented on reuse, decayed on prune. */
+  strength: number;
+  /** Pinned memories are never pruned regardless of strength. */
+  pinned: boolean;
   createdAt: string;
+  updatedAt: string;
   accessCount: number;
   lastAccessedAt?: string;
+  /** Schema version for forward migrations. */
+  v: 2;
 }
 
 // ─── Scheduler log (persisted per group) ─────────────────────────
@@ -212,6 +281,24 @@ export interface BiddingConfig {
   assetBonusWeight: number;
   taskTimeoutMs: number;
   minConfidenceThreshold: number;
+  /** Bonus applied when an agent owns a group asset matching the task. */
+  ownerBonusWeight: number;
+  /** Prior used for new agents so they aren't permanently cold-started. */
+  successRatePrior: number;
+  /** When true, requirement-kind tasks are routed to the planner instead of bidding. */
+  skipParentRequirement: boolean;
+}
+
+export interface ScoreBreakdown {
+  asset: number;
+  memory: number;
+  skill: number;
+  success: number;
+  ownerBonus: number;
+  assetBonus: number;
+  loadPenalty: number;
+  threshold: number;
+  final: number;
 }
 
 // ─── Create Params ──────────────────────────────────────────────
@@ -231,6 +318,8 @@ export interface CreateGroupParams {
   name: string;
   description: string;
   sharedContext?: string;
+  leadAgentId?: string;
+  assets?: Omit<AgentAsset, "id" | "addedAt">[];
 }
 
 export interface CreateTaskParams {
@@ -239,4 +328,10 @@ export interface CreateTaskParams {
   priority?: TaskPriority;
   dependsOn?: string[];
   createdBy?: string;
+  kind?: TaskKind;
+  parentTaskId?: string;
+  suggestedSkills?: string[];
+  suggestedAgentId?: string;
+  acceptanceCriteria?: string;
+  workspaceRef?: string;
 }

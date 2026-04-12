@@ -244,13 +244,24 @@ export default function LiveAgentPanel({
                 const dot = STATUS_DOT[exec.status];
                 const selected = selectedTaskId === exec.taskId;
                 const toolCount = exec.events.filter((e) => e.type === "tool_call").length;
+                const isPlanner = exec.events.some(
+                  (e) => e.type === "plan" && PLANNER_PHASES.has(e.content),
+                );
                 return (
                   <div
                     key={exec.taskId}
                     className="flex items-center gap-2 px-3 py-2 cursor-pointer transition-colors"
                     style={{
-                      background: selected ? "var(--color-accent-alpha)" : "transparent",
-                      borderLeft: selected ? "2px solid var(--color-accent)" : "2px solid transparent",
+                      background: selected
+                        ? "var(--color-accent-alpha)"
+                        : isPlanner
+                          ? "rgba(96,165,250,0.06)"
+                          : "transparent",
+                      borderLeft: selected
+                        ? "2px solid var(--color-accent)"
+                        : isPlanner
+                          ? "2px solid #60a5fa"
+                          : "2px solid transparent",
                     }}
                     onClick={() => setSelectedTaskId(exec.taskId)}
                   >
@@ -260,13 +271,23 @@ export default function LiveAgentPanel({
                     />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1">
-                        {agent && <span className="text-xs">{agent.icon}</span>}
+                        {isPlanner ? (
+                          <span
+                            className="text-[9px] px-1 py-[1px] rounded shrink-0 font-bold"
+                            style={{ background: "#60a5fa22", color: "#2563eb" }}
+                            title="Lead 需求拆解过程"
+                          >
+                            🧠 拆解
+                          </span>
+                        ) : (
+                          agent && <span className="text-xs">{agent.icon}</span>
+                        )}
                         <span className="text-xs font-medium truncate" style={{ color: "var(--color-text)" }}>
                           {exec.taskTitle}
                         </span>
                       </div>
                       <div className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
-                        {agent?.name ?? exec.agentId.slice(0, 8)}
+                        {isPlanner ? "Lead · 需求分解" : (agent?.name ?? exec.agentId.slice(0, 8))}
                         {toolCount > 0 && ` · ${toolCount} 次工具调用`}
                         {exec.completedAt && ` · ${formatDuration(exec.startedAt, exec.completedAt)}`}
                       </div>
@@ -602,13 +623,21 @@ const PLAN_PHASE_LABEL: Record<string, string> = {
   created: "已生成",
   running: "执行中",
   completed: "已完成",
+  planner_start: "Lead 拆解中",
+  planner_done: "Lead 拆解完成",
+  planner_failed: "Lead 拆解失败",
 };
 
 const PLAN_PHASE_ICON: Record<string, string> = {
   created: "📝",
   running: "⏳",
   completed: "✅",
+  planner_start: "🧠",
+  planner_done: "🧩",
+  planner_failed: "⚠️",
 };
+
+const PLANNER_PHASES = new Set(["planner_start", "planner_done", "planner_failed"]);
 
 function StepStatusIcon({ status }: { status: "pending" | "running" | "done" }) {
   if (status === "done") {
@@ -632,12 +661,23 @@ function PlanEventRow({ phase, payload }: { phase: string; payload: unknown }) {
   const icon = PLAN_PHASE_ICON[phase] ?? "📋";
   const current = typeof p.currentStep === "number" ? p.currentStep : -1;
   const showCurrent = current >= 0 && current < steps.length;
+  const isPlanner = PLANNER_PHASES.has(phase);
+  const isFailed = phase === "planner_failed";
+  const accentColor = isFailed ? "#dc2626" : isPlanner ? "#7c3aed" : "#2563eb";
+  const accentBg = isFailed
+    ? "linear-gradient(180deg, rgba(239,68,68,0.10), rgba(239,68,68,0.02))"
+    : isPlanner
+      ? "linear-gradient(180deg, rgba(139,92,246,0.10), rgba(139,92,246,0.02))"
+      : "linear-gradient(180deg, rgba(96,165,250,0.08), rgba(96,165,250,0.02))";
+  const accentBorder = isFailed ? "#ef444455" : isPlanner ? "#8b5cf655" : "#60a5fa55";
+  const chipBg = isFailed ? "#ef444422" : isPlanner ? "#8b5cf622" : "#60a5fa22";
+  const titleText = isPlanner ? "Lead 拆解" : "执行计划";
   return (
     <div
       className="rounded-xl overflow-hidden"
       style={{
-        border: "1px solid #60a5fa55",
-        background: "linear-gradient(180deg, rgba(96,165,250,0.08), rgba(96,165,250,0.02))",
+        border: `1px solid ${accentBorder}`,
+        background: accentBg,
       }}
     >
       <div
@@ -645,12 +685,12 @@ function PlanEventRow({ phase, payload }: { phase: string; payload: unknown }) {
         onClick={() => setOpen(!open)}
       >
         <span className="text-[11px] leading-none">{icon}</span>
-        <span className="text-[10px] font-bold tracking-wide" style={{ color: "#2563eb" }}>
-          执行计划
+        <span className="text-[10px] font-bold tracking-wide" style={{ color: accentColor }}>
+          {titleText}
         </span>
         <span
           className="text-[10px] px-1.5 py-0.5 rounded-full"
-          style={{ background: "#60a5fa22", color: "#2563eb" }}
+          style={{ background: chipBg, color: accentColor }}
         >
           {label}
         </span>

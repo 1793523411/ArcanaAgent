@@ -80,12 +80,20 @@ export function createGroup(params: CreateGroupParams): Group {
   const guild = getGuild();
   const id = genId("grp");
   const now = new Date().toISOString();
+  const groupAssets: AgentAsset[] = (params.assets ?? []).map((a) => ({
+    ...a,
+    scope: a.scope ?? "group",
+    id: genId("ast"),
+    addedAt: now,
+  }));
   const group: Group = {
     id,
     name: params.name,
     description: params.description,
     guildId: guild.id,
     agents: [],
+    leadAgentId: params.leadAgentId,
+    assets: groupAssets,
     sharedContext: params.sharedContext,
     status: "active",
     createdAt: now,
@@ -116,22 +124,125 @@ export function listGroups(): Group[] {
   return groups.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 
-export function updateGroup(id: string, updates: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status">>): Group | null {
+export function updateGroup(
+  id: string,
+  updates: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status" | "leadAgentId">>,
+): Group | null {
   const group = getGroup(id);
   if (!group) return null;
   if (updates.name !== undefined) group.name = updates.name;
   if (updates.description !== undefined) group.description = updates.description;
   if (updates.sharedContext !== undefined) group.sharedContext = updates.sharedContext;
   if (updates.status !== undefined) group.status = updates.status;
+  if (updates.leadAgentId !== undefined) group.leadAgentId = updates.leadAgentId;
   group.updatedAt = new Date().toISOString();
   writeJSON(groupMetaPath(id), group);
   guildEventBus.emit({ type: "group_updated", groupId: id });
   return group;
 }
 
+export function setGroupLead(groupId: string, agentId: string | undefined): Group | null {
+  return updateGroup(groupId, { leadAgentId: agentId });
+}
+
+// ─── Group Assets ───────────────────────────────────────────
+
+export function getGroupAssetPool(groupId: string): AgentAsset[] {
+  const group = getGroup(groupId);
+  return group?.assets ?? [];
+}
+
+export function addGroupAsset(
+  groupId: string,
+  asset: Omit<AgentAsset, "id" | "addedAt">,
+): AgentAsset | null {
+  const group = getGroup(groupId);
+  if (!group) return null;
+  const now = new Date().toISOString();
+  const newAsset: AgentAsset = {
+    ...asset,
+    scope: asset.scope ?? "group",
+    id: genId("ast"),
+    addedAt: now,
+  };
+  group.assets = [...(group.assets ?? []), newAsset];
+  group.updatedAt = now;
+  writeJSON(groupMetaPath(groupId), group);
+  guildEventBus.emit({ type: "group_updated", groupId });
+  return newAsset;
+}
+
+export function removeGroupAsset(groupId: string, assetId: string): boolean {
+  const group = getGroup(groupId);
+  if (!group) return false;
+  const before = group.assets?.length ?? 0;
+  group.assets = (group.assets ?? []).filter((a) => a.id !== assetId);
+  if ((group.assets.length ?? 0) === before) return false;
+  group.updatedAt = new Date().toISOString();
+  writeJSON(groupMetaPath(groupId), group);
+  guildEventBus.emit({ type: "group_updated", groupId });
+  return true;
+}
+
+/**
+ * Return the union of group-level assets and every member agent's private
+ * assets. Used by the planner to understand what resources the team has.
+ */
+export function getAggregatedGroupAssets(groupId: string): AgentAsset[] {
+  const group = getGroup(groupId);
+  if (!group) return [];
+  const out: AgentAsset[] = [...(group.assets ?? [])];
+  for (const aid of group.agents) {
+    const a = getAgent(aid);
+    if (!a) continue;
+    for (const asset of a.assets) {
+      out.push({ ...asset, scope: asset.scope ?? "agent", ownerAgentId: asset.ownerAgentId ?? aid });
+    }
+  }
+  return out;
+}
+
 export function archiveGroup(id: string): boolean {
   const result = updateGroup(id, { status: "archived" });
   return result !== null;
+}
+
+/** Hard delete a group: release its agents back to the pool, drop the
+ *  on-disk directory (workspaces, scheduler log, meta), and update the
+ *  guild index. Returns true when the group existed and was removed. */
+export function deleteGroup(id: string): boolean {
+  const group = getGroup(id);
+  if (!group) return false;
+
+  for (const agentId of [...group.agents]) {
+    const agent = getAgent(agentId);
+    if (!agent) continue;
+    const remaining = listGroups().find((g) => g.id !== id && g.agents.includes(agentId));
+    if (remaining) {
+      agent.groupId = remaining.id;
+    } else {
+      agent.groupId = undefined;
+      const guild = getGuild();
+      if (!guild.agentPool.includes(agentId)) {
+        guild.agentPool.push(agentId);
+        saveGuild(guild);
+      }
+    }
+    agent.updatedAt = new Date().toISOString();
+    writeJSON(agentProfilePath(agentId), agent);
+    guildEventBus.emit({ type: "agent_updated", agentId });
+  }
+
+  const guild = getGuild();
+  guild.groups = guild.groups.filter((gid) => gid !== id);
+  guild.updatedAt = new Date().toISOString();
+  saveGuild(guild);
+
+  const dir = groupDir(id);
+  if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+
+  guildEventBus.emit({ type: "group_updated", groupId: id });
+  return true;
 }
 
 // ─── Agent ──────────────────────────────────────────────────────

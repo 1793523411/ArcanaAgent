@@ -1,9 +1,9 @@
 import { useState } from "react";
-import type { TaskPriority } from "../../types/guild";
+import type { TaskPriority, TaskKind } from "../../types/guild";
 import Select from "./Select";
 
 interface Props {
-  onSubmit: (text: string, priority: TaskPriority) => void;
+  onSubmit: (text: string, priority: TaskPriority, kind: TaskKind) => void;
   loading?: boolean;
   placeholder?: string;
   showPriority?: boolean;
@@ -19,11 +19,12 @@ const PRIORITY_OPTIONS: Array<{ value: TaskPriority; label: string; icon: string
 export default function InstructionInput({ onSubmit, loading, placeholder, showPriority }: Props) {
   const [text, setText] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("medium");
+  const [asRequirement, setAsRequirement] = useState(false);
 
   const handleSend = () => {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
-    onSubmit(trimmed, priority);
+    onSubmit(trimmed, priority, asRequirement ? "requirement" : "adhoc");
     setText("");
   };
 
@@ -53,7 +54,7 @@ export default function InstructionInput({ onSubmit, loading, placeholder, showP
           }
         }}
       />
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         {showPriority && (
           <Select<TaskPriority>
             value={priority}
@@ -72,6 +73,24 @@ export default function InstructionInput({ onSubmit, loading, placeholder, showP
             }))}
           />
         )}
+        <label
+          className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-lg cursor-pointer select-none"
+          style={{
+            border: "1px solid var(--color-border)",
+            background: asRequirement ? "var(--color-accent-alpha)" : "transparent",
+            color: asRequirement ? "var(--color-accent)" : "var(--color-text-muted)",
+          }}
+          title="勾选后提交为需求，由 Lead Agent 自动分解为子任务"
+        >
+          <input
+            type="checkbox"
+            className="w-3 h-3 accent-[var(--color-accent)]"
+            checked={asRequirement}
+            onChange={(e) => setAsRequirement(e.target.checked)}
+            disabled={loading}
+          />
+          <span>作为需求（让 Lead 分解）</span>
+        </label>
         <div className="flex-1" />
         <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
           {text.length > 0 ? `${text.length} 字` : ""}

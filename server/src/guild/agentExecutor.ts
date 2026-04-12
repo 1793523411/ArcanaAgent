@@ -5,6 +5,10 @@ import { completeTask, failTask, getTask, initExecutionLog, appendExecutionLog, 
 import { searchRelevant, settleExperience } from "./memoryManager.js";
 import { resolveAssetContext } from "./assetResolver.js";
 import { guildEventBus } from "./eventBus.js";
+import { buildTeammateRoster } from "./teammateRoster.js";
+import { snapshotForPrompt, appendHandoff } from "./workspace.js";
+import { parseHandoffFromSummary } from "./handoffParser.js";
+import type { TaskHandoff } from "./types.js";
 import { streamAgentWithTokens } from "../agent/index.js";
 import { serverLogger } from "../lib/logger.js";
 import { loadUserConfig, hasAnyEnhancement } from "../config/userConfig.js";
@@ -55,8 +59,14 @@ function buildGuildHarnessConfig(): HarnessConfig | undefined {
   };
 }
 
-/** Build a system prompt that includes agent identity, assets, and memories */
-function buildGuildAgentPrompt(agent: GuildAgent, task: GuildTask, memories: Array<{ title: string; content: string }>): string {
+/** Build a system prompt that includes agent identity, assets, memories,
+ *  teammate roster, and the shared workspace snapshot (for subtasks). */
+function buildGuildAgentPrompt(
+  agent: GuildAgent,
+  task: GuildTask,
+  groupId: string,
+  memories: Array<{ title: string; content: string }>,
+): string {
   const sections: string[] = [];
 
   sections.push(`## You are "${agent.name}"`);
@@ -67,6 +77,22 @@ function buildGuildAgentPrompt(agent: GuildAgent, task: GuildTask, memories: Arr
     sections.push(`\n## Your Assets`);
     for (const ctx of resolved) {
       sections.push(ctx.contextSnippet);
+    }
+  }
+
+  // Teammate roster — who your colleagues are, what they own, collaboration rules.
+  const roster = buildTeammateRoster(groupId, agent.id);
+  if (roster) {
+    sections.push(`\n${roster}`);
+  }
+
+  // Workspace snapshot — shared blackboard for the parent requirement, if any.
+  const wsParent = task.parentTaskId ?? (task.kind === "requirement" ? task.id : undefined);
+  if (wsParent) {
+    const snapshot = snapshotForPrompt(groupId, wsParent);
+    if (snapshot) {
+      sections.push(`\n## Shared Workspace (living blackboard — read before you start)`);
+      sections.push(snapshot);
     }
   }
 
@@ -81,9 +107,25 @@ function buildGuildAgentPrompt(agent: GuildAgent, task: GuildTask, memories: Arr
   sections.push(`Title: ${task.title}`);
   sections.push(`Description: ${task.description}`);
   sections.push(`Priority: ${task.priority}`);
+  if (task.acceptanceCriteria) {
+    sections.push(`Acceptance: ${task.acceptanceCriteria}`);
+  }
 
   sections.push(`\n## Instructions`);
-  sections.push(`Complete the task described above. When done, provide a clear summary of what you accomplished.`);
+  sections.push(`完成上面的任务。如果任务包含不属于你领域的工作，**不要硬做** — 在 Handoff 中说明"哪部分需要谁"，Lead 会补发新子任务。`);
+  sections.push(``);
+  sections.push(`完成后，在回复的最后追加一个结构化 Handoff 块，严格使用以下格式（字面 fence，中间是 JSON）：`);
+  sections.push("```handoff");
+  sections.push(`{`);
+  sections.push(`  "summary": "一句话说明你做了什么",`);
+  sections.push(`  "artifacts": [`);
+  sections.push(`    { "kind": "commit|file|url|note", "ref": "具体引用", "description": "可选说明" }`);
+  sections.push(`  ],`);
+  sections.push(`  "inputsConsumed": ["上游 handoff/文件/决策"],`);
+  sections.push(`  "openQuestions": ["留给下游的问题"]`);
+  sections.push(`}`);
+  sections.push("```");
+  sections.push(`Handoff 块之外的内容仍可以自由书写（解释、思考、代码片段），但 JSON 必须是有效的。`);
 
   return sections.join("\n");
 }
@@ -119,8 +161,8 @@ export async function executeAgentTask(
     const relevantMemories = searchRelevant(agentId, `${task.title} ${task.description}`, 5);
     const memoryContext = relevantMemories.map((m) => ({ title: m.title, content: m.content }));
 
-    // Build system prompt
-    const systemPrompt = buildGuildAgentPrompt(agent, task, memoryContext);
+    // Build system prompt (includes teammate roster + workspace snapshot)
+    const systemPrompt = buildGuildAgentPrompt(agent, task, groupId, memoryContext);
 
     // Build initial messages
     const messages = [new HumanMessage(task.description)];
@@ -211,14 +253,45 @@ export async function executeAgentTask(
 
     const durationMs = Date.now() - startTime;
 
+    // Parse structured handoff block out of the final output. We keep the
+    // full accumulatedContent as the summary so nothing is lost, but the
+    // parsed handoff is what gets written back to the workspace + task.
+    const parsedHandoff = parseHandoffFromSummary(accumulatedContent);
+    let handoff: TaskHandoff | undefined;
+    if (parsedHandoff) {
+      handoff = {
+        fromAgentId: agentId,
+        summary: parsedHandoff.summary,
+        artifacts: parsedHandoff.artifacts ?? [],
+        inputsConsumed: parsedHandoff.inputsConsumed,
+        openQuestions: parsedHandoff.openQuestions,
+        createdAt: new Date().toISOString(),
+      };
+    }
+
     // Build result
     const result: TaskResult = {
       summary: accumulatedContent || "Task completed (no output)",
+      handoff,
     };
 
     // Complete task
     completeTask(groupId, taskId, agentId, result);
     finalizeExecutionLog(groupId, taskId, "completed");
+
+    // Persist handoff to the shared workspace so downstream teammates can see it.
+    if (handoff && task.parentTaskId) {
+      try {
+        appendHandoff(groupId, task.parentTaskId, taskId, handoff);
+      } catch (e) {
+        serverLogger.warn("[guild] failed to append handoff to workspace", {
+          groupId,
+          parentTaskId: task.parentTaskId,
+          taskId,
+          error: String(e),
+        });
+      }
+    }
 
     // Settle memory
     const memory = settleExperience(agentId, task, result);
