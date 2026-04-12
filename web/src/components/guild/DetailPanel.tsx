@@ -1,20 +1,24 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, lazy, Suspense } from "react";
 import type { GuildAgent, GuildTask } from "../../types/guild";
 import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
 import { getTaskWorkspaceRaw } from "../../api/guild";
 
+const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
+
 interface Props {
   selectedAgent: GuildAgent | null;
   selectedTask: GuildTask | null;
   agents: GuildAgent[];
+  tasks?: GuildTask[];
   agentOutputs: Record<string, string>;
   onClose: () => void;
   onEditAgent?: (id: string) => void;
   onDeleteAgent?: (id: string) => void;
   onReleaseAgent?: (id: string) => void;
   onViewLog?: (taskId: string) => void;
+  onSelectTask?: (id: string) => void;
 }
 
 const STATUS_LABEL: Record<GuildAgent["status"], string> = {
@@ -43,9 +47,10 @@ const PRIORITY_COLOR: Record<GuildTask["priority"], string> = {
   urgent: "#dc2626",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
+  const [expandedDAG, setExpandedDAG] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [workspaceMd, setWorkspaceMd] = useState<string | null>(null);
@@ -288,6 +293,37 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
               </div>
             )}
 
+            {/* Subtask DAG for requirement tasks */}
+            {selectedTask.kind === "requirement" && tasks && tasks.some((t) => t.parentTaskId === selectedTask.id) && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                    子任务依赖图
+                  </div>
+                  <button
+                    className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                    style={{ color: "var(--color-accent)" }}
+                    onClick={() => setExpandedDAG(true)}
+                  >
+                    全屏查看
+                  </button>
+                </div>
+                <div
+                  className="rounded-lg"
+                  style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                >
+                  <Suspense fallback={<div className="text-xs text-center py-4" style={{ color: "var(--color-text-muted)" }}>加载中…</div>}>
+                    <SubtaskDAG
+                      parentTask={selectedTask}
+                      allTasks={tasks}
+                      agents={agents}
+                      onSelectTask={onSelectTask}
+                    />
+                  </Suspense>
+                </div>
+              </div>
+            )}
+
             {(selectedTask.kind === "requirement" || selectedTask.parentTaskId) && (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
@@ -513,6 +549,41 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, agent
                   </div>
                   <div className="flex-1 overflow-y-auto p-6">
                     <MarkdownContent>{workspaceMd}</MarkdownContent>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Expanded DAG modal */}
+            {expandedDAG && selectedTask.kind === "requirement" && tasks && (
+              <div className="fixed inset-0 z-[70] flex items-center justify-center">
+                <div className="absolute inset-0 bg-black/50" onClick={() => setExpandedDAG(false)} />
+                <div
+                  className="relative w-full max-w-4xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
+                  style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", height: "75vh" }}
+                >
+                  <div className="flex items-center justify-between px-5 py-3 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
+                    <h3 className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
+                      {selectedTask.title} — 子任务依赖图
+                    </h3>
+                    <button
+                      onClick={() => setExpandedDAG(false)}
+                      className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+                      style={{ color: "var(--color-text-muted)" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                  <div className="flex-1 overflow-hidden">
+                    <Suspense fallback={<div className="text-xs text-center py-4" style={{ color: "var(--color-text-muted)" }}>加载中…</div>}>
+                      <SubtaskDAG
+                        parentTask={selectedTask}
+                        allTasks={tasks}
+                        agents={agents}
+                        onSelectTask={(id) => { setExpandedDAG(false); onSelectTask?.(id); }}
+                        fullscreen
+                      />
+                    </Suspense>
                   </div>
                 </div>
               </div>

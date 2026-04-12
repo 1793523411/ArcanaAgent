@@ -231,8 +231,9 @@ export function selectWinner(bids: TaskBid[]): TaskBid | null {
  *  the intermediate "bidding" status — `autoBid` writes the final state in one go. */
 export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
   const agents = getGroupAgents(groupId);
+  const rejected = new Set(task._rejectedBy ?? []);
   const eligibleAgents = agents.filter(
-    (a) => a.status === "idle" && !a.currentTaskId
+    (a) => a.status === "idle" && !a.currentTaskId && !rejected.has(a.id)
   );
 
   guildEventBus.emit({
@@ -277,21 +278,28 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
     return winner;
   }
 
-  // No bid met threshold. Try fallback: random idle agent in the group.
+  // No bid met threshold. Try fallback: prefer suggestedAgentId if idle,
+  // otherwise pick a random idle agent.
   const agents = getGroupAgents(groupId);
-  const idleAgents = agents.filter((a) => a.status === "idle" && !a.currentTaskId);
+  const rejectedSet = new Set(fresh._rejectedBy ?? []);
+  const idleAgents = agents.filter((a) => a.status === "idle" && !a.currentTaskId && !rejectedSet.has(a.id));
   if (idleAgents.length === 0) {
-    // Persist bids so the UI can still show the evidence; status stays "open".
     if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
     return null;
   }
 
-  const picked = idleAgents[Math.floor(Math.random() * idleAgents.length)];
+  const suggested = fresh.suggestedAgentId
+    ? idleAgents.find((a) => a.id === fresh.suggestedAgentId)
+    : undefined;
+  const picked = suggested ?? idleAgents[Math.floor(Math.random() * idleAgents.length)];
+  const reasoning = suggested
+    ? `自动回退分配：无 Agent 达到竞标门槛，按 Lead 推荐分配给 ${picked.name}`
+    : "自动回退分配：无 Agent 达到竞标门槛，随机选择空闲 Agent";
   const fallbackBid: TaskBid = {
     agentId: picked.id,
     taskId: fresh.id,
-    confidence: 0.1,
-    reasoning: "自动回退分配：无 Agent 达到竞标门槛，随机选择空闲 Agent",
+    confidence: suggested ? 0.3 : 0.1,
+    reasoning,
     estimatedComplexity: "medium",
     relevantAssets: [],
     relevantMemories: [],

@@ -377,6 +377,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
             selectedAgent={selectedAgent}
             selectedTask={selectedTask}
             agents={mergedAgents}
+            tasks={mergedTasks}
             agentOutputs={stream.agentOutputs}
             onClose={() => setSelectedDetail(null)}
             onEditAgent={(id) => setEditingAgent(id)}
@@ -386,6 +387,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               await stream.loadTaskLog(taskId);
               setViewingLogTaskId(taskId);
             }}
+            onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
           />
         </div>
       </div>

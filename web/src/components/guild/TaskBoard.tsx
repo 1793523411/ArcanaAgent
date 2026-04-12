@@ -272,6 +272,33 @@ function CompletedColumn({
     for (const t of standalone) {
       items.push({ type: "task", task: t });
     }
+
+    // Sort: groups with active (in_progress) children float to top,
+    // then by the most recent activity timestamp descending.
+    const groupSortKey = (item: GroupedItem): number => {
+      const children =
+        item.type === "req" ? item.children
+        : item.type === "ghost-req" ? item.children
+        : [];
+      // If any child (or the req itself) is in_progress, boost to top
+      const hasActive = children.some((c) => c.status === "in_progress")
+        || (item.type === "req" && item.task.status === "in_progress");
+      const latestTime = Math.max(
+        ...[
+          ...(item.type === "req" ? [item.task] : []),
+          ...children,
+        ].map((t) => {
+          const ts = t.completedAt ?? t.startedAt ?? t.createdAt;
+          const ms = Date.parse(ts);
+          return Number.isNaN(ms) ? 0 : ms;
+        }),
+        0,
+      );
+      // Active groups get a huge boost so they always sort first
+      return hasActive ? latestTime + 1e15 : latestTime;
+    };
+    items.sort((a, b) => groupSortKey(b) - groupSortKey(a));
+
     return items;
   }, [colTasks, tasks]);
 

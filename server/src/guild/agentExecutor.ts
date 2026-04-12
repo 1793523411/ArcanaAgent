@@ -1,7 +1,7 @@
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { GuildAgent, GuildTask, TaskResult, GuildEvent } from "./types.js";
 import { getAgent, updateAgent, updateAgentStats } from "./guildManager.js";
-import { completeTask, failTask, getTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
+import { completeTask, failTask, getTask, updateTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
 import { searchRelevant, settleExperience } from "./memoryManager.js";
 import { resolveAssetContext } from "./assetResolver.js";
 import { guildEventBus } from "./eventBus.js";
@@ -39,6 +39,22 @@ export function requestExecutionAbort(groupId: string, taskId: string): boolean 
   if (!activeExecutions.has(k)) return false;
   abortRequests.add(k);
   return true;
+}
+
+const REJECTION_PATTERNS = [
+  /无法执行/,
+  /不属于.*(?:领域|范畴|职责)/,
+  /无法完成.*任务/,
+  /重新分配/,
+  /不在.*能力范围/,
+  /超出.*专业/,
+];
+
+function detectRejection(content: string, handoff?: TaskHandoff): boolean {
+  if (handoff?.openQuestions?.some((q) => REJECTION_PATTERNS.some((p) => p.test(q)))) return true;
+  if (handoff?.summary && REJECTION_PATTERNS.some((p) => p.test(handoff.summary))) return true;
+  const tail = content.slice(-500);
+  return REJECTION_PATTERNS.some((p) => p.test(tail));
 }
 
 /** Mirror of api/routes.ts buildHarnessConfigFromEnhancements — we can't import
@@ -274,6 +290,30 @@ export async function executeAgentTask(
       summary: accumulatedContent || "Task completed (no output)",
       handoff,
     };
+
+    // Detect agent rejection: the agent says it can't do this task and asks
+    // for reassignment. Reset to open so the scheduler can re-dispatch.
+    const isRejection = detectRejection(accumulatedContent, handoff);
+    if (isRejection) {
+      serverLogger.info("[guild] Agent rejected task, resetting for re-dispatch", { agentId, taskId });
+      updateTask(groupId, taskId, {
+        status: "open",
+        assignedAgentId: undefined,
+        result: undefined,
+        startedAt: undefined,
+        completedAt: undefined,
+        bids: [],
+        // Blacklist this agent so the scheduler doesn't assign it again
+        _rejectedBy: [...(task._rejectedBy ?? []), agentId],
+      } as Partial<GuildTask>);
+      finalizeExecutionLog(groupId, taskId, "failed");
+      guildEventBus.emit({ type: "task_updated", task: { ...task, status: "open" } });
+
+      updateAgent(agentId, { status: "idle", currentTaskId: undefined });
+      guildEventBus.emit({ type: "agent_status_changed", agentId, status: "idle" });
+      guildEventBus.emit({ type: "agent_updated", agentId });
+      return result;
+    }
 
     // Complete task
     completeTask(groupId, taskId, agentId, result);

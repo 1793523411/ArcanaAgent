@@ -19,7 +19,7 @@ const PRIORITY_OPTIONS: Array<{ value: TaskPriority; label: string; icon: string
 export default function InstructionInput({ onSubmit, loading, placeholder, showPriority }: Props) {
   const [text, setText] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("medium");
-  const [asRequirement, setAsRequirement] = useState(false);
+  const [asRequirement, setAsRequirement] = useState(true);
 
   const handleSend = () => {
     const trimmed = text.trim();

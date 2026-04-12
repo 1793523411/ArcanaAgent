@@ -159,6 +159,8 @@ export interface GuildTask {
   suggestedSkills?: string[];
   suggestedAgentId?: string;
   acceptanceCriteria?: string;
+  /** Agents that rejected this task — excluded from future bidding. */
+  _rejectedBy?: string[];
   /** Path of the workspace markdown this task lives under. */
   workspaceRef?: string;
   /** Handoff produced when a subtask completes. */
