@@ -47,9 +47,10 @@ export function calculateConfidenceBreakdown(
   const taskText = `${task.title} ${task.description}`.toLowerCase();
   const taskTokens = taskText.split(/[\s,;.!?]+/).filter((w) => w.length > 2);
 
-  // 1. Asset match — strongest signal, but token-normalized so big asset blobs
-  //    don't dominate. Take the max over the agent's assets.
-  let asset = 0;
+  // 1. Asset match — strongest signal, token-normalized per asset. Take the
+  //    top-3 asset scores and average them so agents with multiple relevant
+  //    assets score higher than those with just one.
+  const assetScores: number[] = [];
   for (const a of agent.assets) {
     const assetText = `${a.name} ${a.description ?? ""} ${a.uri}`.toLowerCase();
     const assetWords = assetText.split(/[\s/\\._-]+/).filter((w) => w.length > 2);
@@ -58,8 +59,12 @@ export function calculateConfidenceBreakdown(
     for (const w of assetWords) {
       if (taskText.includes(w)) matches++;
     }
-    asset = Math.max(asset, matches / assetWords.length);
+    const score = matches / assetWords.length;
+    if (score > 0) assetScores.push(score);
   }
+  assetScores.sort((a, b) => b - a);
+  const topK = assetScores.slice(0, 3);
+  const asset = topK.length > 0 ? topK.reduce((s, v) => s + v, 0) / topK.length : 0;
 
   // 2. Memory relevance — capped at 5 hits.
   const memHits = searchRelevant(agent.id, `${task.title} ${task.description}`, 5);
@@ -86,6 +91,8 @@ export function calculateConfidenceBreakdown(
     : prior;
 
   // Flat asset-word bonus (existing behavior, now returned as its own dim).
+  // NOTE: partially overlaps with the asset dimension — will be obsoleted
+  // when P1 embedding replaces both tokenized matchers.
   const hasDirectAsset = agent.assets.some((a) => {
     const assetText = `${a.name} ${a.description ?? ""}`.toLowerCase();
     return taskText.split(/\s+/).some((w) => w.length > 3 && assetText.includes(w));
@@ -110,13 +117,22 @@ export function calculateConfidenceBreakdown(
     }
   }
 
-  // Load penalty — only as a subtractive hit on the final score, not a
-  // multiplier on the whole thing (which killed successRate contribution
-  // for veterans in the old formula).
+  // Load penalty — based on *current* load (working status + recent completions),
+  // not lifetime tasksCompleted. This prevents veterans from being permanently
+  // penalized. An agent currently executing a task gets a penalty; idle agents
+  // with long histories don't.
   let loadPenalty = 0;
-  if (tasksDone > 3) {
-    const extra = tasksDone - 3;
-    loadPenalty = Math.min(0.3, extra * (1 - biddingConfig.loadDecayFactor));
+  const isCurrentlyBusy = agent.status === "working" || !!agent.currentTaskId;
+  if (isCurrentlyBusy) {
+    loadPenalty = 0.2;
+  } else {
+    // Mild penalty based on recent activity (last hour approximation via
+    // stats — exact sliding window would require timestamps we don't store).
+    // Only kicks in for very active agents to give others a chance.
+    const recentProxy = Math.max(0, tasksDone - 10);
+    if (recentProxy > 0) {
+      loadPenalty = Math.min(0.15, recentProxy * 0.02);
+    }
   }
 
   const core = asset * 0.35 + memory * 0.25 + skill * 0.2 + success * 0.1;

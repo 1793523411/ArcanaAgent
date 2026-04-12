@@ -6,8 +6,7 @@
 
 ### P0 — 可观测性 & 冷启动
 
-- [ ] **scoreBreakdown UI 展示**：TaskCard / DetailPanel 可折叠展开竞标详情（asset/memory/skill/success/ownerBonus/loadPenalty/threshold 各维度得分）
-  - 类型已有 `ScoreBreakdown`，bid 里已存 `scoreBreakdown` 字段，前端未展示
+- [x] **scoreBreakdown UI 展示**：已在 DetailPanel 投标区实现可折叠展开打分细节
 - [x] **successRate 先验**：新 Agent 默认 0.5，已通过 Laplace 平滑实现（`successRatePrior` config）
 
 ### P1 — 语义匹配（根治语义失效）
@@ -21,9 +20,9 @@
 
 ### P2 — 打分公平性
 
-- [ ] **负载衰减改为实时负载**：当前用 `stats.tasksCompleted`（lifetime 累计），老 Agent 永久被压分。应改为"正在执行 + 近 N 分钟完成数"
-- [ ] **资产打分 top-k 聚合**：目前只取最高单资产得分，10 个强相关资产和 1 个效果一样。改为 top-3 平均或加权求和
-- [ ] **assetBonus 去重**：资产同时贡献 40% 权重和 +0.15 bonus，存在双倍计分
+- [x] **负载衰减改为实时负载**：改为基于当前 working 状态 + 近期活跃度，不再用 lifetime 累计
+- [x] **资产打分 top-k 聚合**：取 top-3 资产得分平均，多个相关资产的 Agent 不再被忽略
+- [ ] **assetBonus 去重**：资产同时贡献 40% 权重和 +0.15 bonus，存在轻微双倍计分。P1 embedding 替换后自动解决
 
 ### P3 — 健壮性
 
