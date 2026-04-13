@@ -257,7 +257,7 @@ class ResponsesAPIAdapter implements ModelAdapter {
     abortSignal?: AbortSignal,
   ): Promise<StreamReasoningResult> {
     // 1. 将 LangChain BaseMessage[] 转换为 Responses API 的 input 格式
-    const input = messages.map((m) => this.convertMessage(m));
+    const input = messages.flatMap((m) => this.convertMessage(m));
 
     // 2. 构造请求体
     const body: Record<string, unknown> = {
@@ -287,6 +287,7 @@ class ResponsesAPIAdapter implements ModelAdapter {
     let content = "";
     let reasoningContent = "";
     const toolCalls: ToolCallResult[] = [];
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
     let buf = "";
 
     while (true) {
@@ -298,45 +299,90 @@ class ResponsesAPIAdapter implements ModelAdapter {
 
       for (const line of lines) {
         const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith("data: ")) continue;
-        if (trimmed === "data: [DONE]") continue;
-
+        if (!trimmed.startsWith("data: ")) continue;
         try {
           const event = JSON.parse(trimmed.slice(6));
-          // 根据 Responses API 的实际事件格式解析
-          // 以下为示意，需根据实际返回调整
-          if (event.type === "response.output_text.delta") {
-            content += event.delta ?? "";
-            onToken(event.delta ?? "");
-          }
-          if (event.type === "response.reasoning.delta") {
-            reasoningContent += event.delta ?? "";
-            onReasoningToken(event.delta ?? "");
-          }
-          if (event.type === "response.function_call") {
-            toolCalls.push({
-              id: event.call_id ?? `call_${toolCalls.length}`,
-              name: event.name ?? "",
-              arguments: typeof event.arguments === "string"
-                ? event.arguments
-                : JSON.stringify(event.arguments ?? {}),
-            });
+
+          switch (event.type) {
+            // 文本内容增量
+            case "response.output_text.delta":
+              content += event.delta ?? "";
+              onToken(event.delta ?? "");
+              break;
+
+            // 推理过程增量（如模型支持）
+            case "response.reasoning.delta":
+              reasoningContent += event.delta ?? "";
+              onReasoningToken(event.delta ?? "");
+              break;
+
+            // 工具调用完成 — 从 response.output_item.done 中提取完整的 function_call
+            case "response.output_item.done":
+              if (event.item?.type === "function_call") {
+                toolCalls.push({
+                  id: event.item.call_id,
+                  name: event.item.name,
+                  arguments: event.item.arguments ?? "{}",
+                });
+              }
+              break;
+
+            // 请求完成 — 提取 usage
+            case "response.completed":
+              if (event.response?.usage) {
+                const u = event.response.usage;
+                usage = {
+                  prompt_tokens: u.input_tokens ?? 0,
+                  completion_tokens: u.output_tokens ?? 0,
+                  total_tokens: u.total_tokens ?? (u.input_tokens + u.output_tokens) ?? 0,
+                };
+              }
+              break;
           }
         } catch { /* ignore parse errors */ }
       }
     }
 
-    return {
-      content,
-      reasoningContent,
-      toolCalls,
-      usage: undefined, // 如果 API 返回 usage 信息，在此填充
-    };
+    return { content, reasoningContent, toolCalls, usage };
   }
 
-  private convertMessage(m: BaseMessage): Record<string, unknown> {
+  private convertMessage(m: BaseMessage): Record<string, unknown> | Record<string, unknown>[] {
     const type = (m as any)._getType?.() ?? "user";
-    const role = type === "human" ? "user" : type === "ai" ? "assistant" : type === "tool" ? "tool" : "system";
+
+    // ToolMessage → function_call_output
+    if (type === "tool") {
+      return {
+        type: "function_call_output",
+        call_id: (m as any).tool_call_id,
+        output: typeof m.content === "string" ? m.content : JSON.stringify(m.content),
+      };
+    }
+
+    // AIMessage with tool_calls → assistant content + function_call items
+    if (type === "ai") {
+      const tc = (m as any).tool_calls;
+      if (tc?.length) {
+        const items: Record<string, unknown>[] = [];
+        const c = (m as any).content;
+        if (c && c !== " ") {
+          items.push({ role: "assistant", content: [{ type: "output_text", text: typeof c === "string" ? c : JSON.stringify(c) }] });
+        }
+        for (const call of tc) {
+          items.push({
+            type: "function_call",
+            call_id: call.id,
+            name: call.name,
+            arguments: typeof call.args === "string" ? call.args : JSON.stringify(call.args ?? {}),
+          });
+        }
+        return items;
+      }
+      const c = (m as any).content;
+      return { role: "assistant", content: [{ type: "output_text", text: typeof c === "string" ? c : JSON.stringify(c) }] };
+    }
+
+    // HumanMessage / SystemMessage
+    const role = type === "human" ? "user" : type === "system" ? "developer" : "user";
     const c = (m as any).content;
 
     if (typeof c === "string") {
@@ -355,7 +401,12 @@ class ResponsesAPIAdapter implements ModelAdapter {
   }
 
   private convertTool(t: Record<string, unknown>): Record<string, unknown> {
-    // 根据实际 API 格式调整工具描述转换逻辑
+    // SDK 传入的是 Chat Completions 格式: { type: "function", function: { name, description, parameters } }
+    // Responses API 需要扁平格式: { type: "function", name, description, parameters }
+    const fn = (t as any).function;
+    if (fn) {
+      return { type: "function", name: fn.name, description: fn.description, parameters: fn.parameters };
+    }
     return t;
   }
 }
@@ -434,9 +485,9 @@ interface TokenUsage {
 
 | 字段 | OpenAI Chat Completions | OpenAI Responses API | 你的实现 |
 |:---|:---|:---|:---|
-| `id` | `delta.tool_calls[i].id` | `response.function_call.call_id` | 自行映射 |
-| `name` | `delta.tool_calls[i].function.name` | `response.function_call.name` | 自行映射 |
-| `arguments` | `delta.tool_calls[i].function.arguments` | `response.function_call.arguments` | JSON 字符串 |
+| `id` | `delta.tool_calls[i].id` | `output_item.done → item.call_id` | 自行映射 |
+| `name` | `delta.tool_calls[i].function.name` | `output_item.done → item.name` | 自行映射 |
+| `arguments` | `delta.tool_calls[i].function.arguments` | `output_item.done → item.arguments` | JSON 字符串 |
 
 ---
 
