@@ -205,90 +205,109 @@ export async function streamChatCompletionsWithReasoning(
   // Timeout per chunk read: if no data arrives for 3 minutes, consider the connection dead
   const CHUNK_TIMEOUT_MS = 3 * 60 * 1000;
 
-  while (true) {
-    const timeoutPromise = new Promise<{ done: true; value: undefined }>((_, reject) =>
-      setTimeout(() => reject(new Error("Stream read timeout: no data received for 3 minutes")), CHUNK_TIMEOUT_MS)
-    );
-    const { done, value } = await Promise.race([reader.read(), timeoutPromise]);
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    const lines = buf.split("\n");
-    buf = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed === "data: [DONE]") continue;
-      if (trimmed.startsWith("data: ")) {
-        try {
-          const json = JSON.parse(trimmed.slice(6)) as {
-            choices?: Array<{
-              delta?: {
-                content?: string;
-                reasoning_content?: string;
-                tool_calls?: Array<{
-                  index: number;
-                  id?: string;
-                  type?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-            }>;
-            usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
-          };
-          const u = json.usage;
-          if (u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number") {
-            lastUsage = {
-              prompt_tokens: u.prompt_tokens,
-              completion_tokens: u.completion_tokens,
-              total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : u.prompt_tokens + u.completion_tokens,
-            };
-          }
-          const delta = json.choices?.[0]?.delta;
-          if (!delta) continue;
-          if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
-            reasoningContent += delta.reasoning_content;
-            onReasoningToken(delta.reasoning_content);
-          }
-          if (typeof delta.content === "string" && delta.content) {
-            content += delta.content;
+  try {
+    while (true) {
+      // Create a timeout that we can cancel to prevent timer leaks and unhandled rejections
+      let timeoutId: ReturnType<typeof setTimeout>;
+      const timeoutPromise = new Promise<{ done: true; value: undefined }>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Stream read timeout: no data received for 3 minutes")), CHUNK_TIMEOUT_MS);
+      });
 
-            if (!suppressingMarker) {
-              pendingFlush += delta.content;
-              const markerIdx = pendingFlush.indexOf(FC_MARKER_BEGIN);
-              if (markerIdx >= 0) {
-                // Flush content before the marker, then suppress everything after
-                const safe = pendingFlush.slice(0, markerIdx);
-                if (safe) onToken(safe);
-                suppressingMarker = true;
-                pendingFlush = "";
-              } else {
-                // Hold back trailing chars that could be start of a marker split across chunks
-                const holdBack = markerPrefixOverlap(pendingFlush, FC_MARKER_BEGIN);
-                const safeLen = pendingFlush.length - holdBack;
-                if (safeLen > 0) {
-                  onToken(pendingFlush.slice(0, safeLen));
-                  pendingFlush = pendingFlush.slice(safeLen);
+      let done: boolean;
+      let value: Uint8Array | undefined;
+      try {
+        const result = await Promise.race([reader.read(), timeoutPromise]);
+        clearTimeout(timeoutId!);
+        done = result.done;
+        value = result.value;
+      } catch (e) {
+        clearTimeout(timeoutId!);
+        throw e;
+      }
+
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed === "data: [DONE]") continue;
+        if (trimmed.startsWith("data: ")) {
+          try {
+            const json = JSON.parse(trimmed.slice(6)) as {
+              choices?: Array<{
+                delta?: {
+                  content?: string;
+                  reasoning_content?: string;
+                  tool_calls?: Array<{
+                    index: number;
+                    id?: string;
+                    type?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>;
+                };
+              }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+            };
+            const u = json.usage;
+            if (u && typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number") {
+              lastUsage = {
+                prompt_tokens: u.prompt_tokens,
+                completion_tokens: u.completion_tokens,
+                total_tokens: typeof u.total_tokens === "number" ? u.total_tokens : u.prompt_tokens + u.completion_tokens,
+              };
+            }
+            const delta = json.choices?.[0]?.delta;
+            if (!delta) continue;
+            if (typeof delta.reasoning_content === "string" && delta.reasoning_content) {
+              reasoningContent += delta.reasoning_content;
+              onReasoningToken(delta.reasoning_content);
+            }
+            if (typeof delta.content === "string" && delta.content) {
+              content += delta.content;
+
+              if (!suppressingMarker) {
+                pendingFlush += delta.content;
+                const markerIdx = pendingFlush.indexOf(FC_MARKER_BEGIN);
+                if (markerIdx >= 0) {
+                  // Flush content before the marker, then suppress everything after
+                  const safe = pendingFlush.slice(0, markerIdx);
+                  if (safe) onToken(safe);
+                  suppressingMarker = true;
+                  pendingFlush = "";
+                } else {
+                  // Hold back trailing chars that could be start of a marker split across chunks
+                  const holdBack = markerPrefixOverlap(pendingFlush, FC_MARKER_BEGIN);
+                  const safeLen = pendingFlush.length - holdBack;
+                  if (safeLen > 0) {
+                    onToken(pendingFlush.slice(0, safeLen));
+                    pendingFlush = pendingFlush.slice(safeLen);
+                  }
                 }
               }
+              // If suppressingMarker, content is accumulated but not emitted via onToken
             }
-            // If suppressingMarker, content is accumulated but not emitted via onToken
-          }
-          if (Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index ?? 0;
-              if (!toolCallAccum.has(idx)) {
-                toolCallAccum.set(idx, { id: tc.id ?? "", name: "", arguments: "" });
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index ?? 0;
+                if (!toolCallAccum.has(idx)) {
+                  toolCallAccum.set(idx, { id: tc.id ?? "", name: "", arguments: "" });
+                }
+                const acc = toolCallAccum.get(idx)!;
+                if (tc.id) acc.id = tc.id;
+                if (tc.function?.name) acc.name += tc.function.name;
+                if (tc.function?.arguments) acc.arguments += tc.function.arguments;
               }
-              const acc = toolCallAccum.get(idx)!;
-              if (tc.id) acc.id = tc.id;
-              if (tc.function?.name) acc.name += tc.function.name;
-              if (tc.function?.arguments) acc.arguments += tc.function.arguments;
             }
+          } catch {
+            // ignore parse errors
           }
-        } catch {
-          // ignore parse errors
         }
       }
     }
+  } finally {
+    // Always release the reader to free the underlying TCP connection
+    try { reader.releaseLock(); } catch { /* already released */ }
   }
 
   // Flush any remaining buffered content that turned out not to be a marker

@@ -167,11 +167,19 @@ export class ArcanaAgent {
   private tools: StructuredToolInterface[];
   private systemMessage: SystemMessage;
   private mcpManager: McpManager | null = null;
-  private initialized = false;
+  private initPromise: Promise<void> | null = null;
 
   constructor(config: AgentConfig) {
-    this.config = config;
-    this.adapter = config.modelAdapter ?? createModelAdapter(config.model);
+    // Deep-clone config to prevent mutation of caller's object (especially harnessConfig)
+    this.config = {
+      ...config,
+      model: { ...config.model },
+      harnessConfig: config.harnessConfig ? { ...config.harnessConfig } : undefined,
+      outerRetry: config.outerRetry ? { ...config.outerRetry } : undefined,
+      tools: config.tools ? { ...config.tools } : undefined,
+      skills: config.skills ? { ...config.skills } : undefined,
+    };
+    this.adapter = config.modelAdapter ?? createModelAdapter(this.config.model);
 
     let systemPromptText = config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     const skillDirPaths: string[] = [];
@@ -234,8 +242,13 @@ export class ArcanaAgent {
   }
 
   async init(): Promise<void> {
-    if (this.initialized) return;
-    this.initialized = true;
+    if (!this.initPromise) {
+      this.initPromise = this._doInit();
+    }
+    return this.initPromise;
+  }
+
+  private async _doInit(): Promise<void> {
     if (this.mcpManager && this.config.mcpServers?.length) {
       await this.mcpManager.connect(this.config.mcpServers);
       const mcpTools = this.mcpManager.getTools();
