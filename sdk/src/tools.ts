@@ -22,6 +22,10 @@ const DEFAULT_TOOL_IDS: BuiltinToolId[] = [
 ];
 
 export function buildToolSet(config?: ToolConfig, workspacePath?: string, allowedDirs?: string[]): StructuredToolInterface[] {
+  if (config?.builtinTools && config?.excludeTools?.length) {
+    throw new Error("builtinTools and excludeTools cannot be used together. Use builtinTools to specify an explicit set, or excludeTools to remove from defaults.");
+  }
+
   let toolIds: BuiltinToolId[];
 
   if (config?.builtinTools) {

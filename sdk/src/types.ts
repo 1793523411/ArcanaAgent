@@ -1,5 +1,6 @@
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { BaseMessage } from "@langchain/core/messages";
+import type { HarnessEvent as CoreHarnessEvent } from "@arcana-agent/core";
 
 export type ModelProvider = "openai" | "anthropic";
 
@@ -55,6 +56,11 @@ export type BuiltinToolId =
   | "background_check"
   | "background_cancel";
 
+export interface OuterRetryConfig {
+  maxOuterRetries?: number;
+  autoApproveReplan?: boolean;
+}
+
 export interface AgentConfig {
   model: ModelConfig;
   tools?: ToolConfig;
@@ -65,6 +71,9 @@ export interface AgentConfig {
   maxRounds?: number;
   planningEnabled?: boolean;
   harnessConfig?: import("@arcana-agent/core").HarnessConfig;
+  /** Agent 执行超时（毫秒），0 表示不限制，默认 0 */
+  agentTimeoutMs?: number;
+  outerRetry?: OuterRetryConfig;
   abortSignal?: AbortSignal;
 }
 
@@ -85,6 +94,8 @@ export type AgentEventType =
   | "tool_result"
   | "plan_update"
   | "usage"
+  | "harness"
+  | "harness_driver"
   | "stop"
   | "error";
 
@@ -136,6 +147,18 @@ export interface ErrorEvent {
   recoverable: boolean;
 }
 
+export interface HarnessAgentEvent {
+  type: "harness";
+  event: CoreHarnessEvent;
+}
+
+export interface HarnessDriverAgentEvent {
+  type: "harness_driver";
+  phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached";
+  iteration: number;
+  maxRetries: number;
+}
+
 export type AgentEvent =
   | TokenEvent
   | ReasoningTokenEvent
@@ -143,6 +166,8 @@ export type AgentEvent =
   | ToolResultEvent
   | PlanUpdateEvent
   | UsageEvent
+  | HarnessAgentEvent
+  | HarnessDriverAgentEvent
   | StopEvent
   | ErrorEvent;
 

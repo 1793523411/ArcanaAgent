@@ -6,7 +6,7 @@ export { loadSkillsFromDirs, loadSkillsFromMetas, buildSkillCatalog, createLoadS
 export type { SkillMeta, SkillFull } from "./skills.js";
 export { McpManager } from "./mcp.js";
 export { DEFAULT_HARNESS_CONFIG } from "@arcana-agent/core";
-export type { HarnessConfig } from "@arcana-agent/core";
+export type { HarnessConfig, HarnessEvent, EvalResult, LoopDetectionResult, ReplanDecision } from "@arcana-agent/core";
 export type {
   ModelProvider,
   ModelConfig,
@@ -15,6 +15,7 @@ export type {
   McpServerConfig,
   BuiltinToolId,
   AgentConfig,
+  OuterRetryConfig,
   StopReason,
   AgentEventType,
   TokenEvent,
@@ -23,6 +24,8 @@ export type {
   ToolResultEvent,
   PlanUpdateEvent,
   UsageEvent,
+  HarnessAgentEvent,
+  HarnessDriverAgentEvent,
   StopEvent,
   ErrorEvent,
   AgentEvent,

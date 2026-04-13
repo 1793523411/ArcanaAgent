@@ -66,7 +66,7 @@ for await (const event of agent.stream(history2)) {
 
 ---
 
-## 8 种事件类型
+## 10 种事件类型
 
 ```typescript
 type AgentEvent =
@@ -76,6 +76,8 @@ type AgentEvent =
   | ToolResultEvent      // 工具调用结果
   | PlanUpdateEvent      // 计划更新
   | UsageEvent           // Token 用量
+  | HarnessAgentEvent    // Harness 中间件事件（eval/loop/replan）
+  | HarnessDriverAgentEvent  // 外层重试驱动事件
   | StopEvent            // 流结束
   | ErrorEvent;          // 错误信息
 ```
@@ -234,6 +236,67 @@ interface ErrorEvent {
 
 错误不一定导致流结束。`recoverable: true` 时 Agent 会自动重试。
 
+### 9. HarnessAgentEvent
+
+```typescript
+interface HarnessAgentEvent {
+  type: "harness";
+  event: HarnessEvent;  // 来自 @arcana-agent/core
+}
+```
+
+仅在配置了 `harnessConfig` 时出现。每轮工具执行后，Harness 中间件产生的事件。`HarnessEvent` 包含三种子类型：
+
+| `event.kind` | `event.data` 类型 | 说明 |
+|:---|:---|:---|
+| `"eval"` | `EvalResult` | Eval Guard 对 plan step 完成质量的评估。`verdict`: `"pass"` / `"weak"` / `"fail"` / `"inconclusive"` |
+| `"loop_detection"` | `LoopDetectionResult` | 循环检测结果。`detected`: 是否检测到重复模式；`type`: `"exact_cycle"` / `"semantic_stall"` |
+| `"replan"` | `ReplanDecision` | 重规划决策。`shouldReplan`: 是否触发重规划；`trigger`: `"eval_fail"` / `"loop_detected"` / `"none"` |
+
+```typescript
+if (event.type === "harness") {
+  const { kind, data } = event.event;
+  switch (kind) {
+    case "eval":
+      console.log(`Eval: step=${data.stepIndex}, verdict=${data.verdict}`);
+      break;
+    case "loop_detection":
+      if (data.detected) console.log(`Loop detected: ${data.description}`);
+      break;
+    case "replan":
+      if (data.shouldReplan) console.log(`Replan triggered: ${data.trigger}`);
+      break;
+  }
+}
+```
+
+### 10. HarnessDriverAgentEvent
+
+```typescript
+interface HarnessDriverAgentEvent {
+  type: "harness_driver";
+  phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached";
+  iteration: number;
+  maxRetries: number;
+}
+```
+
+仅在配置了 `outerRetry` 时出现。外层重试驱动器的生命周期事件。
+
+| phase | 说明 |
+|:---|:---|
+| `started` | 外层重试流程开始 |
+| `iteration_start` | 第 N 轮迭代开始 |
+| `iteration_end` | 第 N 轮迭代结束 |
+| `completed` | 任务成功完成，无需更多重试 |
+| `max_retries_reached` | 达到最大重试次数仍未解决 |
+
+```typescript
+if (event.type === "harness_driver") {
+  console.log(`Driver: ${event.phase} (iteration ${event.iteration}/${event.maxRetries})`);
+}
+```
+
 ---
 
 ## 完整事件处理模板
@@ -249,7 +312,6 @@ for await (const event of agent.stream("你的问题")) {
       break;
 
     case "reasoning_token":
-      // 仅 reasoning: true 时出现
       process.stderr.write(`[思考] ${event.content}`);
       break;
 
@@ -263,13 +325,20 @@ for await (const event of agent.stream("你的问题")) {
       break;
 
     case "plan_update":
-      // 仅 planningEnabled: true 时出现
       const done = event.steps.filter(s => s.status === "completed").length;
       console.log(`📋 进度: ${done}/${event.steps.length}`);
       break;
 
     case "usage":
       console.log(`📊 tokens: ${event.totalTokens}`);
+      break;
+
+    case "harness":
+      console.log(`🔍 [Harness ${event.event.kind}]`, JSON.stringify(event.event.data));
+      break;
+
+    case "harness_driver":
+      console.log(`🚗 [Driver] ${event.phase} (${event.iteration}/${event.maxRetries})`);
       break;
 
     case "error":

@@ -96,10 +96,14 @@ Harness 是围绕 Agent 执行循环的安全层，提供三种保护机制：
 import { DEFAULT_HARNESS_CONFIG } from "arcana-agent-sdk";
 
 interface HarnessConfig {
-  evalEnabled: boolean;           // 启用执行质量评估
-  loopDetectionEnabled: boolean;  // 启用循环行为检测
-  replanEnabled: boolean;         // 启用自动重规划
-  maxReplanAttempts: number;      // 最大重规划次数（默认 3）
+  evalEnabled: boolean;            // 启用执行质量评估
+  evalSkipReadOnly: boolean;       // 只读工具步骤跳过评估（默认 true）
+  loopDetectionEnabled: boolean;   // 启用循环行为检测
+  replanEnabled: boolean;          // 启用自动重规划
+  autoApproveReplan: boolean;      // 自动批准重规划（默认 false）
+  maxReplanAttempts: number;       // 最大重规划次数（默认 3）
+  loopWindowSize: number;          // 循环检测滑动窗口大小（默认 6）
+  loopSimilarityThreshold: number; // trigram Jaccard 相似度阈值 0-1（默认 0.7）
 }
 ```
 
@@ -107,12 +111,26 @@ interface HarnessConfig {
 
 ```typescript
 {
-  evalEnabled: false,
-  loopDetectionEnabled: false,
-  replanEnabled: false,
+  evalEnabled: true,
+  evalSkipReadOnly: true,
+  loopDetectionEnabled: true,
+  replanEnabled: true,
+  autoApproveReplan: false,
   maxReplanAttempts: 3,
+  loopWindowSize: 6,
+  loopSimilarityThreshold: 0.7,
 }
 ```
+
+### System Prompt 增强注入
+
+启用 `harnessConfig` 后，SDK 会自动向 system prompt 注入 Harness 增强指令，使 Agent 感知到中间件的存在：
+
+- **evalEnabled = true** → 注入 Evidence-Driven Execution 指令，要求 Agent 逐步收集可验证证据
+- **loopDetectionEnabled = true** → 注入 Loop Detection 提示，告知 Agent 中间件会监控重复模式
+- **replanEnabled = true** → 注入 Dynamic Replanning 指令，告知 Agent 计划可能被动态修改
+
+这些指令使得 Agent 的输出更加结构化（如"任务完成清单 + 证据"格式），显著提升 harness 的实际效果。
 
 ### 1. Eval Guard（执行质量评估）
 
@@ -204,6 +222,95 @@ for await (const event of agent.stream("...")) {
 
 ---
 
+## Harness 事件监听
+
+启用 `harnessConfig` 后，每轮工具执行后 Harness 中间件会产生事件，通过 `type: "harness"` 实时推送：
+
+```typescript
+for await (const event of agent.stream("...")) {
+  if (event.type === "harness") {
+    const { kind, data } = event.event;
+    switch (kind) {
+      case "eval":
+        // data: EvalResult { stepIndex, verdict, reason }
+        // verdict: "pass" | "weak" | "fail" | "inconclusive"
+        console.log(`Eval step ${data.stepIndex}: ${data.verdict}`);
+        break;
+      case "loop_detection":
+        // data: LoopDetectionResult { detected, type?, description? }
+        // type: "exact_cycle" | "semantic_stall"
+        if (data.detected) console.log(`Loop: ${data.description}`);
+        break;
+      case "replan":
+        // data: ReplanDecision { shouldReplan, trigger }
+        // trigger: "eval_fail" | "loop_detected" | "none"
+        if (data.shouldReplan) console.log(`Replan: ${data.trigger}`);
+        break;
+    }
+  }
+}
+```
+
+---
+
+## 外层重试（Outer Retry）
+
+当内层 replan 次数耗尽但问题仍未解决时，外层重试驱动器会自动整体重新运行一轮 agent 执行。需配合 `harnessConfig` 使用：
+
+```typescript
+const agent = createAgent({
+  model,
+  planningEnabled: true,
+  harnessConfig: {
+    ...DEFAULT_HARNESS_CONFIG,
+    evalEnabled: true,
+    loopDetectionEnabled: true,
+    replanEnabled: true,
+  },
+  outerRetry: {
+    maxOuterRetries: 2,       // 最多额外重试 2 次
+    autoApproveReplan: true,  // 覆盖 harnessConfig.autoApproveReplan
+  },
+});
+```
+
+### 工作流程
+
+```
+stream() 入口
+    │
+    ▼
+┌─────────────────────────┐
+│ harness_driver: started  │
+└──────────┬──────────────┘
+           │
+    ┌──────┴──────┐
+    ▼              ▼（重试时注入失败摘要）
+iteration_start → streamSingleExecution → iteration_end
+    │                                         │
+    │  检查 eval fail / loop detection        │
+    │  ┌──── 未解决 ────┐  ┌── 已解决 ──┐    │
+    │  ▼                │  ▼             │    │
+    │  下一轮 iteration │  completed     │    │
+    │  (注入失败摘要)    │               │    │
+    │  ...              │               │    │
+    │  max_retries      │               │    │
+    └──────────────────┘  └──────────────┘
+```
+
+### 监听 Driver 事件
+
+```typescript
+for await (const event of agent.stream("...")) {
+  if (event.type === "harness_driver") {
+    // phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached"
+    console.log(`Driver: ${event.phase} (${event.iteration}/${event.maxRetries})`);
+  }
+}
+```
+
+---
+
 ## Planning + Harness 完整示例
 
 ```typescript
@@ -224,6 +331,7 @@ const agent = createAgent({
     replanEnabled: true,
     maxReplanAttempts: 2,
   },
+  outerRetry: { maxOuterRetries: 2, autoApproveReplan: true },
   maxRounds: 50,
 });
 
@@ -249,6 +357,14 @@ for await (const event of agent.stream(
 
     case "tool_call":
       console.log(`\n🔧 ${event.name}`);
+      break;
+
+    case "harness":
+      console.log(`🔍 [${event.event.kind}]`, JSON.stringify(event.event.data));
+      break;
+
+    case "harness_driver":
+      console.log(`🚗 [Driver] ${event.phase} (${event.iteration}/${event.maxRetries})`);
       break;
 
     case "stop":

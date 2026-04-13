@@ -75,6 +75,7 @@ interface AgentConfig {
   maxRounds?: number;              // 最大工具调用轮数（默认 200）
   planningEnabled?: boolean;       // 是否启用规划模式（默认 false）
   harnessConfig?: HarnessConfig;   // Harness 安全护栏
+  outerRetry?: OuterRetryConfig;   // 外层重试（需配合 harnessConfig 使用）
   abortSignal?: AbortSignal;       // 中断信号
 }
 ```
@@ -188,7 +189,7 @@ createAgent({ model, tools: { customTools: [myTool] } });
 
 ## 流式事件系统
 
-8 种事件类型：
+10 种事件类型：
 
 | 类型 | 说明 | 关键字段 |
 |:---|:---|:---|
@@ -198,6 +199,8 @@ createAgent({ model, tools: { customTools: [myTool] } });
 | `tool_result` | 工具执行结果 | `id, name, result` |
 | `plan_update` | 计划更新（仅 planningEnabled:true） | `steps[], currentStepIndex` |
 | `usage` | Token 用量 | `promptTokens, completionTokens, totalTokens` |
+| `harness` | Harness 护栏事件（eval/循环检测/重规划） | `event: HarnessEvent` |
+| `harness_driver` | 外层重试生命周期事件 | `phase, iteration, maxRetries` |
 | `stop` | 流结束 | `reason: StopReason` |
 | `error` | 错误 | `message, recoverable` |
 
@@ -214,6 +217,8 @@ for await (const event of agent.stream("你的问题")) {
     case "tool_result":     console.log(`📋 ${event.result.slice(0, 200)}`); break;
     case "plan_update":     console.log(`📋 ${event.steps.filter(s=>s.status==="completed").length}/${event.steps.length}`); break;
     case "usage":           console.log(`📊 tokens: ${event.totalTokens}`); break;
+    case "harness":         console.log(`🛡️ harness: ${event.event.kind}`); break;
+    case "harness_driver":  console.log(`🔄 driver: ${event.phase} (${event.iteration}/${event.maxRetries})`); break;
     case "error":           console.error(`❌ ${event.recoverable?"可恢复":"致命"}: ${event.message}`); break;
     case "stop":            console.log(`✅ ${event.reason}`); break;
   }
@@ -261,7 +266,8 @@ createAgent({
   tools: { excludeTools: ["run_command"] },
   maxRounds: 50,
   planningEnabled: true,
-  harnessConfig: { ...DEFAULT_HARNESS_CONFIG, evalEnabled: true, loopDetectionEnabled: true },
+  harnessConfig: { ...DEFAULT_HARNESS_CONFIG, evalEnabled: true, loopDetectionEnabled: true, replanEnabled: true },
+  outerRetry: { maxOuterRetries: 3, autoApproveReplan: true },
   abortSignal: requestAbortSignal,
 });
 ```
@@ -294,7 +300,7 @@ for await (const event of agent.stream("证明根号2是无理数")) {
 | 流式事件 | `<SKILL_PATH>/references/streaming-events.md` | stream() vs run() 区别、多轮对话、事件时序图、真流式 vs 假流式 |
 | 工具系统 | `<SKILL_PATH>/references/tools.md` | 工具配置模式详解、自定义工具最佳实践、buildToolSet 独立使用、后台工具 |
 | 模型适配器 | `<SKILL_PATH>/references/model-adapter.md` | 独立使用 ModelAdapter、推理流实现、StreamReasoningResult 类型、Token Cap |
-| 规划与 Harness | `<SKILL_PATH>/references/planning-harness.md` | planningEnabled/harnessConfig、eval guard/循环检测/重规划、上下文管理（pruning 5 级） |
+| 规划与 Harness | `<SKILL_PATH>/references/planning-harness.md` | planningEnabled/harnessConfig、eval guard/循环检测/重规划、外层重试/prompt 增强注入、上下文管理（pruning 5 级） |
 | Skill 技能系统 | `<SKILL_PATH>/references/skills.md` | 创建 SKILL.md、配置 SkillConfig、load_skill 工具、`<SKILL_PATH>` 占位符 |
 | MCP 协议集成 | `<SKILL_PATH>/references/mcp.md` | McpServerConfig（stdio/streamablehttp）、工具命名规则 `mcp_{server}__{tool}`、McpManager |
 | 完整 API 参考 | `<SKILL_PATH>/references/api-reference.md` | 所有导出函数/类/类型签名、ModelAdapter 接口、事件子类型、BuiltinToolId |

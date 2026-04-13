@@ -157,6 +157,6 @@ app.listen(3000, () => console.log("Server running on port 3000"));
 
 ## 下一步
 
-- 了解所有配置选项 → [Agent 配置全解](./02-agent-config.md)
-- 了解事件系统 → [流式事件系统](./03-streaming-events.md)
-- 了解内置工具 → [工具系统](./04-tools.md)
+- 了解所有配置选项 → [Agent 配置全解](./agent-config.md)
+- 了解事件系统 → [流式事件系统](./streaming-events.md)
+- 了解内置工具 → [工具系统](./tools.md)

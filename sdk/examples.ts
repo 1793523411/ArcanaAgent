@@ -8,6 +8,10 @@ import {
   type AgentEvent,
   type AgentConfig,
   type HarnessConfig,
+  type HarnessEvent,
+  type HarnessAgentEvent,
+  type HarnessDriverAgentEvent,
+  type OuterRetryConfig,
   type McpServerConfig,
 } from "./dist/index.js";
 import { HumanMessage, AIMessage } from "@langchain/core/messages";
@@ -634,6 +638,111 @@ async function example19_standaloneMcp() {
 }
 
 // ============================================================
+// 示例 20: Harness 完整体验 — 事件监听 + Prompt 增强 + 外层重试
+// ============================================================
+async function example20_harnessFullExperience() {
+  const agent = createAgent({
+    model: DOUBAO_MINI,
+    planningEnabled: true,
+    workspacePath: WORKSPACE,
+    harnessConfig: {
+      ...DEFAULT_HARNESS_CONFIG,
+      evalEnabled: true,
+      evalSkipReadOnly: true,
+      loopDetectionEnabled: true,
+      replanEnabled: true,
+      autoApproveReplan: true,
+      maxReplanAttempts: 2,
+      loopWindowSize: 6,
+      loopSimilarityThreshold: 0.7,
+    },
+    outerRetry: {
+      maxOuterRetries: 2,
+      autoApproveReplan: true,
+    },
+  });
+
+  const harnessLog: { kind: string; data: unknown }[] = [];
+  const driverLog: { phase: string; iteration: number }[] = [];
+
+  for await (const event of agent.stream(
+    "帮我在工作区创建一个 calculator.js 文件，包含 add、subtract、multiply 三个函数，然后读取文件确认内容正确",
+  )) {
+    switch (event.type) {
+      case "plan_update":
+        console.log("\n📋 执行计划:");
+        event.steps.forEach((step, i) => {
+          const icon =
+            step.status === "completed"
+              ? "✅"
+              : step.status === "in_progress"
+                ? "🔄"
+                : "⬜";
+          console.log(`  ${icon} ${i + 1}. ${step.title}`);
+        });
+        break;
+      case "token":
+        process.stdout.write(event.content);
+        break;
+      case "tool_call":
+        console.log(`\n🔧 调用工具: ${event.name}`);
+        break;
+      case "tool_result":
+        console.log(`📋 工具结果: ${event.result.slice(0, 150)}...`);
+        break;
+      case "harness": {
+        const he = event.event;
+        harnessLog.push({ kind: he.kind, data: he.data });
+        switch (he.kind) {
+          case "eval":
+            console.log(`\n🔍 [Harness Eval] verdict=${(he.data as any).verdict}, step=${(he.data as any).stepIndex}, reason=${(he.data as any).reason ?? "n/a"}`);
+            break;
+          case "loop_detection":
+            console.log(`\n🔁 [Harness Loop] detected=${(he.data as any).detected}, desc=${(he.data as any).description ?? "n/a"}`);
+            break;
+          case "replan":
+            console.log(`\n🔄 [Harness Replan] shouldReplan=${(he.data as any).shouldReplan}, trigger=${(he.data as any).trigger ?? "n/a"}`);
+            break;
+          default:
+            console.log(`\n🏷️ [Harness ${he.kind}]`, JSON.stringify(he.data).slice(0, 200));
+        }
+        break;
+      }
+      case "harness_driver":
+        driverLog.push({ phase: event.phase, iteration: event.iteration });
+        console.log(`\n🚗 [Driver] phase=${event.phase}, iteration=${event.iteration}/${event.maxRetries}`);
+        break;
+      case "usage":
+        console.log(`\n📊 Token: prompt=${event.promptTokens}, completion=${event.completionTokens}`);
+        break;
+      case "error":
+        console.error(`\n❌ ${event.recoverable ? "可恢复" : "致命"}: ${event.message}`);
+        break;
+      case "stop":
+        console.log(`\n✅ 完成 (${event.reason})`);
+        break;
+    }
+  }
+
+  console.log("\n\n========== Harness 统计 ==========");
+  console.log(`Harness 事件总数: ${harnessLog.length}`);
+  const evalEvents = harnessLog.filter((e) => e.kind === "eval");
+  const loopEvents = harnessLog.filter((e) => e.kind === "loop_detection");
+  const replanEvents = harnessLog.filter((e) => e.kind === "replan");
+  console.log(`  Eval 事件: ${evalEvents.length}`);
+  if (evalEvents.length > 0) {
+    const verdicts = evalEvents.map((e) => (e.data as any).verdict);
+    console.log(`    verdicts: ${verdicts.join(", ")}`);
+  }
+  console.log(`  Loop Detection 事件: ${loopEvents.length}`);
+  console.log(`  Replan 事件: ${replanEvents.length}`);
+  console.log(`Driver 事件总数: ${driverLog.length}`);
+  if (driverLog.length > 0) {
+    console.log(`  phases: ${driverLog.map((d) => d.phase).join(" → ")}`);
+  }
+}
+
+// ============================================================
 // 运行指定示例
 // ============================================================
 const exampleMap: Record<string, () => Promise<void>> = {
@@ -648,6 +757,7 @@ const exampleMap: Record<string, () => Promise<void>> = {
   "9": example9_modelAdapterStandalone,
   "10": example10_toolSetStandalone,
   "11": example11_modelTuning,
+  // 12: Express SSE 集成（仅代码展示，见源码注释，不可独立运行）
   "13": example13_planning,
   "14": example14_planningWithHarness,
   "15": example15_backgroundTools,
@@ -655,6 +765,7 @@ const exampleMap: Record<string, () => Promise<void>> = {
   "17": example17_mcp,
   "18": example18_fullCombination,
   "19": example19_standaloneMcp,
+  "20": example20_harnessFullExperience,
 };
 
 const target = process.argv[2];

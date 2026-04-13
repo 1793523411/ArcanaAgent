@@ -38,6 +38,8 @@ import {
   type ToolResultEvent,
   type PlanUpdateEvent,
   type UsageEvent,
+  type HarnessAgentEvent,
+  type HarnessDriverAgentEvent,
   type StopEvent,
   type ErrorEvent,
   type AgentRunResult,
@@ -54,6 +56,11 @@ import {
   type SkillFull,
   type McpServerConfig,
   type HarnessConfig,
+  type HarnessEvent,
+  type EvalResult,
+  type LoopDetectionResult,
+  type ReplanDecision,
+  type OuterRetryConfig,
   type StopReason,
   type BuiltinToolId,
 } from "arcana-agent-sdk";
@@ -84,6 +91,7 @@ function createAgent(config: AgentConfig): ArcanaAgent
 | `maxRounds` | `number` | 否 | `200` | 最大工具调用轮数 |
 | `planningEnabled` | `boolean` | 否 | `false` | 启用规划模式 |
 | `harnessConfig` | `HarnessConfig` | 否 | — | Harness 护栏配置 |
+| `outerRetry` | `OuterRetryConfig` | 否 | — | 外层重试配置（需配合 harnessConfig） |
 | `abortSignal` | `AbortSignal` | 否 | — | 中断信号 |
 
 **返回**：`ArcanaAgent` 实例
@@ -173,13 +181,13 @@ function isReadOnlyTool(toolName: string): boolean
 ### Skill 函数
 
 ```typescript
-function loadSkillsFromDirs(dirs: string[]): SkillMeta[]
-function loadSkillsFromMetas(metas: Array<{ name: string; description: string; dirPath: string }>): SkillMeta[]
-function buildSkillCatalog(skills: SkillMeta[]): string
-function createLoadSkillTool(skills: SkillMeta[]): StructuredToolInterface
+function loadSkillsFromDirs(dirs: string[]): SkillFull[]
+function loadSkillsFromMetas(metas: Array<{ name: string; description: string; dirPath: string }>): SkillFull[]
+function buildSkillCatalog(skills: SkillFull[]): string
+function createLoadSkillTool(skills: SkillFull[]): StructuredToolInterface
 ```
 
-Skill 加载和管理的底层函数，通常由 Agent 内部调用。详见 [第 7 章：Skills](./07-skills.md)。
+Skill 加载和管理的底层函数，通常由 Agent 内部调用。详见 [第 7 章：Skills](./skills.md)。
 
 ---
 
@@ -212,7 +220,7 @@ async *stream(input: string | BaseMessage[]): AsyncGenerator<AgentEvent>
 - `input: string` — 用户消息文本
 - `input: BaseMessage[]` — 消息数组（多轮对话场景，包含 `HumanMessage` / `AIMessage`）
 
-**yield**：`AgentEvent`（8 种事件类型）
+**yield**：`AgentEvent`（10 种事件类型）
 
 #### run()
 
@@ -289,7 +297,17 @@ interface AgentConfig {
   maxRounds?: number;
   planningEnabled?: boolean;
   harnessConfig?: HarnessConfig;
+  outerRetry?: OuterRetryConfig;
   abortSignal?: AbortSignal;
+}
+```
+
+### OuterRetryConfig
+
+```typescript
+interface OuterRetryConfig {
+  maxOuterRetries?: number;      // 最大外层重试次数（默认 2）
+  autoApproveReplan?: boolean;   // 覆盖 harnessConfig.autoApproveReplan
 }
 ```
 
@@ -375,9 +393,43 @@ type McpServerConfig =
 ```typescript
 interface HarnessConfig {
   evalEnabled: boolean;
+  evalSkipReadOnly: boolean;
   loopDetectionEnabled: boolean;
   replanEnabled: boolean;
+  autoApproveReplan: boolean;
   maxReplanAttempts: number;
+  loopWindowSize: number;
+  loopSimilarityThreshold: number;
+}
+```
+
+### HarnessEvent / EvalResult / LoopDetectionResult / ReplanDecision
+
+```typescript
+interface HarnessEvent {
+  kind: "eval" | "loop_detection" | "replan";
+  data: EvalResult | LoopDetectionResult | ReplanDecision;
+  timestamp: string;
+}
+
+interface EvalResult {
+  stepIndex: number;
+  verdict: "pass" | "weak" | "fail" | "inconclusive";
+  reason: string;
+}
+
+interface LoopDetectionResult {
+  detected: boolean;
+  type?: "exact_cycle" | "semantic_stall";
+  description?: string;
+  windowSnapshot?: string[];
+}
+
+interface ReplanDecision {
+  shouldReplan: boolean;
+  trigger: "eval_fail" | "loop_detected" | "none";
+  revisedSteps?: PlanStep[];
+  pendingApproval?: boolean;
 }
 ```
 
@@ -391,27 +443,32 @@ type AgentEventType =
   | "tool_result"
   | "plan_update"
   | "usage"
+  | "harness"
+  | "harness_driver"
   | "stop"
   | "error";
 ```
 
 ### AgentEvent
 
-`AgentEvent` 是 8 种事件接口的联合类型，每个子类型都可以单独导入：
+`AgentEvent` 是 10 种事件接口的联合类型，每个子类型都可以单独导入：
 
 ```typescript
-interface TokenEvent         { type: "token";           content: string }
-interface ReasoningTokenEvent { type: "reasoning_token"; content: string }
-interface ToolCallEvent      { type: "tool_call";  id: string; name: string; arguments: Record<string, unknown> }
-interface ToolResultEvent    { type: "tool_result"; id: string; name: string; result: string }
-interface PlanUpdateEvent    { type: "plan_update"; steps: PlanStep[]; currentStepIndex: number }
-interface UsageEvent         { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number }
-interface StopEvent          { type: "stop";  reason: StopReason }
-interface ErrorEvent         { type: "error"; message: string; recoverable: boolean }
+interface TokenEvent              { type: "token";           content: string }
+interface ReasoningTokenEvent     { type: "reasoning_token"; content: string }
+interface ToolCallEvent           { type: "tool_call";  id: string; name: string; arguments: Record<string, unknown> }
+interface ToolResultEvent         { type: "tool_result"; id: string; name: string; result: string }
+interface PlanUpdateEvent         { type: "plan_update"; steps: Array<{ title: string; status: "pending" | "in_progress" | "completed" | "failed" }>; currentStepIndex: number }
+interface UsageEvent              { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number }
+interface HarnessAgentEvent       { type: "harness"; event: HarnessEvent }
+interface HarnessDriverAgentEvent { type: "harness_driver"; phase: "started" | "iteration_start" | "iteration_end" | "completed" | "max_retries_reached"; iteration: number; maxRetries: number }
+interface StopEvent               { type: "stop";  reason: StopReason }
+interface ErrorEvent              { type: "error"; message: string; recoverable: boolean }
 
 type AgentEvent =
   | TokenEvent | ReasoningTokenEvent | ToolCallEvent | ToolResultEvent
-  | PlanUpdateEvent | UsageEvent | StopEvent | ErrorEvent;
+  | PlanUpdateEvent | UsageEvent | HarnessAgentEvent | HarnessDriverAgentEvent
+  | StopEvent | ErrorEvent;
 ```
 
 > 每种事件子类型（如 `TokenEvent`、`ToolCallEvent` 等）都可以直接 import，便于做类型守卫。
@@ -510,10 +567,14 @@ type ChatModel = ChatOpenAI | ChatAnthropic;
 
 ```typescript
 const DEFAULT_HARNESS_CONFIG: HarnessConfig = {
-  evalEnabled: false,
-  loopDetectionEnabled: false,
-  replanEnabled: false,
+  evalEnabled: true,
+  evalSkipReadOnly: true,
+  loopDetectionEnabled: true,
+  replanEnabled: true,
+  autoApproveReplan: false,
   maxReplanAttempts: 3,
+  loopWindowSize: 6,
+  loopSimilarityThreshold: 0.7,
 };
 ```
 

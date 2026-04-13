@@ -21,11 +21,12 @@ import {
   forceCompletePlan,
   HarnessMiddleware,
   DEFAULT_HARNESS_CONFIG,
+  buildEnhancementsPrompt,
   pruneConversationIfNeeded,
   buildBackgroundResultMessage,
   resolveConversationTokenCap,
 } from "@arcana-agent/core";
-import type { RuntimePlanStep, HarnessConfig, ModelAdapter as CoreModelAdapter } from "@arcana-agent/core";
+import type { RuntimePlanStep, HarnessConfig, HarnessEvent, EvalResult, LoopDetectionResult, ModelAdapter as CoreModelAdapter } from "@arcana-agent/core";
 import { createModelAdapter } from "./model.js";
 import type { ModelAdapter, StreamReasoningResult } from "./model.js";
 import type { ToolCallResult } from "@arcana-agent/core";
@@ -39,6 +40,7 @@ import type {
   AgentRunResult,
   StopReason,
   PlanUpdateEvent,
+  HarnessDriverAgentEvent,
 } from "./types.js";
 
 const DEFAULT_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools. You help users effectively with any task.
@@ -207,6 +209,23 @@ export class ArcanaAgent {
       systemPromptText += `\n\n## Current Workspace\nYour workspace absolute path is: \`${config.workspacePath}\`\nAll file operations (read, write, output) MUST use this directory. Use absolute paths like \`${config.workspacePath}/filename.ext\`. Never write files to any other location.`;
     }
 
+    if (config.harnessConfig) {
+      const enhancementsPrompt = buildEnhancementsPrompt({
+        evalGuard: config.harnessConfig.evalEnabled,
+        evalSkipReadOnly: config.harnessConfig.evalSkipReadOnly,
+        loopDetection: config.harnessConfig.loopDetectionEnabled,
+        replan: config.harnessConfig.replanEnabled,
+        autoApproveReplan: config.harnessConfig.autoApproveReplan,
+        replanMaxAttempts: config.harnessConfig.maxReplanAttempts,
+        loopWindowSize: config.harnessConfig.loopWindowSize,
+        loopSimilarityThreshold: config.harnessConfig.loopSimilarityThreshold,
+        agentTimeoutMs: config.agentTimeoutMs ?? 0,
+      });
+      if (enhancementsPrompt) {
+        systemPromptText += enhancementsPrompt;
+      }
+    }
+
     this.systemMessage = new SystemMessage(systemPromptText);
 
     if (config.mcpServers?.length) {
@@ -224,7 +243,12 @@ export class ArcanaAgent {
         this.tools = [...this.tools, ...mcpTools];
         const lines = mcpTools.map((t) => `- \`${t.name}\`: ${t.description ?? t.name}`);
         const mcpSection = `\n\n## Available MCP Tools\nThe following tools are provided by external MCP servers. Use them when relevant:\n${lines.join("\n")}`;
-        this.systemMessage = new SystemMessage(this.systemMessage.content + mcpSection);
+        const existingContent = typeof this.systemMessage.content === "string"
+          ? this.systemMessage.content
+          : Array.isArray(this.systemMessage.content)
+            ? this.systemMessage.content.map((c) => (typeof c === "string" ? c : (c as { text?: string }).text ?? "")).join("")
+            : String(this.systemMessage.content);
+        this.systemMessage = new SystemMessage(existingContent + mcpSection);
       }
     }
   }
@@ -242,6 +266,9 @@ export class ArcanaAgent {
     let toolCallCount = 0;
     let usage: AgentRunResult["usage"] | undefined;
     const allMessages = [...messages];
+    // Accumulate tool calls/results to reconstruct full message history
+    const pendingToolCalls: Array<{ id: string; name: string; args: Record<string, unknown> }> = [];
+    const pendingToolResults: Array<{ id: string; name: string; result: string }> = [];
 
     for await (const event of this.stream(input)) {
       switch (event.type) {
@@ -250,6 +277,22 @@ export class ArcanaAgent {
           break;
         case "tool_call":
           toolCallCount++;
+          pendingToolCalls.push({ id: event.id, name: event.name, args: event.arguments });
+          break;
+        case "tool_result":
+          pendingToolResults.push({ id: event.id, name: event.name, result: event.result });
+          // Once we have results for all pending calls, flush as AI + Tool messages
+          if (pendingToolResults.length === pendingToolCalls.length && pendingToolCalls.length > 0) {
+            allMessages.push(new AIMessage({
+              content: "",
+              tool_calls: pendingToolCalls.map((tc) => ({ id: tc.id, name: tc.name, args: tc.args })),
+            }));
+            for (const tr of pendingToolResults) {
+              allMessages.push(new ToolMessage({ content: tr.result, tool_call_id: tr.id, name: tr.name }));
+            }
+            pendingToolCalls.length = 0;
+            pendingToolResults.length = 0;
+          }
           break;
         case "usage":
           usage = {
@@ -264,10 +307,137 @@ export class ArcanaAgent {
       }
     }
 
+    // Append final AI response with accumulated text content
+    if (content) {
+      allMessages.push(new AIMessage({ content }));
+    }
+
     return { content, stopReason, toolCallCount, usage, messages: allMessages };
   }
 
   async *stream(input: string | BaseMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
+    if (this.config.outerRetry && this.config.harnessConfig) {
+      yield* this.streamWithOuterRetry(input);
+      return;
+    }
+    yield* this.streamSingleExecution(input);
+  }
+
+  private async *streamWithOuterRetry(input: string | BaseMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
+    await this.init();
+    const maxRetries = this.config.outerRetry?.maxOuterRetries ?? 2;
+
+    if (this.config.outerRetry?.autoApproveReplan !== undefined && this.config.harnessConfig) {
+      this.config.harnessConfig = {
+        ...this.config.harnessConfig,
+        autoApproveReplan: this.config.outerRetry.autoApproveReplan,
+      };
+    }
+
+    const baseMessages = typeof input === "string" ? [new HumanMessage(input)] : input;
+    const iterationSummaries: string[] = [];
+
+    const emitDriver = (phase: HarnessDriverAgentEvent["phase"], iteration: number): AgentEvent => ({
+      type: "harness_driver",
+      phase,
+      iteration,
+      maxRetries,
+    });
+
+    yield emitDriver("started", 0);
+
+    for (let iteration = 0; iteration <= maxRetries; iteration++) {
+      if (this.config.abortSignal?.aborted) {
+        yield { type: "stop", reason: "aborted" };
+        return;
+      }
+
+      yield emitDriver("iteration_start", iteration);
+
+      const iterationMessages: BaseMessage[] = iterationSummaries.length > 0
+        ? [
+            ...baseMessages,
+            new HumanMessage(
+              `[Harness Driver] Previous iteration(s) failed. Review to avoid repeating the same mistakes:\n\n${iterationSummaries.join("\n\n")}\n\nDo NOT repeat the same approaches. Try fundamentally different strategies.`
+            ),
+          ]
+        : baseMessages;
+
+      const harnessEvents: HarnessEvent[] = [];
+      let lastStopReason: StopReason = "completed";
+
+      for await (const event of this.streamSingleExecution(iterationMessages)) {
+        if (event.type === "harness") {
+          harnessEvents.push(event.event);
+        }
+        if (event.type === "stop") {
+          lastStopReason = event.reason;
+        }
+        yield event;
+      }
+
+      yield emitDriver("iteration_end", iteration);
+
+      const hasUnresolvedFailure = harnessEvents.some((e) => {
+        if (e.kind === "eval" && "verdict" in e.data) {
+          return (e.data as EvalResult).verdict === "fail";
+        }
+        if (e.kind === "loop_detection" && "detected" in e.data) {
+          return (e.data as LoopDetectionResult).detected === true;
+        }
+        return false;
+      });
+
+      const lastReplanIdx = harnessEvents
+        .map((e, i) => [e, i] as const)
+        .filter(([e]) => e.kind === "replan" && "shouldReplan" in e.data && (e.data as { shouldReplan: boolean }).shouldReplan)
+        .pop()?.[1] ?? -1;
+      const eventsAfterReplan = lastReplanIdx >= 0
+        ? harnessEvents.slice(lastReplanIdx + 1)
+        : [];
+      const replanResolved = lastReplanIdx >= 0
+        && eventsAfterReplan.length > 0
+        && !eventsAfterReplan.some((e) => {
+          if (e.kind === "eval" && "verdict" in e.data) return (e.data as EvalResult).verdict === "fail";
+          if (e.kind === "loop_detection" && "detected" in e.data) return (e.data as LoopDetectionResult).detected === true;
+          return false;
+        });
+
+      if (!hasUnresolvedFailure || replanResolved) {
+        yield emitDriver("completed", iteration);
+        return;
+      }
+
+      if (iteration === maxRetries) {
+        yield emitDriver("max_retries_reached", iteration);
+        return;
+      }
+
+      const summaryParts: string[] = [`### Iteration ${iteration + 1} Summary (FAILED)`];
+      const evalFailures = harnessEvents.filter(
+        (e) => e.kind === "eval" && "verdict" in e.data && (e.data as EvalResult).verdict === "fail"
+      );
+      if (evalFailures.length > 0) {
+        summaryParts.push(`Eval failures (${evalFailures.length}):`);
+        for (const ef of evalFailures.slice(0, 10)) {
+          const data = ef.data as EvalResult;
+          summaryParts.push(`  - Step ${data.stepIndex + 1}: ${data.reason}`);
+        }
+      }
+      const loops = harnessEvents.filter(
+        (e) => e.kind === "loop_detection" && "detected" in e.data && (e.data as LoopDetectionResult).detected
+      );
+      if (loops.length > 0) {
+        summaryParts.push(`Loop detections (${loops.length}):`);
+        for (const l of loops.slice(0, 3)) {
+          summaryParts.push(`  - ${(l.data as LoopDetectionResult).description ?? "repeated tool pattern"}`);
+        }
+      }
+      iterationSummaries.push(summaryParts.join("\n"));
+    }
+  }
+
+  private async *streamSingleExecution(input: string | BaseMessage[]): AsyncGenerator<AgentEvent, void, unknown> {
     await this.init();
     const messages = typeof input === "string" ? [new HumanMessage(input)] : input;
     const maxRounds = this.config.maxRounds ?? 200;
@@ -411,7 +581,7 @@ export class ArcanaAgent {
         planCtx.applyEvidence(out.name, out.result);
       }
 
-      const errCount = toolOutputs.filter((o) => o.result.startsWith("Error:")).length;
+      const errCount = toolOutputs.filter((o) => o.result.startsWith("Error:") || o.result.startsWith("[error]")).length;
       if (errCount > 0 && errCount >= toolOutputs.length * 0.5) {
         toolCascadeCount++;
         if (toolCascadeCount >= 3) {
@@ -436,6 +606,9 @@ export class ArcanaAgent {
           toolOutputs.map((o) => ({ name: o.name, result: o.result })),
           conversationMessages.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
         );
+        for (const evt of mwResult.events) {
+          yield { type: "harness", event: evt } as AgentEvent;
+        }
         if (mwResult.abort) {
           yield { type: "stop", reason: "harness_abort" };
           return;
@@ -605,6 +778,9 @@ export class ArcanaAgent {
           toolOutputs.map((o) => ({ name: o.name, result: o.result })),
           state.slice(-4).map((m) => getTextFromMessage(m)).join("\n")
         );
+        for (const evt of mwResult.events) {
+          yield { type: "harness", event: evt } as AgentEvent;
+        }
         if (mwResult.abort) {
           yield { type: "stop", reason: "harness_abort" };
           return;

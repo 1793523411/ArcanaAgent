@@ -15,6 +15,7 @@ interface AgentConfig {
   maxRounds?: number;              // 最大工具调用轮数（默认 200）
   planningEnabled?: boolean;       // 是否启用规划模式（默认 false）
   harnessConfig?: HarnessConfig;   // Harness 安全护栏配置
+  outerRetry?: OuterRetryConfig;   // 外层重试配置（需配合 harnessConfig）
   abortSignal?: AbortSignal;       // 中断信号
 }
 ```
@@ -155,7 +156,7 @@ createAgent({
 });
 ```
 
-> 详见 → [工具系统](./04-tools.md)
+> 详见 → [工具系统](./tools.md)
 
 ---
 
@@ -181,7 +182,7 @@ createAgent({
 });
 ```
 
-> 详见 → [Skill 技能系统](./07-skills.md)
+> 详见 → [Skill 技能系统](./skills.md)
 
 ---
 
@@ -214,7 +215,7 @@ createAgent({
 });
 ```
 
-> 详见 → [MCP 协议集成](./08-mcp.md)
+> 详见 → [MCP 协议集成](./mcp.md)
 
 ---
 
@@ -287,7 +288,7 @@ createAgent({
 });
 ```
 
-> 详见 → [规划与 Harness](./06-planning-harness.md)
+> 详见 → [规划与 Harness](./planning-harness.md)
 
 ---
 
@@ -311,7 +312,49 @@ createAgent({
 });
 ```
 
-> 详见 → [规划与 Harness](./06-planning-harness.md)
+启用 `harnessConfig` 后，SDK 会自动向 system prompt 注入 Harness 增强指令（Evidence-Driven Execution、Loop Detection 提示、Dynamic Replanning 指令），让 Agent 感知到中间件的存在，显著提升 harness 效果。
+
+执行过程中的 eval 结果、循环检测和重规划决策会通过 `harness` 事件实时推送。
+
+> 详见 → [规划与 Harness](./planning-harness.md)
+
+---
+
+## outerRetry
+
+外层重试配置，需配合 `harnessConfig` 使用。当内层 replan 次数耗尽但问题仍未解决时，自动整体重新运行一轮 agent 执行：
+
+```typescript
+interface OuterRetryConfig {
+  maxOuterRetries?: number;      // 最大外层重试次数（默认 2）
+  autoApproveReplan?: boolean;   // 是否自动批准重规划（会覆盖 harnessConfig.autoApproveReplan）
+}
+```
+
+```typescript
+createAgent({
+  model,
+  planningEnabled: true,
+  harnessConfig: {
+    ...DEFAULT_HARNESS_CONFIG,
+    evalEnabled: true,
+    loopDetectionEnabled: true,
+    replanEnabled: true,
+  },
+  outerRetry: {
+    maxOuterRetries: 2,
+    autoApproveReplan: true,
+  },
+});
+```
+
+启用后：
+- `stream()` 自动走外层重试路径
+- 每轮迭代结束后检查是否有未解决的 eval fail 或 loop detection
+- 下一轮迭代会注入历史失败摘要，避免重复失败策略
+- 通过 `harness_driver` 事件推送生命周期状态（`started` → `iteration_start` → `iteration_end` → `completed` / `max_retries_reached`）
+
+> 详见 → [规划与 Harness](./planning-harness.md)
 
 ---
 
@@ -370,7 +413,9 @@ createAgent({
     ...DEFAULT_HARNESS_CONFIG,
     evalEnabled: true,
     loopDetectionEnabled: true,
+    replanEnabled: true,
   },
+  outerRetry: { maxOuterRetries: 2, autoApproveReplan: true },
   abortSignal: requestAbortSignal,
 });
 ```
