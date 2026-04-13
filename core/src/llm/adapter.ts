@@ -131,13 +131,19 @@ class AnthropicAdapter implements ModelAdapter {
 }
 
 const adapterCache = new Map<string, ModelAdapter>();
+const ADAPTER_CACHE_MAX_SIZE = 16;
 
 export function getModelAdapter(modelId?: string): ModelAdapter {
   // Use the original modelId (may include provider prefix) as cache key
   // to avoid collisions between same model IDs from different providers
   const cacheKey = modelId ?? "__default__";
   const cached = adapterCache.get(cacheKey);
-  if (cached) return cached;
+  if (cached) {
+    // Move to end to maintain LRU order (Map iterates in insertion order)
+    adapterCache.delete(cacheKey);
+    adapterCache.set(cacheKey, cached);
+    return cached;
+  }
 
   const { baseUrl, apiKey, modelId: resolved, api } = loadModelConfig(modelId);
   const reasoning = getModelReasoning(modelId);
@@ -146,6 +152,11 @@ export function getModelAdapter(modelId?: string): ModelAdapter {
       ? new AnthropicAdapter({ baseUrl, apiKey, modelId: resolved, reasoning })
       : new OpenAICompatibleAdapter({ baseUrl, apiKey, modelId: resolved, reasoning });
 
+  // Evict oldest entry if cache exceeds max size (simple LRU)
+  if (adapterCache.size >= ADAPTER_CACHE_MAX_SIZE) {
+    const oldest = adapterCache.keys().next().value;
+    if (oldest !== undefined) adapterCache.delete(oldest);
+  }
   adapterCache.set(cacheKey, adapter);
   return adapter;
 }

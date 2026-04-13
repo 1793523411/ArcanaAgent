@@ -10,6 +10,8 @@ export function isPathInWorkspace(pathText: string, workspacePath: string): bool
     const realWorkspace = realpathSync(workspace);
     return realTarget === realWorkspace || realTarget.startsWith(`${realWorkspace}/`);
   } catch {
-    return true;
+    // Fail-closed: if we can't verify the real path (e.g. dangling symlink,
+    // non-existent intermediate), deny access to be safe.
+    return false;
   }
 }

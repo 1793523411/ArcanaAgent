@@ -156,7 +156,7 @@ function wrapToolWithWorkspace(t: StructuredToolInterface, workspacePath: string
   if (t.name === "run_command") {
     return wrapSingle(t, async (input) => {
       const rawDir = typeof input.working_directory === "string" ? input.working_directory : "";
-      const resolvedDir = rawDir ? resolve(rawDir) : workspacePath;
+      const resolvedDir = rawDir ? resolvePath(rawDir, workspacePath) : workspacePath;
       const safeDir = isAllowedPath(resolvedDir, workspacePath, allowedDirs) ? resolvedDir : workspacePath;
       return String(await t.invoke({ ...input, working_directory: safeDir }));
     });

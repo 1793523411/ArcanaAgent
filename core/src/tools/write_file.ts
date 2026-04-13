@@ -1,7 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
-import { dirname } from "path";
+import { dirname, resolve } from "path";
 
 const MAX_WRITE_SIZE = 1024 * 1024;
 
@@ -24,8 +24,11 @@ export const write_file = tool(
       return `[error] Content too large (${content.length} chars, max ${MAX_WRITE_SIZE}). Write in smaller chunks.`;
     }
 
+    // Resolve to absolute canonical path before checking blocklist to prevent
+    // bypass via relative paths (../../etc/passwd) or double-slash (//etc/).
+    const resolvedPath = resolve(input.path);
     const blocked = ["/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/proc/", "/sys/"];
-    if (blocked.some((prefix) => input.path.startsWith(prefix))) {
+    if (blocked.some((prefix) => resolvedPath.startsWith(prefix))) {
       return `[error] Writing to system directory is not allowed: ${input.path}`;
     }
 

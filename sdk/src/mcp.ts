@@ -128,7 +128,12 @@ export class McpManager {
     }
     for (const server of servers) {
       if (this.connections.has(server.name)) continue;
-      await this.connectServer(server);
+      try {
+        await this.connectServer(server);
+      } catch (e) {
+        // Log and continue — one failed MCP server should not block the entire agent
+        console.warn(`[MCP] Failed to connect server "${server.name}": ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 
@@ -142,14 +147,21 @@ export class McpManager {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args,
-        env: config.env ? { ...process.env, ...config.env } as Record<string, string> : undefined,
+        // Only pass user-specified env vars — do NOT spread process.env to avoid leaking secrets
+        env: config.env ?? undefined,
       });
     }
     const client = new Client({ name: "arcana-agent-sdk", version: "1.0.0" });
-    await client.connect(transport);
-    const { tools: mcpTools } = await client.listTools();
-    const lcTools = mcpTools.map((t) => createLangChainTool(t, client, config.name));
-    this.connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name, config });
+    try {
+      await client.connect(transport);
+      const { tools: mcpTools } = await client.listTools();
+      const lcTools = mcpTools.map((t) => createLangChainTool(t, client, config.name));
+      this.connections.set(config.name, { client, transport, tools: lcTools, serverName: config.name, config });
+    } catch (e) {
+      // Clean up transport on failure to prevent resource leak
+      try { await client.close(); } catch { /* best effort */ }
+      throw e;
+    }
   }
 
   private async disconnectServer(name: string): Promise<void> {

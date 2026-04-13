@@ -43,6 +43,18 @@ import type {
   HarnessDriverAgentEvent,
 } from "./types.js";
 
+/**
+ * Bridge SDK ModelAdapter to Core ModelAdapter.
+ * Both interfaces are structurally identical but TypeScript treats them as distinct nominal types.
+ * This function validates at runtime that required methods exist, avoiding unsafe double-cast.
+ */
+function asCoreAdapter(adapter: ModelAdapter): CoreModelAdapter {
+  if (typeof adapter.getLLM !== "function" || typeof adapter.supportsReasoningStream !== "function") {
+    throw new Error("ModelAdapter is missing required methods (getLLM, supportsReasoningStream)");
+  }
+  return adapter as unknown as CoreModelAdapter;
+}
+
 const DEFAULT_SYSTEM_PROMPT = `You are a versatile, highly capable AI assistant with access to tools. You help users effectively with any task.
 
 ## Communication
@@ -455,7 +467,7 @@ export class ArcanaAgent {
     const messages = typeof input === "string" ? [new HumanMessage(input)] : input;
     const maxRounds = this.config.maxRounds ?? 200;
     const useReasoningStream = this.adapter.supportsReasoningStream();
-    const coreAdapter = this.adapter as unknown as CoreModelAdapter;
+    const coreAdapter = asCoreAdapter(this.adapter);
 
     const planningPrelude = await buildPlanningPrelude(
       coreAdapter,
@@ -486,7 +498,12 @@ export class ArcanaAgent {
       try {
         yield* this.streamReasoningPath(stateMessages, maxRounds, planCtx);
         return;
-      } catch {
+      } catch (e) {
+        // Only fallback for errors indicating reasoning stream is unsupported.
+        // Re-throw real failures (network, auth, etc.) so they are not silently swallowed.
+        const msg = e instanceof Error ? e.message : String(e);
+        const isUnsupported = /unsupported|not.?support|not.?available|not.?implement/i.test(msg);
+        if (!isUnsupported) throw e;
         // fallback to LangChain stream
       }
     }

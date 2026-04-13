@@ -3,6 +3,7 @@ import { z } from "zod";
 import { execFile } from "child_process";
 import { existsSync } from "fs";
 import { resolve } from "path";
+import { isDangerous } from "../lib/commandSafety.js";
 
 const MAX_TIMEOUT_MS = 600_000; // 10 分钟，足够处理图片生成等耗时操作
 const DEFAULT_TIMEOUT_MS = 600_000; // 默认也设为 10 分钟
@@ -10,25 +11,6 @@ const MAX_OUTPUT_BYTES = 64 * 1024;
 const COMMAND_CACHE_TTL_MS = 5 * 60 * 1000;
 const RUN_COMMAND_EXECUTED_SIGNAL = "__RUN_COMMAND_EXECUTED__";
 const RUN_COMMAND_DUPLICATE_SIGNAL = "__RUN_COMMAND_DUPLICATE_SKIPPED__";
-
-const DANGEROUS_PATTERNS = [
-  /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(-[a-zA-Z]*r[a-zA-Z]*\s+)?\/\s*$/,
-  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)?(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/\s*$/,
-  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/\s*$/,
-  /\brm\s+-rf\s+\/(\s|$|\*)/,
-  /\brm\s+-fr\s+\/(\s|$|\*)/,
-  /\bmkfs\b/,
-  /\bdd\s+.*\bof=\/dev\/[sh]d/,
-  /\b:(){ :\|:& };:/,
-  /\bshutdown\b/,
-  /\breboot\b/,
-  /\binit\s+0\b/,
-  /\bhalt\b/,
-  />\s*\/dev\/[sh]d/,
-  /\bchmod\s+-R\s+777\s+\/\s*$/,
-  /\bchown\s+-R\s+.*\s+\/\s*$/,
-  /\bformat\s+[cCdD]:/,
-];
 
 /** 长驻进程模式：这些命令永远不会自行退出，必须用 background_run */
 const LONG_LIVED_PATTERNS = [
@@ -72,16 +54,6 @@ function isLongLivedProcess(command: string): boolean {
     if (LONG_LIVED_PATTERNS.some((p) => p.test(s))) return true;
   }
   return false;
-}
-
-function isDangerous(command: string): string | null {
-  const trimmed = command.trim();
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return `Blocked: this command matches a dangerous pattern (${pattern.source}). If you really need this, ask the user to run it manually.`;
-    }
-  }
-  return null;
 }
 
 function truncate(s: string, max: number): string {

@@ -1,6 +1,7 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { resolve } from "path";
 
 const MAX_WRITE_SIZE = 1024 * 1024;
 
@@ -131,9 +132,10 @@ function generateDiff(original: string, modified: string, edits: EditResult[]): 
 
 export const edit_file = tool(
   (input: { path: string; edits: Array<{ old_text: string; new_text: string; start_line?: number; end_line?: number }>; dry_run?: boolean }) => {
-    // Safety check: block system directories
+    // Safety check: block system directories (resolve path first to prevent bypass via relative paths)
+    const resolvedPath = resolve(input.path);
     const blocked = ["/etc/", "/usr/", "/bin/", "/sbin/", "/boot/", "/proc/", "/sys/"];
-    if (blocked.some((prefix) => input.path.startsWith(prefix))) {
+    if (blocked.some((prefix) => resolvedPath.startsWith(prefix))) {
       return `[error] Editing files in system directory is not allowed: ${input.path}`;
     }
 

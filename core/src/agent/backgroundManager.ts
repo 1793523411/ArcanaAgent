@@ -1,6 +1,7 @@
 import { execFile, type ChildProcess } from "child_process";
 import { randomUUID } from "crypto";
 import { existsSync } from "fs";
+import { isDangerous } from "../lib/commandSafety.js";
 
 export type BackgroundTaskStatus = "running" | "completed" | "failed" | "timeout" | "canceled";
 
@@ -67,24 +68,7 @@ const NOTIFICATION_OUTPUT_CHARS = 500;
 const MAX_CONCURRENT_TASKS = 4;
 const DEFAULT_OUTPUT_VIEW_CHARS = 1_200;
 const MAX_OUTPUT_VIEW_CHARS = 20_000;
-const DANGEROUS_PATTERNS = [
-  /\brm\s+(-[a-zA-Z]*f[a-zA-Z]*\s+)?(-[a-zA-Z]*r[a-zA-Z]*\s+)?\/\s*$/,
-  /\brm\s+(-[a-zA-Z]*r[a-zA-Z]*\s+)?(-[a-zA-Z]*f[a-zA-Z]*\s+)?\/\s*$/,
-  /\brm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+\/\s*$/,
-  /\brm\s+-rf\s+\/\b/,
-  /\brm\s+-fr\s+\/\b/,
-  /\bmkfs\b/,
-  /\bdd\s+.*\bof=\/dev\/[sh]d/,
-  /\b:(){ :\|:& };:/,
-  /\bshutdown\b/,
-  /\breboot\b/,
-  /\binit\s+0\b/,
-  /\bhalt\b/,
-  />\s*\/dev\/[sh]d/,
-  /\bchmod\s+-R\s+777\s+\/\s*$/,
-  /\bchown\s+-R\s+.*\s+\/\s*$/,
-  /\bformat\s+[cCdD]:/,
-];
+// DANGEROUS_PATTERNS moved to lib/commandSafety.ts for single source of truth
 
 function limitChars(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -109,15 +93,7 @@ function clampOutputSkip(skip?: number): number {
   return Math.max(0, Math.floor(skip));
 }
 
-function isDangerous(command: string): string | null {
-  const trimmed = command.trim();
-  for (const pattern of DANGEROUS_PATTERNS) {
-    if (pattern.test(trimmed)) {
-      return `Blocked: this command matches a dangerous pattern (${pattern.source}).`;
-    }
-  }
-  return null;
-}
+// isDangerous imported from lib/commandSafety.ts
 
 class BackgroundManager {
   private readonly tasks = new Map<string, BackgroundTaskRecord>();

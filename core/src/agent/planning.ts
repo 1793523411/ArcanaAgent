@@ -1,5 +1,6 @@
 import { AIMessage, BaseMessage, HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { ModelAdapter } from "../llm/adapter.js";
+import { serverLogger } from "../lib/logger.js";
 
 export interface PlanningPrelude {
   planMessage?: AIMessage;
@@ -121,7 +122,8 @@ export async function buildPlanningPrelude(
       ...messages,
       new HumanMessage(PLAN_REQUEST_PROMPT),
     ]) as AIMessage;
-  } catch {
+  } catch (err) {
+    serverLogger.warn("[planning] Plan generation failed, skipping", { error: err instanceof Error ? err.message : String(err) });
     return {};
   }
   const content = typeof planResponse.content === "string"
