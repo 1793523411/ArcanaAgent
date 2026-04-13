@@ -7,6 +7,7 @@
 ```typescript
 interface AgentConfig {
   model: ModelConfig;              // 必填 — 模型配置
+  modelAdapter?: ModelAdapter;     // 可选 — 注入自定义模型适配器（覆盖内置 adapter）
   tools?: ToolConfig;              // 工具配置
   skills?: SkillConfig;            // Skill 技能配置
   mcpServers?: McpServerConfig[];  // MCP 服务器列表
@@ -88,6 +89,27 @@ model: {
   maxTokens: 2000,
 }
 ```
+
+---
+
+## modelAdapter（可选）
+
+注入自定义的 `ModelAdapter` 实现，**完全替代**内置的 OpenAI/Anthropic adapter。适用于内部私有模型网关、非标 API 协议（如 OpenAI Responses API）、自定义认证方式等场景。
+
+```typescript
+import type { ModelAdapter } from "arcana-agent-sdk";
+
+createAgent({
+  model: { provider: "openai", apiKey: "placeholder", modelId: "my-model" },
+  modelAdapter: myCustomAdapter,
+});
+```
+
+- 当 `modelAdapter` 存在时，`model` 中的 `provider`、`baseUrl`、`apiKey` 不会被使用
+- `model` 字段仍需提供（类型约束），`model.modelId` 建议与 adapter 的 `modelId` 保持一致
+- 自定义 adapter 需实现 `ModelAdapter` 接口的全部方法
+
+> 详见 → [模型适配器 — 自定义 ModelAdapter](./model-adapter.md#自定义-modeladapter注入非标模型)
 
 ---
 

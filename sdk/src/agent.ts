@@ -171,7 +171,7 @@ export class ArcanaAgent {
 
   constructor(config: AgentConfig) {
     this.config = config;
-    this.adapter = createModelAdapter(config.model);
+    this.adapter = config.modelAdapter ?? createModelAdapter(config.model);
 
     let systemPromptText = config.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
     const skillDirPaths: string[] = [];

@@ -191,6 +191,255 @@ interface ModelAdapter {
 
 ---
 
+## 自定义 ModelAdapter（注入非标模型）
+
+SDK 内置的两个 adapter（OpenAI 兼容 / Anthropic）覆盖了标准 `/chat/completions` 和 Anthropic `/v1/messages` 协议。对于使用非标协议的模型服务（如 OpenAI Responses API `/responses`、内部私有网关、自定义认证方式等），可以通过 `AgentConfig.modelAdapter` 注入自定义实现，**完全绕过内置 adapter**。
+
+### 何时需要自定义
+
+| 场景 | 是否需要自定义 |
+|:---|:---|
+| 标准 OpenAI `/chat/completions` 兼容 API | ❌ 用 `provider: "openai"` + `baseUrl` |
+| 标准 Anthropic API | ❌ 用 `provider: "anthropic"` |
+| OpenAI Responses API（`/responses` 端点） | ✅ 需要自定义 |
+| 认证方式非 `Authorization: Bearer`（如 URL query param `?ak=xxx`） | ✅ 需要自定义 |
+| 请求/响应格式与 OpenAI Chat Completions 不同 | ✅ 需要自定义 |
+| 内部模型网关、私有协议 | ✅ 需要自定义 |
+
+### 基本用法
+
+```typescript
+import { createAgent, type ModelAdapter } from "arcana-agent-sdk";
+
+const agent = createAgent({
+  model: { provider: "openai", apiKey: "placeholder", modelId: "my-model" },
+  modelAdapter: myCustomAdapter,  // 注入后完全忽略 model 中的 provider/baseUrl/apiKey
+});
+```
+
+> `model` 字段仍需提供（类型约束），但当 `modelAdapter` 存在时，`model` 中的 `provider`、`baseUrl`、`apiKey` 不会被使用。`model.modelId` 建议与自定义 adapter 的 `modelId` 保持一致，因为 SDK 内部会用它推断上下文窗口大小。
+
+### 完整实现示例：接入 OpenAI Responses API
+
+以下示例演示如何为使用 `/responses` 端点、URL query param 认证、非标消息格式的内部模型编写自定义 adapter：
+
+```typescript
+import type { BaseMessage } from "@langchain/core/messages";
+import type { ModelAdapter, ChatModel, StreamReasoningResult, ToolCallResult } from "arcana-agent-sdk";
+
+class ResponsesAPIAdapter implements ModelAdapter {
+  readonly modelId: string;
+  private readonly baseUrl: string;
+  private readonly ak: string;
+
+  constructor(config: { modelId: string; baseUrl: string; ak: string }) {
+    this.modelId = config.modelId;
+    this.baseUrl = config.baseUrl;
+    this.ak = config.ak;
+  }
+
+  supportsReasoningStream(): boolean {
+    // 返回 true 时 Agent 走 streamSingleTurn 路径（推荐）
+    // 返回 false 时 Agent 走 getLLM().stream() 路径
+    return true;
+  }
+
+  getLLM(): ChatModel {
+    // supportsReasoningStream() 返回 true 时不会被调用，可以直接抛错
+    throw new Error("此 adapter 不支持 LangChain 路径，请确保 supportsReasoningStream() 返回 true");
+  }
+
+  async streamSingleTurn(
+    messages: BaseMessage[],
+    onToken: (token: string) => void,
+    onReasoningToken: (token: string) => void,
+    tools?: Array<Record<string, unknown>>,
+    abortSignal?: AbortSignal,
+  ): Promise<StreamReasoningResult> {
+    // 1. 将 LangChain BaseMessage[] 转换为 Responses API 的 input 格式
+    const input = messages.map((m) => this.convertMessage(m));
+
+    // 2. 构造请求体
+    const body: Record<string, unknown> = {
+      model: this.modelId,
+      input,
+      stream: true,
+    };
+    if (tools?.length) {
+      body.tools = tools.map((t) => this.convertTool(t));
+    }
+
+    // 3. 发送请求（注意认证方式为 URL query param）
+    const url = `${this.baseUrl}/responses?ak=${this.ak}`;
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: abortSignal,
+    });
+    if (!res.ok) {
+      throw new Error(`Responses API error: ${res.status} ${await res.text()}`);
+    }
+
+    // 4. 解析 SSE 流
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let content = "";
+    let reasoningContent = "";
+    const toolCalls: ToolCallResult[] = [];
+    let buf = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop() ?? "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed || !trimmed.startsWith("data: ")) continue;
+        if (trimmed === "data: [DONE]") continue;
+
+        try {
+          const event = JSON.parse(trimmed.slice(6));
+          // 根据 Responses API 的实际事件格式解析
+          // 以下为示意，需根据实际返回调整
+          if (event.type === "response.output_text.delta") {
+            content += event.delta ?? "";
+            onToken(event.delta ?? "");
+          }
+          if (event.type === "response.reasoning.delta") {
+            reasoningContent += event.delta ?? "";
+            onReasoningToken(event.delta ?? "");
+          }
+          if (event.type === "response.function_call") {
+            toolCalls.push({
+              id: event.call_id ?? `call_${toolCalls.length}`,
+              name: event.name ?? "",
+              arguments: typeof event.arguments === "string"
+                ? event.arguments
+                : JSON.stringify(event.arguments ?? {}),
+            });
+          }
+        } catch { /* ignore parse errors */ }
+      }
+    }
+
+    return {
+      content,
+      reasoningContent,
+      toolCalls,
+      usage: undefined, // 如果 API 返回 usage 信息，在此填充
+    };
+  }
+
+  private convertMessage(m: BaseMessage): Record<string, unknown> {
+    const type = (m as any)._getType?.() ?? "user";
+    const role = type === "human" ? "user" : type === "ai" ? "assistant" : type === "tool" ? "tool" : "system";
+    const c = (m as any).content;
+
+    if (typeof c === "string") {
+      return { role, content: [{ type: "input_text", text: c }] };
+    }
+    if (Array.isArray(c)) {
+      const parts = c.map((x: any) => {
+        if (x?.type === "image_url" && x?.image_url?.url) {
+          return { type: "input_image", image_url: x.image_url.url };
+        }
+        return { type: "input_text", text: x?.text ?? String(x) };
+      });
+      return { role, content: parts };
+    }
+    return { role, content: [{ type: "input_text", text: String(c) }] };
+  }
+
+  private convertTool(t: Record<string, unknown>): Record<string, unknown> {
+    // 根据实际 API 格式调整工具描述转换逻辑
+    return t;
+  }
+}
+```
+
+使用：
+
+```typescript
+const adapter = new ResponsesAPIAdapter({
+  modelId: "gpt-5.4-pro-2026-03-05",
+  baseUrl: "https://aidp.xxx.net/api/modelhub/online",
+  ak: "xxx",
+});
+
+const agent = createAgent({
+  model: { provider: "openai", apiKey: "unused", modelId: "gpt-5.4-pro-2026-03-05" },
+  modelAdapter: adapter,
+  workspacePath: "/path/to/workspace",
+});
+
+for await (const event of agent.stream("分析这段代码")) {
+  if (event.type === "token") process.stdout.write(event.content);
+  if (event.type === "reasoning_token") process.stderr.write(event.content);
+}
+```
+
+### 接口契约详解
+
+自定义 adapter 必须实现 `ModelAdapter` 接口。SDK 内部通过两条路径调用 adapter：
+
+```
+supportsReasoningStream() === true
+  → Agent 走 streamReasoningPath → 调用 streamSingleTurn()
+  → 不会调用 getLLM()
+
+supportsReasoningStream() === false
+  → Agent 走 streamLangChainPath → 调用 getLLM().bindTools().stream()
+  → 不会调用 streamSingleTurn()
+```
+
+#### StreamReasoningResult 返回值要求
+
+```typescript
+interface StreamReasoningResult {
+  content: string;             // 模型最终文本输出（完整拼接）
+  reasoningContent: string;    // 思考过程文本（无则为空串）
+  toolCalls: ToolCallResult[]; // 工具调用列表（无则为空数组）
+  usage?: TokenUsage;          // token 用量（可选）
+}
+
+interface ToolCallResult {
+  id: string;        // 工具调用 ID（唯一标识，用于匹配工具返回值）
+  name: string;      // 工具函数名（必须与 Agent 注册的工具名一致）
+  arguments: string; // 工具参数（JSON 字符串）
+}
+
+interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+```
+
+#### 回调函数要求
+
+| 回调 | 调用时机 | 说明 |
+|:---|:---|:---|
+| `onToken(token)` | 每收到一个内容 token 时 | 触发 `{ type: "token" }` 事件推送给上层 |
+| `onReasoningToken(token)` | 每收到一个推理 token 时 | 触发 `{ type: "reasoning_token" }` 事件推送给上层 |
+
+> **关键**：`onToken` / `onReasoningToken` 是实时流式推送，必须在收到每个 delta 时立即调用，而不是等到请求结束后批量调用。`StreamReasoningResult.content` 和 `reasoningContent` 则是完整拼接后的最终结果。两者内容应一致。
+
+#### 工具调用字段映射参考
+
+不同 API 的工具调用格式需映射到统一的 `ToolCallResult`：
+
+| 字段 | OpenAI Chat Completions | OpenAI Responses API | 你的实现 |
+|:---|:---|:---|:---|
+| `id` | `delta.tool_calls[i].id` | `response.function_call.call_id` | 自行映射 |
+| `name` | `delta.tool_calls[i].function.name` | `response.function_call.name` | 自行映射 |
+| `arguments` | `delta.tool_calls[i].function.arguments` | `response.function_call.arguments` | JSON 字符串 |
+
+---
+
 ## Token Cap 与上下文管理
 
 SDK 会根据模型 ID 自动推断上下文窗口大小（`resolveConversationTokenCap`），用于：

@@ -63,6 +63,7 @@ export interface OuterRetryConfig {
 
 export interface AgentConfig {
   model: ModelConfig;
+  modelAdapter?: import("./model.js").ModelAdapter;
   tools?: ToolConfig;
   skills?: SkillConfig;
   mcpServers?: McpServerConfig[];
