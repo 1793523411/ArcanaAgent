@@ -78,9 +78,13 @@ const semanticScoreCache = new Map<string, number>();
 
 // ─── Helpers ─────────────────────────────────────────────────────
 
-function cosine(a: number[], b: number[]): number {
+/** Returns cosine similarity in [0,1], or null if vectors are incompatible
+ *  (dim mismatch) so the caller can skip writing a spurious 0 into the cache.
+ */
+function cosine(a: number[], b: number[]): number | null {
   if (a.length !== b.length) {
-    throw new Error(`cosine: vector length mismatch (${a.length} vs ${b.length})`);
+    serverLogger.warn("[embeddingScorer] cosine dim mismatch", { a: a.length, b: b.length });
+    return null;
   }
   // Vectors are already L2-normalized by the pipeline, so dot product = cosine sim.
   let dot = 0;
@@ -97,7 +101,8 @@ function agentProfileText(agent: GuildAgent): string {
     if (asset.description) parts.push(asset.description);
     if (asset.tags) parts.push(asset.tags.join(" "));
   }
-  return parts.join(" ").slice(0, 1500); // Cap to avoid excessive token counts
+  // Cap at 1500 chars (≈ hundreds of tokens) to stay well under E5's 512-token window.
+  return parts.join(" ").slice(0, 1500);
 }
 
 /** Simple hash to detect agent profile changes. */
@@ -180,6 +185,7 @@ export async function warmBiddingEmbeddings(
       const agentVec = agentVectors[i];
       if (!agentVec) continue;
       const score = cosine(agentVec, taskVec);
+      if (score === null) continue; // skip — dim mismatch shouldn't pollute cache
       semanticScoreCache.set(`${agents[i].id}::${task.id}`, score);
     }
 
@@ -187,6 +193,85 @@ export async function warmBiddingEmbeddings(
   } catch (e) {
     serverLogger.warn("[embeddingScorer] warmBiddingEmbeddings failed", {
       taskId: task.id,
+      error: String(e),
+    });
+    return false;
+  }
+}
+
+/**
+ * Pre-compute embeddings for multiple tasks at once. Batches all task texts
+ * into a single `emb([...])` call to avoid the per-task pipeline overhead
+ * that Promise.all over `warmBiddingEmbeddings` incurs (the HF pipeline
+ * serializes on the same instance).
+ */
+export async function warmBiddingEmbeddingsBatch(
+  agents: GuildAgent[],
+  tasks: GuildTask[],
+): Promise<boolean> {
+  if (tasks.length === 0) return true;
+  const emb = await ensureEmbedder();
+  if (!emb) return false;
+
+  // Transformer pipelines have bounded batch budgets; chunk to keep memory
+  // predictable when a scheduler round has many eligible tasks/agents.
+  const EMBED_BATCH_SIZE = 32;
+  const embedChunked = async (inputs: string[]): Promise<number[][]> => {
+    const all: number[][] = [];
+    for (let i = 0; i < inputs.length; i += EMBED_BATCH_SIZE) {
+      const slice = inputs.slice(i, i + EMBED_BATCH_SIZE);
+      const out = await emb(slice, { pooling: "mean", normalize: true });
+      for (const v of out.tolist()) all.push(v);
+    }
+    return all;
+  };
+
+  try {
+    // 1. Task embeddings — batched for uncached tasks.
+    const uncachedTasks = tasks.filter((t) => !taskEmbeddingCache.has(t.id));
+    if (uncachedTasks.length > 0) {
+      const vectors = await embedChunked(uncachedTasks.map((t) => `query: ${taskSearchText(t)}`));
+      for (let i = 0; i < uncachedTasks.length; i++) {
+        taskEmbeddingCache.set(uncachedTasks[i].id, vectors[i]);
+      }
+    }
+
+    // 2. Agent embeddings — batched for uncached/stale agents.
+    const agentsNeedingEmbedding: { agent: GuildAgent; hash: string }[] = [];
+    for (const agent of agents) {
+      const hash = agentProfileHash(agent);
+      const cached = agentEmbeddingCache.get(agent.id);
+      if (!cached || cached.hash !== hash) {
+        agentsNeedingEmbedding.push({ agent, hash });
+      }
+    }
+    if (agentsNeedingEmbedding.length > 0) {
+      const vectors = await embedChunked(
+        agentsNeedingEmbedding.map(({ agent }) => `passage: ${agentProfileText(agent)}`),
+      );
+      for (let i = 0; i < agentsNeedingEmbedding.length; i++) {
+        const { agent, hash } = agentsNeedingEmbedding[i];
+        agentEmbeddingCache.set(agent.id, { vector: vectors[i], hash });
+      }
+    }
+
+    // 3. Cosine similarities for every (agent, task) pair.
+    for (const task of tasks) {
+      const taskVec = taskEmbeddingCache.get(task.id);
+      if (!taskVec) continue;
+      for (const agent of agents) {
+        const entry = agentEmbeddingCache.get(agent.id);
+        if (!entry) continue;
+        const score = cosine(entry.vector, taskVec);
+        if (score === null) continue; // dim mismatch — don't poison cache with 0
+        semanticScoreCache.set(`${agent.id}::${task.id}`, score);
+      }
+    }
+
+    return true;
+  } catch (e) {
+    serverLogger.warn("[embeddingScorer] warmBiddingEmbeddingsBatch failed", {
+      taskCount: tasks.length,
       error: String(e),
     });
     return false;

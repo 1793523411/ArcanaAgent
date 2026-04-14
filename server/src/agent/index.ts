@@ -39,6 +39,7 @@ import {
 } from "./planTracker.js";
 import { HarnessMiddleware } from "./harness/middleware.js";
 import type { AgentExecutionOptions, StreamAgentOptions, PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
+import { filterToolsByAllowedList } from "./riskDetection.js";
 
 export type { AgentRole } from "./roles.js";
 export type { ConversationMode } from "./systemPrompt.js";
@@ -407,7 +408,10 @@ export async function* streamAgentWithTokens(
   // 删除路径 2 的 ~200 行重复循环代码。详见 adapter.ts AnthropicAdapter.supportsReasoningStream() 注释。
   if (useReasoningStream) {
     try {
-      const tools = buildRuntimeTools(options, { modelId, skillContext, options });
+      const tools = filterToolsByAllowedList(
+        buildRuntimeTools(options, { modelId, skillContext, options }),
+        options?.allowedTools,
+      );
       const openAITools = tools.map((t) => convertToOpenAITool(t) as unknown as Record<string, unknown>);
       const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
       let conversationMessages: BaseMessage[] = [systemMessage, ...stateMessages];
@@ -599,7 +603,10 @@ export async function* streamAgentWithTokens(
   //   - 最终总结用 streamFinalOnlyWithRetryByModel (无 reasoning/usage) 而非 ByAdapter
   //   - 正常结束用 break (走循环外收尾) 而非 return (就地退出)
   // 业务逻辑 (Planning/Harness/Pruning/错误恢复/读写锁并行) 与路径 1 完全一致。
-  const tools = buildRuntimeTools(options, { modelId, skillContext, options });
+  const tools = filterToolsByAllowedList(
+    buildRuntimeTools(options, { modelId, skillContext, options }),
+    options?.allowedTools,
+  );
   const toolMap = new Map<string, StructuredToolInterface>(tools.map((t) => [t.name, t]));
   const model = adapter.getLLM().bindTools(tools);
   let state: BaseMessage[] = [...stateMessages];

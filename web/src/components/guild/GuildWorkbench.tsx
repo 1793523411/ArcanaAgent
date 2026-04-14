@@ -293,7 +293,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                 color: showArtifacts ? "white" : "var(--color-text-muted)",
                 border: showArtifacts ? "none" : "1px solid var(--color-border)",
               }}
-              title="查看产物文件"
+              title="查看 Agent 声明的交付清单（Handoff artifacts）"
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -301,7 +301,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                 <line x1="16" y1="13" x2="8" y2="13" />
                 <line x1="16" y1="17" x2="8" y2="17" />
               </svg>
-              产物
+              交付
               {mergedTasks.filter((t) => t.result?.handoff?.artifacts?.length).length > 0 && (
                 <span
                   className="text-[10px] px-1 rounded-full"

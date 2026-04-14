@@ -88,7 +88,25 @@ function buildGuildAgentPrompt(
   const sections: string[] = [];
 
   sections.push(`## You are "${agent.name}"`);
+  if (agent.description) {
+    sections.push(`**角色定位**：${agent.description}`);
+  }
   sections.push(agent.systemPrompt);
+
+  // Profile — skills and track record so the agent knows its own strengths.
+  const profileLines: string[] = [];
+  if (agent.skills.length > 0) {
+    profileLines.push(`- **技能标签**：${agent.skills.join("、")}`);
+  }
+  const stats = agent.stats;
+  if (stats && stats.tasksCompleted > 0) {
+    const ratePct = Math.round(stats.successRate * 100);
+    profileLines.push(`- **历史表现**：已完成 ${stats.tasksCompleted} 个任务，成功率 ${ratePct}%`);
+  }
+  if (profileLines.length > 0) {
+    sections.push(`\n## Your Profile`);
+    sections.push(profileLines.join("\n"));
+  }
 
   if (agent.assets.length > 0) {
     const resolved = resolveAssetContext(agent.assets);
@@ -195,6 +213,10 @@ export async function executeAgentTask(
   initExecutionLog(groupId, taskId, agentId);
 
   const startTime = Date.now();
+  // Guards against double-counting stats when the success path mutates stats
+  // and then an exception before the function returns forces the catch block
+  // to also mutate stats. Only the first path that runs should update counts.
+  let statsCounted = false;
 
   try {
     // Search relevant memories
@@ -229,6 +251,7 @@ export async function executeAgentTask(
       {
         subagentSystemPromptOverride: systemPrompt,
         conversationMode: "default",
+        allowedTools: agent.allowedTools,
         planningEnabled: userConfig.planning?.enabled ?? true,
         planProgressEnabled: userConfig.planning?.streamProgress ?? true,
         enhancements: userConfig.enhancements,
@@ -321,6 +344,7 @@ export async function executeAgentTask(
     const isRejection = detectRejection(accumulatedContent, handoff);
     if (isRejection) {
       serverLogger.info("[guild] Agent rejected task, resetting for re-dispatch", { agentId, taskId });
+      const rejectedBy = [...(task._rejectedBy ?? []), agentId];
       updateTask(groupId, taskId, {
         status: "open",
         assignedAgentId: undefined,
@@ -329,10 +353,24 @@ export async function executeAgentTask(
         completedAt: undefined,
         bids: [],
         // Blacklist this agent so the scheduler doesn't assign it again
-        _rejectedBy: [...(task._rejectedBy ?? []), agentId],
+        _rejectedBy: rejectedBy,
       } as Partial<GuildTask>);
       finalizeExecutionLog(groupId, taskId, "failed");
-      guildEventBus.emit({ type: "task_updated", task: { ...task, status: "open" } });
+      // Emit the post-update snapshot so subscribers see the fresh _rejectedBy
+      // list — previously the pre-update `task` object was emitted.
+      guildEventBus.emit({
+        type: "task_updated",
+        task: {
+          ...task,
+          status: "open",
+          assignedAgentId: undefined,
+          result: undefined,
+          startedAt: undefined,
+          completedAt: undefined,
+          bids: [],
+          _rejectedBy: rejectedBy,
+        },
+      });
 
       updateAgent(agentId, { status: "idle", currentTaskId: undefined });
       guildEventBus.emit({ type: "agent_status_changed", agentId, status: "idle" });
@@ -340,9 +378,23 @@ export async function executeAgentTask(
       return result;
     }
 
-    // Complete task
+    // Complete task — once this returns, the task is persisted as completed.
     completeTask(groupId, taskId, agentId, result);
     finalizeExecutionLog(groupId, taskId, "completed");
+
+    // Apply success stats *immediately* after completion so any throw in the
+    // non-critical post-complete steps below (handoff append, settleExperience)
+    // still leaves a correctly-incremented tasksCompleted / successRate.
+    // `statsCounted` then guards the catch block from double-mutating.
+    const stats = agent.stats;
+    stats.tasksCompleted++;
+    stats.totalWorkTimeMs += durationMs;
+    stats.successRate = stats.tasksCompleted > 0
+      ? (stats.successRate * (stats.tasksCompleted - 1) + 1) / stats.tasksCompleted
+      : 1;
+    stats.lastActiveAt = new Date().toISOString();
+    updateAgentStats(agentId, stats);
+    statsCounted = true;
 
     // Persist handoff to the shared workspace so downstream teammates can see it.
     if (handoff && task.parentTaskId) {
@@ -358,19 +410,18 @@ export async function executeAgentTask(
       }
     }
 
-    // Settle memory
-    const memories = settleExperience(agentId, task, result);
-    result.memoryCreated = memories.map((m) => m.id);
-
-    // Update agent stats
-    const stats = agent.stats;
-    stats.tasksCompleted++;
-    stats.totalWorkTimeMs += durationMs;
-    stats.successRate = stats.tasksCompleted > 0
-      ? (stats.successRate * (stats.tasksCompleted - 1) + 1) / stats.tasksCompleted
-      : 1;
-    stats.lastActiveAt = new Date().toISOString();
-    updateAgentStats(agentId, stats);
+    // Settle memory — non-critical, wrap so a memory-subsystem fault doesn't
+    // mask the fact that the task already completed successfully.
+    try {
+      const memories = settleExperience(agentId, task, result);
+      result.memoryCreated = memories.map((m) => m.id);
+    } catch (e) {
+      serverLogger.warn("[guild] settleExperience failed", {
+        agentId,
+        taskId,
+        error: String(e),
+      });
+    }
 
     // Reset agent status
     updateAgent(agentId, { status: "idle", currentTaskId: undefined });
@@ -393,14 +444,17 @@ export async function executeAgentTask(
     failTask(groupId, taskId, agentId, wasReleased ? "Released by user" : errorMsg);
     finalizeExecutionLog(groupId, taskId, "failed");
 
-    // Update stats
-    const stats = agent.stats;
-    stats.totalWorkTimeMs += durationMs;
-    stats.lastActiveAt = new Date().toISOString();
-    if (stats.tasksCompleted > 0) {
-      stats.successRate = (stats.successRate * stats.tasksCompleted) / (stats.tasksCompleted + 1);
+    // Update stats — skip if the success path already counted this task
+    // (rare but possible when code after completeTask throws).
+    if (!statsCounted) {
+      const stats = agent.stats;
+      stats.totalWorkTimeMs += durationMs;
+      stats.lastActiveAt = new Date().toISOString();
+      if (stats.tasksCompleted > 0) {
+        stats.successRate = (stats.successRate * stats.tasksCompleted) / (stats.tasksCompleted + 1);
+      }
+      updateAgentStats(agentId, stats);
     }
-    updateAgentStats(agentId, stats);
 
     // Reset agent status
     updateAgent(agentId, { status: "idle", currentTaskId: undefined });

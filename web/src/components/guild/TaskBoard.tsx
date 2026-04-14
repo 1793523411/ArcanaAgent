@@ -125,28 +125,30 @@ export default function TaskBoard({
                       const next = !collapseAllCompleted;
                       setCollapseAllCompleted(next);
                       try { localStorage.setItem("guild_completed_collapsed_all", String(next)); } catch {}
-                      // Seed collapsedReqs so individual toggle still works afterward.
-                      if (next) {
-                        const reqIds = new Set<string>();
-                        // Requirements present in this column
-                        for (const t of colTasks) {
-                          if (t.kind === "requirement") reqIds.add(t.id);
-                        }
-                        // Ghost-req parents (subtasks whose parent req is elsewhere)
-                        const inColReqIds = new Set(colTasks.filter((t) => t.kind === "requirement").map((t) => t.id));
-                        for (const t of colTasks) {
-                          if (t.kind !== "requirement" && t.parentTaskId && !inColReqIds.has(t.parentTaskId)) {
-                            reqIds.add(t.parentTaskId);
-                          }
-                        }
-                        setCollapsedReqs((prev) => {
-                          const merged = new Set(prev);
-                          for (const id of reqIds) merged.add(id);
-                          return merged;
-                        });
-                      } else {
-                        setCollapsedReqs(new Set());
+                      // Seed/clear collapsedReqs **only for IDs in this column** —
+                      // previously "全部展开" cleared the whole Set and wiped
+                      // individual collapses the user had set in other columns.
+                      const completedReqIds = new Set<string>();
+                      for (const t of colTasks) {
+                        if (t.kind === "requirement") completedReqIds.add(t.id);
                       }
+                      const inColReqIds = new Set(
+                        colTasks.filter((t) => t.kind === "requirement").map((t) => t.id),
+                      );
+                      for (const t of colTasks) {
+                        if (t.kind !== "requirement" && t.parentTaskId && !inColReqIds.has(t.parentTaskId)) {
+                          completedReqIds.add(t.parentTaskId);
+                        }
+                      }
+                      setCollapsedReqs((prev) => {
+                        const nextSet = new Set(prev);
+                        if (next) {
+                          for (const id of completedReqIds) nextSet.add(id);
+                        } else {
+                          for (const id of completedReqIds) nextSet.delete(id);
+                        }
+                        return nextSet;
+                      });
                     }}
                     title={collapseAllCompleted ? "展开所有需求组" : "折叠所有需求组"}
                   >

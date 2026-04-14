@@ -152,17 +152,17 @@ export function calculateConfidenceBreakdown(
   const llmResult = getCachedLlmScore(agent.id, task.id);
   const llmNormalized = llmResult !== null ? llmResult.score / 10 : null;
 
-  const useLlm = llmNormalized !== null;
-  const useEmbedding = !useLlm && embeddingScore !== null;
-
-  const core = useLlm
-    ? llmNormalized! * 0.55 + memory * 0.30 + success * 0.15
-    : useEmbedding
-      ? embeddingScore! * 0.55 + memory * 0.30 + success * 0.15
-      : asset * 0.35 + memory * 0.30 + skill * 0.20 + success * 0.15;
+  // Narrow once — avoids non-null assertions downstream.
+  const core =
+    llmNormalized !== null
+      ? llmNormalized * 0.55 + memory * 0.30 + success * 0.15
+      : embeddingScore !== null
+        ? embeddingScore * 0.55 + memory * 0.30 + success * 0.15
+        : asset * 0.35 + memory * 0.30 + skill * 0.20 + success * 0.15;
 
   // assetBonus is redundant when a semantic scorer (LLM or embedding) is used.
-  const effectiveAssetBonus = (useLlm || useEmbedding) ? 0 : assetBonus;
+  const usedSemanticScorer = llmNormalized !== null || embeddingScore !== null;
+  const effectiveAssetBonus = usedSemanticScorer ? 0 : assetBonus;
   const final = Math.max(0, Math.min(1, core + effectiveAssetBonus + ownerBonus - loadPenalty));
 
   return {
@@ -322,8 +322,10 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
   // Subtasks with unmet deps must wait for upstream completion.
   if (!areDepsReady(groupId, fresh)) return null;
 
-  // Cross-group dedup: skip if another autoBid is already running for this task.
-  const lockKey = `${groupId}::${fresh.id}`;
+  // Cross-group dedup: task IDs are globally unique (UUID), so locking on
+  // the bare task id guarantees only one autoBid runs per task even if two
+  // schedulers from different groups race.
+  const lockKey = fresh.id;
   if (biddingInFlight.has(lockKey)) return null;
   biddingInFlight.add(lockKey);
   try {

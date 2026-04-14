@@ -9,7 +9,7 @@ import { serverLogger } from "../lib/logger.js";
 import { appendSchedulerDispatched, appendSchedulerStalled } from "./schedulerLogStore.js";
 import { planRequirement } from "./planner.js";
 import { areDepsReady } from "./taskBoard.js";
-import { warmBiddingEmbeddings, clearTaskEmbeddingCache, isEmbeddingAvailable, preloadEmbeddingModel } from "./embeddingScorer.js";
+import { warmBiddingEmbeddingsBatch, clearTaskEmbeddingCache, isEmbeddingAvailable, preloadEmbeddingModel } from "./embeddingScorer.js";
 import { warmLlmScores, clearTaskLlmCache } from "./llmScorer.js";
 
 interface SchedulerDeps {
@@ -205,30 +205,33 @@ export class GuildAutonomousScheduler {
       // Only runs when the embedding model is already loaded — the first dispatch
       // cycle uses token matching; subsequent cycles get semantic scoring.
       const groupAgents = getGroupAgents(groupId);
+      // Parallel warmup — embedding + LLM across all eligible tasks at once.
+      // Serializing each task wastes up to ~10s per task when the LLM scorer
+      // is engaged; Promise.all keeps worst-case latency bounded to one round.
       if (isEmbeddingAvailable()) {
-        for (const candidate of eligible) {
-          try {
-            await warmBiddingEmbeddings(groupAgents, candidate);
-          } catch {
-            // Embedding warmup is best-effort; token fallback will be used.
-          }
-        }
+        // Single batched call across all tasks — HF pipeline serializes on
+        // the same instance, so per-task Promise.all doesn't actually parallelize.
+        await warmBiddingEmbeddingsBatch(groupAgents, eligible).catch(() => {
+          // Embedding warmup is best-effort; token fallback will be used.
+        });
       }
 
-      // Pre-warm LLM scores for small groups (<10 agents).
-      // LLM scoring is more context-aware than embeddings but adds latency,
-      // so it's only enabled for small groups where the extra calls are tolerable.
-      // Must await before the bid loop so getCachedLlmScore() can return results.
-      for (const candidate of eligible) {
-        try {
-          await warmLlmScores(groupAgents, candidate);
-        } catch {
-          // LLM scoring is best-effort; embedding/token fallback will be used.
-        }
-      }
+      // LLM scoring: only runs for small groups (<10 agents) — warmLlmScores
+      // guards that internally. Must complete before the bid loop so
+      // getCachedLlmScore() can return results.
+      await Promise.all(
+        eligible.map((c) =>
+          warmLlmScores(groupAgents, c).catch(() => {
+            // LLM scoring is best-effort; embedding/token fallback will be used.
+          }),
+        ),
+      );
 
       let assignedAny = false;
-      const warmedTaskIds = isEmbeddingAvailable() ? eligible.map(t => t.id) : [];
+      // Track every eligible task so finally{} can sweep both embedding AND
+      // LLM caches symmetrically — previously only embedding was tracked,
+      // letting LLM cache entries linger until process restart.
+      const warmedTaskIds = eligible.map((t) => t.id);
       try {
       for (const candidate of eligible) {
         if (!this.started) break;
@@ -284,8 +287,11 @@ export class GuildAutonomousScheduler {
         });
       }
       } finally {
-        // Sweep any orphaned task embedding caches (e.g. from early break)
-        for (const tid of warmedTaskIds) clearTaskEmbeddingCache(tid);
+        // Sweep any orphaned task caches (e.g. from early break / post-dispatch throw)
+        for (const tid of warmedTaskIds) {
+          clearTaskEmbeddingCache(tid);
+          clearTaskLlmCache(tid);
+        }
       }
     } finally {
       this.runningGroups.delete(groupId);
