@@ -1,0 +1,41 @@
+{
+  "name": "arcana-agent-sdk",
+  "version": "0.1.2",
+  "description": "SDK for programmatic access to Arcana Agent capabilities — create agents with tool calling, streaming, planning, and multi-model support",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@arcana-agent/core": "^0.1.1",
+    "@langchain/anthropic": "^0.3.34",
+    "@langchain/core": "^0.3.28",
+    "@langchain/langgraph": "^0.2.74",
+    "@langchain/openai": "^0.3.14",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT",
+  "keywords": [],
+  "author": ""
+}

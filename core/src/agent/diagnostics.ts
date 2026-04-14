@@ -3,20 +3,6 @@ import { existsSync } from "fs";
 import { join, extname, relative } from "path";
 import { serverLogger } from "../lib/logger.js";
 
-/** Structured command descriptor to avoid shell injection. */
-export type CommandDescriptor = {
-  /** If true, run via shell (for piped commands with no user-controlled args). */
-  shell: true;
-  command: string;
-} | {
-  /** If false, run via execFileSync with explicit args (safe for user-controlled filePath). */
-  shell: false;
-  file: string;
-  args: string[];
-  /** Max output lines to keep (applied after execution). */
-  maxLines?: number;
-};
-
 /** Detected project type and its diagnostic command */
 export interface DiagnosticInfo {
   projectType: string;
@@ -82,6 +68,20 @@ function detectProjectType(
   projectTypeCache.set(cacheKey, pt);
   return pt;
 }
+
+/** Structured command descriptor to avoid shell injection. */
+type CommandDescriptor = {
+  /** If true, run via shell (for piped commands with no user-controlled args). */
+  shell: true;
+  command: string;
+} | {
+  /** If false, run via execFileSync with explicit args (safe for user-controlled filePath). */
+  shell: false;
+  file: string;
+  args: string[];
+  /** Max output lines to keep (applied after execution). */
+  maxLines?: number;
+};
 
 /** Build the actual command descriptor — called fresh each time so filePath is never stale. */
 function buildCommand(projectType: ProjectType, filePath: string): CommandDescriptor {

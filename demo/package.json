@@ -1,0 +1,17 @@
+{
+  "name": "arcana-agent-demo",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types --experimental-transform-types server.ts"
+  },
+  "dependencies": {
+    "arcana-agent-sdk": "file:../sdk",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
