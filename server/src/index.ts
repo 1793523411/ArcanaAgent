@@ -83,8 +83,11 @@ import {
   getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
   postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
   postReleaseAgent,
-  getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead,
-  getTaskWorkspace,
+  getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead, updateAgentAsset, updateGroupAssetRoute,
+  getTaskWorkspace, getGuildArtifactFile,
+  getAgentWorkspaceTree, getAgentWorkspaceFile,
+  getAgentMemoryTree, getAgentMemoryFile,
+  getGroupSharedTree, getGroupSharedFile,
 } from "./guild/routes.js";
 import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
 import { listGroups, reconcileRequirementRollups } from "./guild/index.js";
@@ -206,12 +209,21 @@ app.get("/api/guild/agents/:id/memories", getAgentMemories);
 app.get("/api/guild/agents/:id/stats", getAgentStats);
 app.post("/api/guild/agents/:id/assets", postAgentAsset);
 app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
+app.patch("/api/guild/agents/:id/assets/:assetId", updateAgentAsset);
+app.patch("/api/guild/groups/:id/assets/:assetId", updateGroupAssetRoute);
 app.post("/api/guild/agents/:agentId/release", postReleaseAgent);
 app.get("/api/guild/groups/:id/assets", getGroupAssetList);
 app.post("/api/guild/groups/:id/assets", postGroupAsset);
 app.delete("/api/guild/groups/:id/assets/:assetId", deleteGroupAssetById);
 app.put("/api/guild/groups/:id/lead", putGroupLead);
 app.get("/api/guild/groups/:groupId/tasks/:taskId/workspace", getTaskWorkspace);
+app.get("/api/guild/agents/:id/workspace/tree", getAgentWorkspaceTree);
+app.get("/api/guild/agents/:id/workspace/file", getAgentWorkspaceFile);
+app.get("/api/guild/agents/:id/memory/tree", getAgentMemoryTree);
+app.get("/api/guild/agents/:id/memory/file", getAgentMemoryFile);
+app.get("/api/guild/groups/:id/shared/tree", getGroupSharedTree);
+app.get("/api/guild/groups/:id/shared/file", getGroupSharedFile);
+app.get("/api/guild/file", getGuildArtifactFile);
 
 // 提供前端静态文件（生产环境）
 const publicPath = join(__dirname, "..", "public");

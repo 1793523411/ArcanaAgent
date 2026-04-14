@@ -3,6 +3,9 @@ import { getGroupAgents, getAggregatedGroupAssets } from "./guildManager.js";
 import { searchRelevant } from "./memoryManager.js";
 import { assignTask, getTask, updateTask, areDepsReady } from "./taskBoard.js";
 import { guildEventBus } from "./eventBus.js";
+import { splitTokens } from "../lib/tokenizer.js";
+import { getCachedSemanticScore } from "./embeddingScorer.js";
+import { getCachedLlmScore } from "./llmScorer.js";
 
 const DEFAULT_CONFIG: BiddingConfig = {
   maxConcurrentTasks: 1,
@@ -45,7 +48,7 @@ export function calculateConfidenceBreakdown(
   groupId?: string,
 ): ScoreBreakdown {
   const taskText = `${task.title} ${task.description}`.toLowerCase();
-  const taskTokens = taskText.split(/[\s,;.!?]+/).filter((w) => w.length > 2);
+  const taskTokens = splitTokens(taskText);
 
   // 1. Asset match — strongest signal, token-normalized per asset. Take the
   //    top-3 asset scores and average them so agents with multiple relevant
@@ -53,7 +56,7 @@ export function calculateConfidenceBreakdown(
   const assetScores: number[] = [];
   for (const a of agent.assets) {
     const assetText = `${a.name} ${a.description ?? ""} ${a.uri}`.toLowerCase();
-    const assetWords = assetText.split(/[\s/\\._-]+/).filter((w) => w.length > 2);
+    const assetWords = splitTokens(assetText);
     if (assetWords.length === 0) continue;
     let matches = 0;
     for (const w of assetWords) {
@@ -95,7 +98,8 @@ export function calculateConfidenceBreakdown(
   // when P1 embedding replaces both tokenized matchers.
   const hasDirectAsset = agent.assets.some((a) => {
     const assetText = `${a.name} ${a.description ?? ""}`.toLowerCase();
-    return taskText.split(/\s+/).some((w) => w.length > 3 && assetText.includes(w));
+    const assetToks = splitTokens(assetText);
+    return taskTokens.some((w) => assetToks.some((aw) => aw === w || assetText.includes(w)));
   });
   const assetBonus = hasDirectAsset ? biddingConfig.assetBonusWeight : 0;
 
@@ -109,8 +113,8 @@ export function calculateConfidenceBreakdown(
     const ownedMatches = aggregated.filter((a) => {
       if (a.ownerAgentId !== agent.id) return false;
       const blob = `${a.name} ${a.description ?? ""} ${(a.tags ?? []).join(" ")}`.toLowerCase();
-      const blobWords = blob.split(/[\s/\\._-]+/).filter((w) => w.length > 2);
-      return blobWords.some((w) => taskText.includes(w));
+      const blobTokens = splitTokens(blob);
+      return blobTokens.some((w) => taskText.includes(w));
     });
     if (ownedMatches.length > 0) {
       ownerBonus = biddingConfig.ownerBonusWeight ?? 0.5;
@@ -135,8 +139,31 @@ export function calculateConfidenceBreakdown(
     }
   }
 
-  const core = asset * 0.35 + memory * 0.25 + skill * 0.2 + success * 0.1;
-  const final = Math.max(0, Math.min(1, core + assetBonus + ownerBonus - loadPenalty));
+  // When embedding score is available (pre-warmed by scheduler), it replaces
+  // the token-based asset + skill dimensions with a single semantic similarity.
+  // Weight budget: embedding absorbs asset (0.35) + skill (0.20) = 0.55.
+  // Token-based asset/skill remain as fallback when embeddings aren't warmed.
+  const embeddingScore = getCachedSemanticScore(agent.id, task.id);
+
+  // LLM score (0-10) is the highest-quality signal when available.
+  // It's warmed asynchronously before the bid loop for small groups (<10 agents).
+  // When present, it absorbs the full semantic match budget (0.55), displacing
+  // both embedding and token-based asset/skill dimensions.
+  const llmResult = getCachedLlmScore(agent.id, task.id);
+  const llmNormalized = llmResult !== null ? llmResult.score / 10 : null;
+
+  const useLlm = llmNormalized !== null;
+  const useEmbedding = !useLlm && embeddingScore !== null;
+
+  const core = useLlm
+    ? llmNormalized! * 0.55 + memory * 0.30 + success * 0.15
+    : useEmbedding
+      ? embeddingScore! * 0.55 + memory * 0.30 + success * 0.15
+      : asset * 0.35 + memory * 0.30 + skill * 0.20 + success * 0.15;
+
+  // assetBonus is redundant when a semantic scorer (LLM or embedding) is used.
+  const effectiveAssetBonus = (useLlm || useEmbedding) ? 0 : assetBonus;
+  const final = Math.max(0, Math.min(1, core + effectiveAssetBonus + ownerBonus - loadPenalty));
 
   return {
     asset,
@@ -144,10 +171,13 @@ export function calculateConfidenceBreakdown(
     skill,
     success,
     ownerBonus,
-    assetBonus,
+    assetBonus: effectiveAssetBonus,
     loadPenalty,
     threshold: 0, // filled in by evaluateTask once priority is known
     final,
+    embedding: embeddingScore ?? undefined,
+    llmScore: llmResult?.score,
+    llmReason: llmResult?.reason,
   };
 }
 
@@ -185,8 +215,8 @@ export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null
   const relevantAssets = agent.assets
     .filter((a) => {
       const assetText = `${a.name} ${a.description ?? ""}`.toLowerCase();
-      const taskText = `${task.title} ${task.description}`.toLowerCase();
-      return taskText.split(/\s+/).some((w) => w.length > 3 && assetText.includes(w));
+      const tTokens = splitTokens(`${task.title} ${task.description}`.toLowerCase());
+      return tTokens.some((w) => assetText.includes(w));
     })
     .map((a) => a.id);
 
@@ -266,10 +296,16 @@ export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
   return bids;
 }
 
+// ─── Cross-group dedup lock ────────────────────────────────────
+// Prevents concurrent autoBid calls for the same task across different
+// groups (e.g. an agent shared between groups triggering two schedulers).
+const biddingInFlight = new Set<string>();
+
 /** Run bidding and auto-assign the winner. Returns the winning bid or null.
- *  If no bid meets threshold but idle agents exist, falls back to a random idle agent.
- *  At most one disk write per call: either via `assignTask` (assigned path) or
- *  `updateTask` (no-idle-agents path). */
+ *  If no bid meets threshold, falls back to suggestedAgentId if available;
+ *  otherwise emits a stalled notification for manual assignment instead of
+ *  force-assigning a random agent (which pollutes successRate).
+ *  At most one disk write per call. */
 export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
   const fresh = getTask(groupId, task.id) ?? task;
   if (
@@ -286,6 +322,18 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
   // Subtasks with unmet deps must wait for upstream completion.
   if (!areDepsReady(groupId, fresh)) return null;
 
+  // Cross-group dedup: skip if another autoBid is already running for this task.
+  const lockKey = `${groupId}::${fresh.id}`;
+  if (biddingInFlight.has(lockKey)) return null;
+  biddingInFlight.add(lockKey);
+  try {
+    return autoBidInner(groupId, fresh);
+  } finally {
+    biddingInFlight.delete(lockKey);
+  }
+}
+
+function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
   const bids = startBidding(groupId, fresh);
   const winner = selectWinner(bids);
 
@@ -294,34 +342,60 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
     return winner;
   }
 
-  // No bid met threshold. Try fallback: prefer suggestedAgentId if idle,
-  // otherwise pick a random idle agent.
+  // No bid met threshold. Smart fallback:
+  //  1. suggestedAgentId (Lead's recommendation) → auto-assign
+  //  2. Exactly one idle agent → assign (no ambiguity)
+  //  3. Multiple idle agents, none scored well → emit stalled, let user decide
   const agents = getGroupAgents(groupId);
   const rejectedSet = new Set(fresh._rejectedBy ?? []);
   const idleAgents = agents.filter((a) => a.status === "idle" && !a.currentTaskId && !rejectedSet.has(a.id));
+
   if (idleAgents.length === 0) {
     if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
     return null;
   }
 
+  // Pick the best fallback candidate: suggested > sole idle > stalled
   const suggested = fresh.suggestedAgentId
     ? idleAgents.find((a) => a.id === fresh.suggestedAgentId)
     : undefined;
-  const picked = suggested ?? idleAgents[Math.floor(Math.random() * idleAgents.length)];
-  const reasoning = suggested
-    ? `自动回退分配：无 Agent 达到竞标门槛，按 Lead 推荐分配给 ${picked.name}`
-    : "自动回退分配：无 Agent 达到竞标门槛，随机选择空闲 Agent";
-  const fallbackBid: TaskBid = {
-    agentId: picked.id,
-    taskId: fresh.id,
-    confidence: suggested ? 0.3 : 0.1,
-    reasoning,
-    estimatedComplexity: "medium",
-    relevantAssets: [],
-    relevantMemories: [],
-    biddedAt: new Date().toISOString(),
-    via: "fallback",
-  };
-  assignTask(groupId, fresh.id, picked.id, fallbackBid, [...bids, fallbackBid]);
-  return fallbackBid;
+  const picked = suggested ?? (idleAgents.length === 1 ? idleAgents[0] : undefined);
+
+  if (picked) {
+    const reasoning = suggested
+      ? `自动回退分配：无 Agent 达到竞标门槛，按 Lead 推荐分配给 ${picked.name}`
+      : `自动回退分配：无 Agent 达到竞标门槛，组内唯一空闲 Agent`;
+    const fallbackBid: TaskBid = {
+      agentId: picked.id,
+      taskId: fresh.id,
+      confidence: suggested ? 0.3 : 0.1,
+      reasoning,
+      estimatedComplexity: "medium",
+      relevantAssets: [],
+      relevantMemories: [],
+      biddedAt: new Date().toISOString(),
+      via: "fallback",
+    };
+    assignTask(groupId, fresh.id, picked.id, fallbackBid, [...bids, fallbackBid]);
+    return fallbackBid;
+  }
+
+  // Multiple idle agents, none scored well — emit stalled for manual assignment.
+  if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
+  guildEventBus.emit({
+    type: "scheduler_dispatch_stalled",
+    groupId,
+    openTaskCount: 1,
+    message: `任务「${fresh.title}」无 Agent 达到竞标门槛，请手动指派`,
+    schedulerLogEntry: {
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      at: new Date().toISOString(),
+      kind: "stalled",
+      groupId,
+      taskId: fresh.id,
+      taskTitle: fresh.title,
+      message: `任务「${fresh.title}」无 Agent 达到竞标门槛（最高分：${bids.length > 0 ? Math.max(...bids.map((b) => b.confidence)).toFixed(2) : "0"}，空闲 ${idleAgents.length} 人），等待手动指派`,
+    },
+  });
+  return null;
 }

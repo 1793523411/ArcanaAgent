@@ -3,7 +3,8 @@ import type { GuildAgent, GuildTask } from "../../types/guild";
 import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
-import { getTaskWorkspaceRaw } from "../../api/guild";
+import AgentMemoryPanel from "./AgentMemoryPanel";
+import { getTaskWorkspaceRaw, updateAgentAsset } from "../../api/guild";
 
 const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
 
@@ -19,6 +20,8 @@ interface Props {
   onReleaseAgent?: (id: string) => void;
   onViewLog?: (taskId: string) => void;
   onSelectTask?: (id: string) => void;
+  onOpenWorkspace?: (agentId: string) => void;
+  onAgentUpdated?: (agentId: string) => void;
 }
 
 const STATUS_LABEL: Record<GuildAgent["status"], string> = {
@@ -47,15 +50,31 @@ const PRIORITY_COLOR: Record<GuildTask["priority"], string> = {
   urgent: "#dc2626",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask }: Props) {
+const ARTIFACT_ICON: Record<string, { icon: string; color: string }> = {
+  commit: { icon: "⑃", color: "#8b5cf6" },
+  file: { icon: "📄", color: "#3b82f6" },
+  url: { icon: "🔗", color: "#06b6d4" },
+  note: { icon: "📝", color: "#f59e0b" },
+};
+
+const ASSET_TYPE_ICON: Record<string, string> = {
+  repo: "📦", document: "📄", api: "🔌", database: "🗄️",
+  prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
+};
+
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const [workspaceMd, setWorkspaceMd] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [expandedBid, setExpandedBid] = useState<string | null>(null);
+  const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{ name: string; uri: string; description: string; tags: string }>({ name: "", uri: "", description: "", tags: "" });
+  const [savingAsset, setSavingAsset] = useState(false);
 
   // Fetch workspace markdown whenever a requirement task is selected.
   // Subtasks carry their parent's workspaceRef, so we resolve the viewer
@@ -216,17 +235,135 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
             {/* Assets */}
             {selectedAgent.assets.length > 0 && (
               <div>
-                <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>资产</div>
+                <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>
+                  资产（{selectedAgent.assets.length}）
+                </div>
                 <div className="space-y-1.5">
                   {selectedAgent.assets.map((asset) => (
                     <div
                       key={asset.id}
-                      className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs"
+                      className="px-2.5 py-2 rounded-lg text-xs"
                       style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
                     >
-                      <span className="font-medium" style={{ color: "var(--color-accent)" }}>{asset.type}</span>
-                      <span className="flex-1 truncate" style={{ color: "var(--color-text)" }}>{asset.name}</span>
-                      <span className="truncate max-w-[100px]" style={{ color: "var(--color-text-muted)" }}>{asset.uri}</span>
+                      {editingAssetId === asset.id ? (
+                        <div className="space-y-1.5 min-w-0">
+                          <div className="flex gap-1.5 min-w-0">
+                            <input
+                              className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
+                              style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                              placeholder="名称"
+                              value={editForm.name}
+                              onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                            />
+                            <input
+                              className="flex-1 min-w-0 px-2 py-1 rounded text-xs"
+                              style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                              placeholder="URI"
+                              value={editForm.uri}
+                              onChange={(e) => setEditForm((f) => ({ ...f, uri: e.target.value }))}
+                            />
+                          </div>
+                          <input
+                            className="w-full px-2 py-1 rounded text-xs"
+                            style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                            placeholder="描述"
+                            value={editForm.description}
+                            onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                          />
+                          <input
+                            className="w-full px-2 py-1 rounded text-xs"
+                            style={{ background: "var(--color-surface-hover)", color: "var(--color-text)", border: "1px solid var(--color-border)" }}
+                            placeholder="标签（逗号分隔）"
+                            value={editForm.tags}
+                            onChange={(e) => setEditForm((f) => ({ ...f, tags: e.target.value }))}
+                          />
+                          <div className="flex gap-1.5 justify-end">
+                            <button
+                              className="text-[10px] px-2 py-0.5 rounded"
+                              style={{ color: "var(--color-text-muted)" }}
+                              onClick={() => setEditingAssetId(null)}
+                              disabled={savingAsset}
+                            >
+                              取消
+                            </button>
+                            <button
+                              className="text-[10px] px-2 py-0.5 rounded"
+                              style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                              disabled={savingAsset}
+                              onClick={async () => {
+                                if (!selectedAgent) return;
+                                setSavingAsset(true);
+                                try {
+                                  await updateAgentAsset(selectedAgent.id, asset.id, {
+                                    name: editForm.name,
+                                    uri: editForm.uri,
+                                    description: editForm.description,
+                                    tags: editForm.tags.split(",").map((t) => t.trim()).filter(Boolean),
+                                  });
+                                  setEditingAssetId(null);
+                                  onAgentUpdated?.(selectedAgent.id);
+                                } finally {
+                                  setSavingAsset(false);
+                                }
+                              }}
+                            >
+                              {savingAsset ? "保存中…" : "保存"}
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm shrink-0">{ASSET_TYPE_ICON[asset.type] ?? "📎"}</span>
+                            <span className="font-medium flex-1 truncate" style={{ color: "var(--color-text)" }}>{asset.name}</span>
+                            <span
+                              className="text-[9px] px-1 py-px rounded font-medium uppercase shrink-0"
+                              style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                            >
+                              {asset.type}
+                            </span>
+                            <button
+                              className="shrink-0 text-[11px] px-1 py-px rounded hover:bg-[var(--color-surface-hover)]"
+                              style={{ color: "var(--color-text-muted)" }}
+                              title="编辑资产"
+                              onClick={() => {
+                                setEditingAssetId(asset.id);
+                                setEditForm({
+                                  name: asset.name,
+                                  uri: asset.uri,
+                                  description: asset.description ?? "",
+                                  tags: (asset.tags ?? []).join(", "),
+                                });
+                              }}
+                            >
+                              ✏️
+                            </button>
+                          </div>
+                          {asset.description && (
+                            <div className="text-[10px] mt-1 pl-6" style={{ color: "var(--color-text-muted)" }}>
+                              {asset.description}
+                            </div>
+                          )}
+                          <div className="flex items-center gap-2 mt-1 pl-6">
+                            <span className="font-mono text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
+                              {asset.uri}
+                            </span>
+                            {asset.tags && asset.tags.length > 0 && (
+                              <div className="flex gap-1 shrink-0">
+                                {asset.tags.slice(0, 3).map((t) => (
+                                  <span
+                                    key={t}
+                                    className="text-[9px] px-1 py-px rounded"
+                                    style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+                                  >
+                                    {t}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -251,12 +388,144 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               </div>
             )}
 
+            {/* 记忆档案 — entry point to view agent memories */}
+            <div>
+              <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>记忆档案</div>
+              <button
+                onClick={() => setShowMemory(true)}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+              >
+                <span className="text-lg shrink-0">🧠</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium" style={{ color: "var(--color-text)" }}>查看记忆</div>
+                  <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    浏览 Agent 的经验、知识、偏好目录
+                  </div>
+                </div>
+                <span className="text-xs shrink-0" style={{ color: "var(--color-text-muted)" }}>→</span>
+              </button>
+            </div>
+
+            {/* 工作空间 — browse agent workspace */}
+            <div>
+              <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>工作空间</div>
+              <button
+                onClick={() => onOpenWorkspace?.(selectedAgent.id)}
+                className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-colors hover:bg-[var(--color-surface-hover)]"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+              >
+                <span className="text-lg shrink-0">{"\uD83D\uDD27"}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium" style={{ color: "var(--color-text)" }}>查看工作空间</div>
+                  <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>
+                    Agent 执行任务时的工作文件和产出
+                  </div>
+                </div>
+                <span className="text-xs shrink-0" style={{ color: "var(--color-text-muted)" }}>{"\u2192"}</span>
+              </button>
+            </div>
+
+            {/* 工作产出 — aggregated artifacts from this agent's completed tasks */}
+            {tasks && tasks.length > 0 && (() => {
+              const agentTasks = tasks.filter(
+                (t) => t.assignedAgentId === selectedAgent.id && t.result,
+              );
+              if (agentTasks.length === 0) return null;
+              const allArtifacts = agentTasks.flatMap((t) =>
+                (t.result?.handoff?.artifacts ?? []).map((a) => ({ ...a, taskTitle: t.title, taskId: t.id })),
+              );
+              return (
+                <div>
+                  <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>
+                    工作产出（{agentTasks.length} 个任务）
+                  </div>
+                  {allArtifacts.length > 0 ? (
+                    <div className="space-y-1">
+                      {allArtifacts.map((a, i) => {
+                        const ai = ARTIFACT_ICON[a.kind] ?? ARTIFACT_ICON.note;
+                        const isUrl = a.kind === "url" || /^https?:\/\//.test(a.ref);
+                        return (
+                          <div
+                            key={i}
+                            className="flex items-start gap-1.5 px-2 py-1.5 rounded text-xs"
+                            style={{ background: `${ai.color}08`, border: `1px solid ${ai.color}20` }}
+                          >
+                            <span className="shrink-0 text-[11px] mt-px">{ai.icon}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="text-[9px] px-1 py-px rounded font-medium uppercase shrink-0"
+                                  style={{ background: `${ai.color}18`, color: ai.color }}
+                                >
+                                  {a.kind}
+                                </span>
+                                {isUrl ? (
+                                  <a
+                                    href={a.ref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono truncate hover:underline"
+                                    style={{ color: ai.color }}
+                                  >
+                                    {a.ref}
+                                  </a>
+                                ) : (
+                                  <span className="font-mono truncate" style={{ color: "var(--color-text)" }}>
+                                    {a.ref}
+                                  </span>
+                                )}
+                              </div>
+                              {a.description && (
+                                <div className="text-[10px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                                  {a.description}
+                                </div>
+                              )}
+                              <div
+                                className="text-[10px] mt-0.5 cursor-pointer hover:underline"
+                                style={{ color: "var(--color-text-muted)" }}
+                                onClick={() => onSelectTask?.(a.taskId)}
+                              >
+                                来自: {a.taskTitle}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="space-y-1">
+                      {agentTasks.slice(0, 5).map((t) => (
+                        <div
+                          key={t.id}
+                          className="flex items-center gap-2 px-2 py-1.5 rounded text-xs cursor-pointer hover:bg-[var(--color-surface-hover)]"
+                          style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                          onClick={() => onSelectTask?.(t.id)}
+                        >
+                          <span className="w-2 h-2 rounded-full shrink-0" style={{ background: t.status === "completed" ? "#10B981" : "#EF4444" }} />
+                          <span className="truncate flex-1" style={{ color: "var(--color-text)" }}>{t.title}</span>
+                          <span className="text-[10px] shrink-0" style={{ color: "var(--color-text-muted)" }}>
+                            {t.result?.summary ? `${t.result.summary.slice(0, 30)}...` : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Live output */}
             {selectedAgent.status === "working" && (
               <div>
                 <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>实时输出</div>
                 <AgentOutputStream agentId={selectedAgent.id} output={agentOutputs[selectedAgent.id] ?? ""} />
               </div>
+            )}
+
+            {/* Agent Memory Panel modal */}
+            {showMemory && (
+              <AgentMemoryPanel agent={selectedAgent} onClose={() => setShowMemory(false)} />
             )}
           </>
         )}
@@ -419,12 +688,25 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                             </button>
                             {expanded && (
                               <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-                                <div>资产匹配</div><div className="text-right tabular-nums">{sb.asset.toFixed(3)}</div>
+                                {sb.llmScore != null ? (
+                                  <>
+                                    <div>LLM 评分</div><div className="text-right tabular-nums" style={{ color: "#ec4899" }}>{sb.llmScore.toFixed(1)}/10</div>
+                                    {sb.llmReason && <div className="col-span-2 text-[9px] italic" style={{ color: "var(--color-text-muted)" }}>{sb.llmReason}</div>}
+                                  </>
+                                ) : sb.embedding != null ? (
+                                  <>
+                                    <div>语义匹配</div><div className="text-right tabular-nums" style={{ color: "#8b5cf6" }}>{sb.embedding.toFixed(3)}</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div>资产匹配</div><div className="text-right tabular-nums">{sb.asset.toFixed(3)}</div>
+                                    <div>技能匹配</div><div className="text-right tabular-nums">{sb.skill.toFixed(3)}</div>
+                                  </>
+                                )}
                                 <div>记忆匹配</div><div className="text-right tabular-nums">{sb.memory.toFixed(3)}</div>
-                                <div>技能匹配</div><div className="text-right tabular-nums">{sb.skill.toFixed(3)}</div>
                                 <div>历史胜率</div><div className="text-right tabular-nums">{sb.success.toFixed(3)}</div>
                                 <div>所有者奖励</div><div className="text-right tabular-nums">{sb.ownerBonus.toFixed(3)}</div>
-                                <div>资产奖励</div><div className="text-right tabular-nums">{sb.assetBonus.toFixed(3)}</div>
+                                {!sb.embedding && <><div>资产奖励</div><div className="text-right tabular-nums">{sb.assetBonus.toFixed(3)}</div></>}
                                 <div>负载惩罚</div><div className="text-right tabular-nums">-{sb.loadPenalty.toFixed(3)}</div>
                                 <div>门槛</div><div className="text-right tabular-nums">{sb.threshold.toFixed(3)}</div>
                                 <div className="font-semibold" style={{ color: "var(--color-text)" }}>最终得分</div>
@@ -475,16 +757,52 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 <div style={{ color: "var(--color-text)" }}>{selectedTask.result.handoff.summary}</div>
                 {selectedTask.result.handoff.artifacts.length > 0 && (
                   <div>
-                    <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>产出物</div>
-                    <ul className="list-disc pl-4 space-y-0.5">
-                      {selectedTask.result.handoff.artifacts.map((a, i) => (
-                        <li key={i} style={{ color: "var(--color-text)" }}>
-                          <span className="font-mono text-[10px] mr-1" style={{ color: "var(--color-accent)" }}>{a.kind}</span>
-                          <span>{a.ref}</span>
-                          {a.description && <span style={{ color: "var(--color-text-muted)" }}> — {a.description}</span>}
-                        </li>
-                      ))}
-                    </ul>
+                    <div className="text-[10px] mb-1" style={{ color: "var(--color-text-muted)" }}>产出物</div>
+                    <div className="space-y-1">
+                      {selectedTask.result.handoff.artifacts.map((a, i) => {
+                        const ai = ARTIFACT_ICON[a.kind] ?? ARTIFACT_ICON.note;
+                        const isUrl = a.kind === "url" || /^https?:\/\//.test(a.ref);
+                        return (
+                          <div
+                            key={i}
+                            className="flex items-start gap-1.5 px-2 py-1 rounded"
+                            style={{ background: `${ai.color}08`, border: `1px solid ${ai.color}20` }}
+                          >
+                            <span className="shrink-0 text-[11px] mt-px">{ai.icon}</span>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-1.5">
+                                <span
+                                  className="text-[9px] px-1 py-px rounded font-medium uppercase"
+                                  style={{ background: `${ai.color}18`, color: ai.color }}
+                                >
+                                  {a.kind}
+                                </span>
+                                {isUrl ? (
+                                  <a
+                                    href={a.ref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-xs font-mono truncate hover:underline"
+                                    style={{ color: ai.color }}
+                                  >
+                                    {a.ref}
+                                  </a>
+                                ) : (
+                                  <span className="text-xs font-mono truncate" style={{ color: "var(--color-text)" }}>
+                                    {a.ref}
+                                  </span>
+                                )}
+                              </div>
+                              {a.description && (
+                                <div className="text-[10px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                                  {a.description}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
                 {selectedTask.result.handoff.openQuestions && selectedTask.result.handoff.openQuestions.length > 0 && (

@@ -76,8 +76,8 @@ function resolveRepo(asset: AgentAsset): ResolvedAssetContext {
     };
   }
 
-  // Build a shallow directory tree (max 2 levels, max 50 entries)
-  const tree = buildDirTree(uri, 2, 50);
+  // Build a shallow directory tree (max 3 levels, max 100 entries)
+  const tree = buildDirTree(uri, 3, 100);
   const readmePath = findReadme(uri);
   let readmeSnippet = "";
   if (readmePath) {
@@ -99,8 +99,8 @@ function resolveDocument(asset: AgentAsset): ResolvedAssetContext {
 
   if (existsSync(uri)) {
     const raw = readFileSync(uri, "utf-8");
-    content = raw.slice(0, 2000);
-    if (raw.length > 2000) content += "\n... (truncated)";
+    content = raw.slice(0, 8192);
+    if (raw.length > 8192) content += "\n... (truncated)";
   } else {
     content = `URL: ${uri}`;
   }

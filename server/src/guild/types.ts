@@ -105,6 +105,13 @@ export interface TaskHandoffArtifact {
   description?: string;
 }
 
+export interface TaskHandoffMemory {
+  type: "knowledge" | "preference";
+  title: string;
+  content: string;
+  tags?: string[];
+}
+
 export interface TaskHandoff {
   fromAgentId: string;
   /** Target subtask id if directed; undefined means parent/lead aggregation. */
@@ -113,6 +120,7 @@ export interface TaskHandoff {
   artifacts: TaskHandoffArtifact[];
   inputsConsumed?: string[];
   openQuestions?: string[];
+  memories?: TaskHandoffMemory[];
   createdAt: string;
 }
 
@@ -301,6 +309,12 @@ export interface ScoreBreakdown {
   loadPenalty: number;
   threshold: number;
   final: number;
+  /** Semantic embedding similarity [0,1]. Present only when the embedding model is warmed. */
+  embedding?: number;
+  /** LLM-based score [0,10]. Present only when llmScorer was warmed for this agent+task. */
+  llmScore?: number;
+  /** Short rationale from the LLM scorer. */
+  llmReason?: string;
 }
 
 // ─── Create Params ──────────────────────────────────────────────

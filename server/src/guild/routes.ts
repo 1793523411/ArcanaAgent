@@ -4,10 +4,12 @@ import {
   createGroup, getGroup, listGroups, updateGroup, archiveGroup, deleteGroup,
   createAgent, getAgent, listAgents, updateAgent, deleteAgent,
   assignAgentToGroup, removeAgentFromGroup, getGroupAgents, getUnassignedAgents,
-  addAsset, removeAsset,
-  addGroupAsset, removeGroupAsset, getGroupAssetPool, setGroupLead,
+  addAsset, removeAsset, updateAsset,
+  addGroupAsset, removeGroupAsset, updateGroupAsset, getGroupAssetPool, setGroupLead,
   getAggregatedGroupAssets,
+  getAgentWorkspaceDir, getAgentMemoryDir, getGroupSharedDir,
 } from "./guildManager.js";
+import { scanDirectory, safeReadFile } from "./fileBrowser.js";
 import { readWorkspaceRaw, readWorkspace } from "./workspace.js";
 import {
   createTask, getTask, getGroupTasks, updateTask, cancelTask, assignTask, getExecutionLog,
@@ -16,6 +18,8 @@ import {
 import { getMemories } from "./memoryManager.js";
 import { executeAgentTask, requestExecutionAbort, isExecutionActive } from "./agentExecutor.js";
 import { autoBid } from "./bidding.js";
+import { warmBiddingEmbeddings, clearTaskEmbeddingCache, isEmbeddingAvailable } from "./embeddingScorer.js";
+import { warmLlmScores, clearTaskLlmCache } from "./llmScorer.js";
 import { guildEventBus } from "./eventBus.js";
 import type { GuildEvent } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
@@ -217,6 +221,26 @@ export function deleteAgentAsset(req: Request, res: Response): void {
   }
 }
 
+export function updateAgentAsset(req: Request, res: Response): void {
+  try {
+    const result = updateAsset(p(req.params.id), p(req.params.assetId), req.body);
+    if (!result) { res.status(404).json({ error: "Asset not found" }); return; }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function updateGroupAssetRoute(req: Request, res: Response): void {
+  try {
+    const result = updateGroupAsset(p(req.params.id), p(req.params.assetId), req.body);
+    if (!result) { res.status(404).json({ error: "Asset not found" }); return; }
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
 // ─── Tasks ──────────────────────────────────────────────────────
 
 export function getGroupTaskList(req: Request, res: Response): void {
@@ -316,7 +340,7 @@ export function postAssignTask(req: Request, res: Response): void {
 
 // ─── Auto Bidding ──────────────────────────────────────────────
 
-export function postAutoBid(req: Request, res: Response): void {
+export async function postAutoBid(req: Request, res: Response): Promise<void> {
   try {
     const groupId = p(req.params.groupId);
     const { taskId } = req.body;
@@ -329,7 +353,18 @@ export function postAutoBid(req: Request, res: Response): void {
       res.status(404).json({ error: "Task not found" });
       return;
     }
+    // Best-effort embedding warmup for semantic scoring (skip if model not loaded
+    // to avoid blocking the HTTP request during initial model download).
+    const agents = getGroupAgents(groupId);
+    if (isEmbeddingAvailable()) {
+      await warmBiddingEmbeddings(agents, task).catch(() => {});
+    }
+    // Best-effort LLM score warmup for small groups (<10 agents).
+    // Runs in parallel with embeddings; falls back gracefully on timeout/error.
+    await warmLlmScores(agents, task).catch(() => {});
     const winner = autoBid(groupId, task);
+    clearTaskEmbeddingCache(taskId);
+    clearTaskLlmCache(taskId);
     if (!winner) {
       const freshTask = getTask(groupId, taskId);
       const status = freshTask?.status ?? task.status;
@@ -510,6 +545,123 @@ export function deleteGroupSchedulerLog(req: Request, res: Response): void {
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
+}
+
+// ─── Artifact File Reader ─────────────────────────────────────────
+
+import { existsSync, statSync, readFileSync, realpathSync } from "fs";
+import { resolve, extname } from "path";
+
+const SAFE_TEXT_EXTS = new Set([
+  ".ts", ".tsx", ".js", ".jsx", ".json", ".md", ".txt", ".yaml", ".yml",
+  ".css", ".scss", ".html", ".xml", ".toml", ".ini", ".cfg", ".sh",
+  ".py", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".c", ".cpp", ".h",
+  ".hpp", ".cs", ".swift", ".vue", ".svelte", ".sql", ".graphql",
+  ".gitignore", ".dockerfile", ".log", ".csv",
+]);
+
+export function getGuildArtifactFile(req: Request, res: Response): void {
+  try {
+    const filePath = typeof req.query.path === "string" ? req.query.path : "";
+    if (!filePath) {
+      res.status(400).json({ error: "path query parameter is required" });
+      return;
+    }
+
+    // Resolve to absolute and ensure it's within the project root (cwd).
+    // Use realpathSync after existence check to follow symlinks and prevent
+    // symlink-based path traversal attacks.
+    const projectRoot = resolve(process.cwd());
+    const absolute = resolve(projectRoot, filePath);
+    if (!absolute.startsWith(projectRoot + "/") && absolute !== projectRoot) {
+      res.status(403).json({ error: "Path outside project root" });
+      return;
+    }
+
+    if (!existsSync(absolute)) {
+      res.status(404).json({ error: "File not found" });
+      return;
+    }
+
+    // Follow symlinks and re-check containment
+    const realRoot = realpathSync(projectRoot);
+    const realAbsolute = realpathSync(absolute);
+    if (!realAbsolute.startsWith(realRoot + "/") && realAbsolute !== realRoot) {
+      res.status(403).json({ error: "Path outside project root" });
+      return;
+    }
+
+    const stat = statSync(absolute);
+    if (!stat.isFile()) {
+      res.status(400).json({ error: "Not a file" });
+      return;
+    }
+
+    // Size limit: 1MB
+    if (stat.size > 1024 * 1024) {
+      res.status(413).json({ error: "File too large (>1MB)" });
+      return;
+    }
+
+    const ext = extname(absolute).toLowerCase();
+    if (!SAFE_TEXT_EXTS.has(ext)) {
+      // Return metadata only for non-text files
+      res.json({ binary: true, size: stat.size, ext });
+      return;
+    }
+
+    const content = readFileSync(absolute, "utf-8");
+    res.json({ content, size: stat.size, ext });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── File Browser (workspace / memory / shared) ─────────────────
+
+// Browse agent workspace tree
+export function getAgentWorkspaceTree(req: Request, res: Response): void {
+  const dir = getAgentWorkspaceDir(p(req.params.id));
+  res.json(scanDirectory(dir));
+}
+
+// Read file from agent workspace
+export function getAgentWorkspaceFile(req: Request, res: Response): void {
+  const filePath = req.query.path as string;
+  if (!filePath) { res.status(400).json({ error: "path required" }); return; }
+  const result = safeReadFile(getAgentWorkspaceDir(p(req.params.id)), filePath);
+  if (!result) { res.status(404).json({ error: "File not found" }); return; }
+  res.json(result);
+}
+
+// Browse agent memory tree
+export function getAgentMemoryTree(req: Request, res: Response): void {
+  const dir = getAgentMemoryDir(p(req.params.id));
+  res.json(scanDirectory(dir));
+}
+
+// Read file from agent memory
+export function getAgentMemoryFile(req: Request, res: Response): void {
+  const filePath = req.query.path as string;
+  if (!filePath) { res.status(400).json({ error: "path required" }); return; }
+  const result = safeReadFile(getAgentMemoryDir(p(req.params.id)), filePath);
+  if (!result) { res.status(404).json({ error: "File not found" }); return; }
+  res.json(result);
+}
+
+// Browse group shared tree
+export function getGroupSharedTree(req: Request, res: Response): void {
+  const dir = getGroupSharedDir(p(req.params.id));
+  res.json(scanDirectory(dir));
+}
+
+// Read file from group shared
+export function getGroupSharedFile(req: Request, res: Response): void {
+  const filePath = req.query.path as string;
+  if (!filePath) { res.status(400).json({ error: "path required" }); return; }
+  const result = safeReadFile(getGroupSharedDir(p(req.params.id)), filePath);
+  if (!result) { res.status(404).json({ error: "File not found" }); return; }
+  res.json(result);
 }
 
 // ─── SSE Stream ─────────────────────────────────────────────────

@@ -144,7 +144,8 @@ describe("memoryManager v2", () => {
       },
     };
 
-    const mem = settleTaskMemory(AGENT_ID, task, result);
+    const mems = settleTaskMemory(AGENT_ID, task, result);
+    const mem = mems[0];
     expect(mem.summary).toContain("Added GET /users");
     expect(mem.sourceTaskId).toBe("task_abc");
     expect(mem.groupId).toBe("g_1");

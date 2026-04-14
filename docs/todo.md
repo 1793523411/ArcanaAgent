@@ -11,24 +11,29 @@
 
 ### P1 — 语义匹配（根治语义失效）
 
-- [ ] **Embedding 替换字面 overlap**：给 Agent 定义和任务各算向量，cosine 相似度替换 `assetScore + skillScore`
-  - 可选方案：本地 embedding（如 text-embedding-3-small）或服务端调用
+- [x] **Embedding 替换字面 overlap**：给 Agent 定义和任务各算向量，cosine 相似度替换 `assetScore + skillScore`
+  - 使用 `Xenova/multilingual-e5-small` 本地 embedding，复用项目已有的 HuggingFace 依赖
+  - `embeddingScorer.ts`：懒加载模型，缓存 Agent 向量，调度前 warmup → 同步 bidding 查缓存
+  - 语义匹配激活时吸收 asset(0.35) + skill(0.20) = 0.55 权重，assetBonus 自动关闭
   - 收益：根本解决"查资料" vs "langgraph 资料"语义等价但字面不匹配的问题
-- [ ] **LLM 评分器**：用轻量模型（haiku）根据 Agent systemPrompt + 任务描述打 0-10 分
+- [x] **LLM 评分器**：用轻量模型（haiku）根据 Agent systemPrompt + 任务描述打 0-10 分
   - 比 embedding 更懂语境，代价是每任务 +1 次 LLM 调用
   - 适合小组规模（<10 agents）
+  - 实现：`llmScorer.ts`，使用 deepseek-chat，10s 超时，缓存 per (agentId, taskId)
+  - 集成：bidding.ts 优先级 LLM > embedding > token，语义模式下 assetBonus 关闭
+  - 调度器和 routes 均在 bid 前 warmup，bid 后清缓存
 
 ### P2 — 打分公平性
 
 - [x] **负载衰减改为实时负载**：改为基于当前 working 状态 + 近期活跃度，不再用 lifetime 累计
 - [x] **资产打分 top-k 聚合**：取 top-3 资产得分平均，多个相关资产的 Agent 不再被忽略
-- [ ] **assetBonus 去重**：资产同时贡献 40% 权重和 +0.15 bonus，存在轻微双倍计分。P1 embedding 替换后自动解决
+- [x] **assetBonus 去重**：P1 embedding 激活时 assetBonus 自动关闭，语义匹配已吸收该信号
 
 ### P3 — 健壮性
 
-- [ ] **跨 group 去重锁**：Agent 属于多 group 时，两个调度器可能同时 autoBid，需加进程内锁
-- [ ] **中文分词**：当前按空格/标点切词，中文整句变成一个 token。若做了 embedding 则不需要
-- [ ] **Fallback 改为"不分配 + 通知"**：避免强制随机分配污染 successRate，给用户手动指派按钮
+- [x] **跨 group 去重锁**：`biddingInFlight` Set 防止同一任务并发竞标
+- [x] **中文分词**：`splitTokens()` CJK bigram 分词，已集成到所有竞标 tokenization 路径
+- [x] **Fallback 改为"不分配 + 通知"**：suggestedAgent > 唯一空闲 > stalled 通知（不再随机分配）
 
 ## Phase 5 前端体验打磨
 

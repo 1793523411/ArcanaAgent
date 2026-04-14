@@ -2,6 +2,24 @@ import type { Guild, Group, GuildAgent, GuildTask, AgentMemory, AgentStats, Agen
 
 const BASE = "/api";
 
+// ─── File Tree Types ──────────────────────────────────
+
+export interface FileTreeNode {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size?: number;
+  ext?: string;
+  children?: FileTreeNode[];
+}
+
+export interface FileReadResult {
+  content: string | null;
+  size: number;
+  ext: string;
+  binary: boolean;
+}
+
 // ─── AI Generation ────────────────────────────────────
 
 export async function generateGuildAgent(description: string): Promise<{
@@ -160,6 +178,34 @@ export async function removeAgentAsset(agentId: string, assetId: string): Promis
   if (!r.ok) throw new Error(await r.text());
 }
 
+export async function updateAgentAsset(
+  agentId: string,
+  assetId: string,
+  updates: { name?: string; uri?: string; description?: string; tags?: string[]; metadata?: Record<string, unknown> },
+): Promise<unknown> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/assets/${assetId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function updateGroupAssetApi(
+  groupId: string,
+  assetId: string,
+  updates: { name?: string; uri?: string; description?: string; tags?: string[]; metadata?: Record<string, unknown> },
+): Promise<unknown> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/assets/${assetId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 // ─── Tasks ─────────────────────────────────────────────
 
 export async function getGroupTasks(groupId: string): Promise<GuildTask[]> {
@@ -267,6 +313,12 @@ export async function getTaskWorkspaceRaw(groupId: string, taskId: string): Prom
   return r.text();
 }
 
+export async function readGuildArtifactFile(path: string): Promise<{ content?: string; binary?: boolean; size: number; ext: string }> {
+  const r = await fetch(`${BASE}/guild/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function getTaskWorkspaceParsed(groupId: string, taskId: string): Promise<{
   goal?: string;
   scope?: string;
@@ -276,6 +328,48 @@ export async function getTaskWorkspaceParsed(groupId: string, taskId: string): P
   handoffs?: Array<{ fromTaskId: string; content: string }>;
 }> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks/${taskId}/workspace?format=parsed`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Agent Workspace ──────────────────────────────────
+
+export async function getAgentWorkspaceTree(agentId: string): Promise<FileTreeNode[]> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/workspace/tree`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getAgentWorkspaceFile(agentId: string, path: string): Promise<FileReadResult> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/workspace/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Agent Memory ─────────────────────────────────────
+
+export async function getAgentMemoryTree(agentId: string): Promise<FileTreeNode[]> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/memory/tree`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getAgentMemoryFile(agentId: string, path: string): Promise<FileReadResult> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/memory/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// ─── Group Shared ─────────────────────────────────────
+
+export async function getGroupSharedTree(groupId: string): Promise<FileTreeNode[]> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/shared/tree`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getGroupSharedFile(groupId: string, path: string): Promise<FileReadResult> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/shared/file?path=${encodeURIComponent(path)}`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

@@ -29,6 +29,9 @@ export default function TaskBoard({
   const [assigningTask, setAssigningTask] = useState<string | null>(null);
   const [confirmingDeleteTask, setConfirmingDeleteTask] = useState<string | null>(null);
   const [collapsedReqs, setCollapsedReqs] = useState<Set<string>>(new Set());
+  const [collapseAllCompleted, setCollapseAllCompleted] = useState<boolean>(() => {
+    try { return localStorage.getItem("guild_completed_collapsed_all") === "true"; } catch { return false; }
+  });
 
   // Pre-compute which tasks are blocked by unsatisfied dependencies
   const blockedByDepsSet = useMemo(() => {
@@ -101,16 +104,55 @@ export default function TaskBoard({
           const colTasks = tasks
             .filter((t) => (col.key as string[]).includes(t.status))
             .sort((a, b) => taskSortTime(b) - taskSortTime(a));
+          const isCompletedCol = col.label === "已完成";
           return (
             <div key={col.label} className="flex flex-col min-h-0">
               <div
-                className="text-xs font-semibold px-2 py-1.5 rounded-t-lg shrink-0"
+                className="flex items-center justify-between text-xs font-semibold px-2 py-1.5 rounded-t-lg shrink-0"
                 style={{ background: "var(--color-surface)", color: "var(--color-text-muted)", borderBottom: "1px solid var(--color-border)" }}
               >
-                {col.label}
-                <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}>
-                  {colTasks.length}
+                <span>
+                  {col.label}
+                  <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}>
+                    {colTasks.length}
+                  </span>
                 </span>
+                {isCompletedCol && (
+                  <button
+                    className="flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)] transition-colors"
+                    style={{ color: "var(--color-text-muted)" }}
+                    onClick={() => {
+                      const next = !collapseAllCompleted;
+                      setCollapseAllCompleted(next);
+                      try { localStorage.setItem("guild_completed_collapsed_all", String(next)); } catch {}
+                      // Seed collapsedReqs so individual toggle still works afterward.
+                      if (next) {
+                        const reqIds = new Set<string>();
+                        // Requirements present in this column
+                        for (const t of colTasks) {
+                          if (t.kind === "requirement") reqIds.add(t.id);
+                        }
+                        // Ghost-req parents (subtasks whose parent req is elsewhere)
+                        const inColReqIds = new Set(colTasks.filter((t) => t.kind === "requirement").map((t) => t.id));
+                        for (const t of colTasks) {
+                          if (t.kind !== "requirement" && t.parentTaskId && !inColReqIds.has(t.parentTaskId)) {
+                            reqIds.add(t.parentTaskId);
+                          }
+                        }
+                        setCollapsedReqs((prev) => {
+                          const merged = new Set(prev);
+                          for (const id of reqIds) merged.add(id);
+                          return merged;
+                        });
+                      } else {
+                        setCollapsedReqs(new Set());
+                      }
+                    }}
+                    title={collapseAllCompleted ? "展开所有需求组" : "折叠所有需求组"}
+                  >
+                    {collapseAllCompleted ? "▼ 全部展开" : "▲ 全部折叠"}
+                  </button>
+                )}
               </div>
               <CompletedColumn
                 colTasks={colTasks}

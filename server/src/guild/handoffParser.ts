@@ -1,10 +1,11 @@
-import type { TaskHandoffArtifact } from "./types.js";
+import type { TaskHandoffArtifact, TaskHandoffMemory } from "./types.js";
 
 export interface ParsedHandoff {
   summary: string;
   artifacts: TaskHandoffArtifact[];
   inputsConsumed?: string[];
   openQuestions?: string[];
+  memories?: TaskHandoffMemory[];
 }
 
 const FENCE_RE = /```handoff\s*([\s\S]*?)```/i;
@@ -45,10 +46,23 @@ export function parseHandoffFromSummary(raw: string): ParsedHandoff | null {
     const openQuestions = Array.isArray(p.openQuestions)
       ? (p.openQuestions as unknown[]).filter((x): x is string => typeof x === "string")
       : undefined;
-    return { summary, artifacts, inputsConsumed, openQuestions };
+    const memories = Array.isArray(p.memories)
+      ? (p.memories as unknown[]).filter(isMemory)
+      : undefined;
+    return { summary, artifacts, inputsConsumed, openQuestions, memories };
   } catch {
     return { summary: compact(raw), artifacts: [] };
   }
+}
+
+function isMemory(v: unknown): v is TaskHandoffMemory {
+  if (typeof v !== "object" || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return (
+    (o.type === "knowledge" || o.type === "preference") &&
+    typeof o.title === "string" &&
+    typeof o.content === "string"
+  );
 }
 
 function isArtifact(v: unknown): v is TaskHandoffArtifact {

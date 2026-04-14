@@ -5,6 +5,8 @@ import type {
   CreateAgentParams, CreateGroupParams, AgentStats,
 } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
+import { invalidateAgentEmbedding } from "./embeddingScorer.js";
+import { invalidateAgentLlmScores } from "./llmScorer.js";
 
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const GUILD_DIR = join(DATA_DIR, "guild");
@@ -100,6 +102,7 @@ export function createGroup(params: CreateGroupParams): Group {
     updatedAt: now,
   };
   ensureDir(groupDir(id));
+  ensureDir(join(groupDir(id), "shared"));
   writeJSON(groupMetaPath(id), group);
   // Update guild
   guild.groups.push(id);
@@ -287,6 +290,7 @@ export function createAgent(params: CreateAgentParams): GuildAgent {
   ensureDir(join(memoryDir, "knowledge"));
   ensureDir(join(memoryDir, "preferences"));
   ensureDir(join(agentDir(id), "results"));
+  ensureDir(join(agentDir(id), "workspace"));
   writeJSON(agentProfilePath(id), agent);
 
   // Add to guild agent pool
@@ -316,6 +320,12 @@ export function listAgents(): GuildAgent[] {
 export function updateAgent(id: string, updates: Partial<Pick<GuildAgent, "name" | "description" | "icon" | "color" | "systemPrompt" | "allowedTools" | "modelId" | "status" | "currentTaskId">>): GuildAgent | null {
   const agent = getAgent(id);
   if (!agent) return null;
+  // Invalidate embedding cache if profile fields that affect scoring changed.
+  // Use `in` operator instead of truthiness to catch empty-string updates.
+  if ("name" in updates || "description" in updates || "systemPrompt" in updates) {
+    invalidateAgentEmbedding(id);
+    invalidateAgentLlmScores(id);
+  }
   Object.assign(agent, updates);
   agent.updatedAt = new Date().toISOString();
   writeJSON(agentProfilePath(id), agent);
@@ -335,6 +345,9 @@ export function updateAgentStats(id: string, statUpdates: Partial<AgentStats>): 
 export function deleteAgent(id: string): boolean {
   const agent = getAgent(id);
   if (!agent) return false;
+
+  invalidateAgentEmbedding(id);
+  invalidateAgentLlmScores(id);
 
   // Remove from group if assigned
   if (agent.groupId) {
@@ -443,6 +456,8 @@ export function getUnassignedAgents(): GuildAgent[] {
 export function addAsset(agentId: string, asset: Omit<AgentAsset, "id" | "addedAt">): AgentAsset | null {
   const agent = getAgent(agentId);
   if (!agent) return null;
+  invalidateAgentEmbedding(agentId);
+  invalidateAgentLlmScores(agentId);
   const now = new Date().toISOString();
   const newAsset: AgentAsset = {
     ...asset,
@@ -459,6 +474,8 @@ export function addAsset(agentId: string, asset: Omit<AgentAsset, "id" | "addedA
 export function removeAsset(agentId: string, assetId: string): boolean {
   const agent = getAgent(agentId);
   if (!agent) return false;
+  invalidateAgentEmbedding(agentId);
+  invalidateAgentLlmScores(agentId);
   const idx = agent.assets.findIndex((a) => a.id === assetId);
   if (idx < 0) return false;
   agent.assets.splice(idx, 1);
@@ -466,4 +483,55 @@ export function removeAsset(agentId: string, assetId: string): boolean {
   writeJSON(agentProfilePath(agentId), agent);
   guildEventBus.emit({ type: "agent_updated", agentId });
   return true;
+}
+
+export function updateAsset(agentId: string, assetId: string, updates: Partial<Pick<AgentAsset, "name" | "uri" | "description" | "tags" | "metadata">>): AgentAsset | null {
+  const agent = getAgent(agentId);
+  if (!agent) return null;
+  invalidateAgentEmbedding(agentId);
+  invalidateAgentLlmScores(agentId);
+  const idx = agent.assets.findIndex((a) => a.id === assetId);
+  if (idx < 0) return null;
+  const asset = agent.assets[idx];
+  if (updates.name !== undefined) asset.name = updates.name;
+  if (updates.uri !== undefined) asset.uri = updates.uri;
+  if (updates.description !== undefined) asset.description = updates.description;
+  if (updates.tags !== undefined) asset.tags = updates.tags;
+  if (updates.metadata !== undefined) asset.metadata = updates.metadata;
+  agent.updatedAt = new Date().toISOString();
+  writeJSON(agentProfilePath(agentId), agent);
+  guildEventBus.emit({ type: "agent_updated", agentId });
+  return asset;
+}
+
+export function updateGroupAsset(groupId: string, assetId: string, updates: Partial<Pick<AgentAsset, "name" | "uri" | "description" | "tags" | "metadata">>): AgentAsset | null {
+  const group = getGroup(groupId);
+  if (!group) return null;
+  if (!group.assets) return null;
+  const idx = group.assets.findIndex((a) => a.id === assetId);
+  if (idx < 0) return null;
+  const asset = group.assets[idx];
+  if (updates.name !== undefined) asset.name = updates.name;
+  if (updates.uri !== undefined) asset.uri = updates.uri;
+  if (updates.description !== undefined) asset.description = updates.description;
+  if (updates.tags !== undefined) asset.tags = updates.tags;
+  if (updates.metadata !== undefined) asset.metadata = updates.metadata;
+  group.updatedAt = new Date().toISOString();
+  writeJSON(groupMetaPath(groupId), group);
+  guildEventBus.emit({ type: "group_updated", groupId });
+  return asset;
+}
+
+// ─── Directory Helpers ─────────────────────────────────────────
+
+export function getAgentWorkspaceDir(agentId: string): string {
+  return join(agentDir(agentId), "workspace");
+}
+
+export function getAgentMemoryDir(agentId: string): string {
+  return join(agentDir(agentId), "memory");
+}
+
+export function getGroupSharedDir(groupId: string): string {
+  return join(groupDir(groupId), "shared");
 }

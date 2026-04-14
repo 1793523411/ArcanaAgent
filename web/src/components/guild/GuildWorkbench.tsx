@@ -9,6 +9,8 @@ import DetailPanel from "./DetailPanel";
 import CreateGroupModal from "./CreateGroupModal";
 import CreateAgentModal from "./CreateAgentModal";
 import LiveAgentPanel from "./LiveAgentPanel";
+import GuildArtifactPanel from "./GuildArtifactPanel";
+import GroupAssetPanel from "./GroupAssetPanel";
 import Select from "./Select";
 
 interface Props {
@@ -30,6 +32,8 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   const [selectedDetail, setSelectedDetail] = useState<DetailTarget>(null);
   const [viewingLogTaskId, setViewingLogTaskId] = useState<string | null>(null);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [showArtifacts, setShowArtifacts] = useState(false);
+  const [showGroupAssets, setShowGroupAssets] = useState(false);
   const [toast, setToast] = useState<{ text: string; type: "info" | "error" | "success" } | null>(null);
 
   const showToast = (text: string, type: "info" | "error" | "success" = "info") => {
@@ -61,20 +65,29 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   const [detailWidth, setDetailWidth] = useState(320);
   const [resizing, setResizing] = useState(false);
 
+  // Resizable artifact panel
+  const [artifactWidth, setArtifactWidth] = useState(340);
+  const [artifactResizing, setArtifactResizing] = useState(false);
+
   useEffect(() => {
     const isLeft = leftResizing;
     const isRight = resizing;
-    if (!isLeft && !isRight) return;
+    const isArtifact = artifactResizing;
+    if (!isLeft && !isRight && !isArtifact) return;
     const onMove = (e: MouseEvent) => {
       if (isLeft) {
         setLeftWidth(Math.min(400, Math.max(160, e.clientX)));
       }
-      if (isRight) {
+      if (isRight && !isArtifact) {
         const w = window.innerWidth - e.clientX;
         setDetailWidth(Math.min(600, Math.max(240, w)));
       }
+      if (isArtifact) {
+        const w = window.innerWidth - e.clientX;
+        setArtifactWidth(Math.min(700, Math.max(260, w)));
+      }
     };
-    const onUp = () => { setLeftResizing(false); setResizing(false); };
+    const onUp = () => { setLeftResizing(false); setResizing(false); setArtifactResizing(false); };
     document.body.style.userSelect = "none";
     document.body.style.cursor = "col-resize";
     window.addEventListener("mousemove", onMove);
@@ -85,7 +98,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };
-  }, [leftResizing, resizing]);
+  }, [leftResizing, resizing, artifactResizing]);
 
   // Prefer REST-backed guild.agents as the source of truth for identity and
   // group membership (groupId, updatedAt, etc). Only overlay live-execution
@@ -99,20 +112,21 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     return { ...a, status: sa.status, currentTaskId: sa.currentTaskId };
   });
 
-  // Merge stream tasks with REST tasks — only show tasks that belong to the
-  // selected group. Stream events can arrive for other groups too, and if we
-  // show them here the delete/assign flows would target the wrong group.
+  // Merge stream tasks with REST tasks — deduplicate by task id using a Map.
+  // REST is the baseline; SSE overwrites with fresher state for the same id.
+  // This prevents duplicates from the REST+SSE race on task creation.
   const mergedTasks = guild.selectedGroupId
     ? (() => {
         const gid = guild.selectedGroupId;
-        const base = guild.tasks.filter((t) => t.groupId === gid);
+        const map = new Map<string, typeof guild.tasks[number]>();
+        for (const t of guild.tasks) {
+          if (t.groupId === gid) map.set(t.id, t);
+        }
         for (const st of stream.tasks) {
           if (st.groupId && st.groupId !== gid) continue;
-          const idx = base.findIndex((t) => t.id === st.id);
-          if (idx >= 0) base[idx] = st;
-          else base.push(st);
+          map.set(st.id, st);
         }
-        return base;
+        return Array.from(map.values());
       })()
     : [];
 
@@ -254,6 +268,53 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               hint: m.provider,
             }))}
           />
+          {/* Group asset panel toggle */}
+          {guild.selectedGroupId && (
+            <button
+              onClick={() => setShowGroupAssets((v) => !v)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
+              style={{
+                background: showGroupAssets ? "var(--color-accent)" : "transparent",
+                color: showGroupAssets ? "white" : "var(--color-text-muted)",
+                border: showGroupAssets ? "none" : "1px solid var(--color-border)",
+              }}
+              title="管理小组资产"
+            >
+              🗂️ 资产
+            </button>
+          )}
+          {/* Artifact panel toggle */}
+          {guild.selectedGroupId && (
+            <button
+              onClick={() => setShowArtifacts((v) => !v)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors"
+              style={{
+                background: showArtifacts ? "var(--color-accent)" : "transparent",
+                color: showArtifacts ? "white" : "var(--color-text-muted)",
+                border: showArtifacts ? "none" : "1px solid var(--color-border)",
+              }}
+              title="查看产物文件"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="16" y1="13" x2="8" y2="13" />
+                <line x1="16" y1="17" x2="8" y2="17" />
+              </svg>
+              产物
+              {mergedTasks.filter((t) => t.result?.handoff?.artifacts?.length).length > 0 && (
+                <span
+                  className="text-[10px] px-1 rounded-full"
+                  style={{
+                    background: showArtifacts ? "rgba(255,255,255,0.25)" : "var(--color-accent-alpha)",
+                    color: showArtifacts ? "white" : "var(--color-accent)",
+                  }}
+                >
+                  {mergedTasks.reduce((n, t) => n + (t.result?.handoff?.artifacts?.length ?? 0), 0)}
+                </span>
+              )}
+            </button>
+          )}
           <button
             onClick={onClose}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs transition-colors hover:bg-[var(--color-surface-hover)]"
@@ -388,8 +449,34 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               setViewingLogTaskId(taskId);
             }}
             onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
+            onOpenWorkspace={() => {
+              setShowArtifacts(true);
+            }}
           />
         </div>
+
+        {/* Artifact panel (toggled, resizable) */}
+        {showArtifacts && (
+          <>
+            <div
+              className="w-1.5 shrink-0 cursor-col-resize hover:bg-[var(--color-accent)] transition-colors"
+              style={{ background: artifactResizing ? "var(--color-accent)" : "var(--color-border)" }}
+              onMouseDown={(e) => { e.preventDefault(); setArtifactResizing(true); }}
+            />
+            <div className="shrink-0 overflow-hidden flex flex-col" style={{ width: artifactWidth }}>
+              <GuildArtifactPanel
+                tasks={mergedTasks}
+                agents={mergedAgents}
+                groupId={guild.selectedGroupId}
+                onClose={() => setShowArtifacts(false)}
+                onSelectTask={(id) => {
+                  setSelectedDetail({ type: "task", id });
+                  setShowArtifacts(false);
+                }}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Modals */}
@@ -404,6 +491,15 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
           editAgent={editingAgent ? mergedAgents.find((a) => a.id === editingAgent) : undefined}
           onConfirm={(payload) => handleSaveAgent(payload as Parameters<typeof guild.createAgent>[0])}
           onClose={() => { setShowCreateAgent(false); setEditingAgent(null); }}
+        />
+      )}
+
+      {/* Group Asset Panel */}
+      {showGroupAssets && guild.selectedGroupId && (
+        <GroupAssetPanel
+          groupId={guild.selectedGroupId}
+          agents={mergedAgents}
+          onClose={() => setShowGroupAssets(false)}
         />
       )}
 

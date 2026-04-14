@@ -3,6 +3,7 @@ import type { GuildAgent, AgentAsset, AssetType } from "../../types/guild";
 import { generateGuildAgent } from "../../api/guild";
 import { getModels, type ModelInfo } from "../../api";
 import Select from "./Select";
+import { ASSET_TYPE_META, ASSET_TYPES } from "../../constants/guild";
 
 type CreatePayload = Omit<GuildAgent, "id" | "status" | "currentTaskId" | "createdAt" | "updatedAt" | "stats">;
 
@@ -12,18 +13,11 @@ interface Props {
   onClose: () => void;
 }
 
-const ASSET_TYPE_OPTIONS: AssetType[] = ["repo", "document", "api", "database", "prompt", "config", "mcp_server", "custom"];
+const ASSET_TYPE_OPTIONS: AssetType[] = ASSET_TYPES;
 
-const ASSET_TYPE_LABEL: Record<AssetType, string> = {
-  repo: "代码库",
-  document: "文档",
-  api: "API",
-  database: "数据库",
-  prompt: "提示词",
-  config: "配置",
-  mcp_server: "MCP服务",
-  custom: "自定义",
-};
+const ASSET_TYPE_LABEL: Record<AssetType, string> = Object.fromEntries(
+  ASSET_TYPES.map((t) => [t, ASSET_TYPE_META[t].label])
+) as Record<AssetType, string>;
 
 export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Props) {
   const isEdit = !!editAgent;
@@ -233,19 +227,38 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
 
           {/* Assets */}
           <div>
-            <label className="block text-xs mb-2" style={{ color: "var(--color-text-muted)" }}>资产（可选）</label>
+            <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>资产（可选）</label>
+            <p className="text-[11px] mb-2" style={{ color: "var(--color-text-muted)" }}>
+              资产是 Agent 执行任务时可访问的资源（仓库 / 文档 / API 等），系统会根据资产内容判断任务匹配度。
+            </p>
             {assets.length > 0 && (
-              <div className="space-y-1.5 mb-2">
-                {assets.map((a, i) => (
-                  <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
-                    <span className="font-medium" style={{ color: "var(--color-accent)" }}>{ASSET_TYPE_LABEL[a.type]}</span>
-                    <span className="flex-1 truncate" style={{ color: "var(--color-text)" }}>{a.name}</span>
-                    <span className="truncate max-w-[120px]" style={{ color: "var(--color-text-muted)" }}>{a.uri}</span>
-                    <button onClick={() => handleRemoveAsset(i)} style={{ color: "var(--color-error-text)" }} className="shrink-0">✕</button>
-                  </div>
-                ))}
+              <div className="mb-2">
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <span className="text-[11px] font-semibold" style={{ color: "var(--color-text-muted)" }}>已添加资产</span>
+                  <span
+                    className="text-[10px] px-1.5 py-0.5 rounded-full font-bold"
+                    style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                  >
+                    {assets.length}
+                  </span>
+                </div>
+                <div className="space-y-1.5">
+                  {assets.map((a, i) => (
+                    <div key={i} className="flex items-center gap-2 px-2 py-1.5 rounded-lg text-xs" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
+                      <span className="font-medium" style={{ color: "var(--color-accent)" }}>{ASSET_TYPE_LABEL[a.type]}</span>
+                      <span className="flex-1 truncate" style={{ color: "var(--color-text)" }}>{a.name}</span>
+                      <span className="truncate max-w-[120px]" style={{ color: "var(--color-text-muted)" }}>{a.uri}</span>
+                      <button onClick={() => handleRemoveAsset(i)} style={{ color: "var(--color-error-text)" }} className="shrink-0">✕</button>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
+            <div className="mb-1">
+              <span className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                {assets.length === 0 ? "添加第一个资产" : "继续添加资产"}
+              </span>
+            </div>
             <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
               <div className="flex gap-2">
                 <Select<AssetType>
@@ -261,13 +274,16 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
                   placeholder="资产名称"
                 />
               </div>
+              <p className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+                {ASSET_TYPE_META[assetType].description}
+              </p>
               <div className="flex gap-2">
                 <input
                   className="flex-1 px-2 py-1.5 rounded text-xs"
                   style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
                   value={assetUri}
                   onChange={(e) => setAssetUri(e.target.value)}
-                  placeholder="资产 URI / 路径"
+                  placeholder={ASSET_TYPE_META[assetType].placeholder}
                 />
                 <button
                   className="px-3 py-1.5 rounded text-xs text-white"
@@ -278,6 +294,11 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
                   添加
                 </button>
               </div>
+              {assets.length === 0 && (
+                <p className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                  可添加多个资产，点击"添加"后继续填写下一个
+                </p>
+              )}
               <input
                 className="w-full px-2 py-1.5 rounded text-xs"
                 style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}

@@ -342,6 +342,32 @@ export async function planRequirement(
     return { ok: false, reason: "Planner failed to produce valid JSON", raw };
   }
 
+  // Empty subtasks means the LLM couldn't decompose (e.g. insufficient info).
+  // Surface openQuestions/risks and downgrade to adhoc instead of claiming success with 0 subtasks.
+  if (parsed.subtasks.length === 0) {
+    const questions = parsed.openQuestions ?? [];
+    const risks = parsed.risks ?? [];
+    const clarification = [...questions, ...risks].join("；") || "信息不足，无法拆解";
+
+    updateTask(groupId, requirement.id, { kind: "adhoc", status: "open" });
+    appendDecision(groupId, requirement.id, group.leadAgentId ?? "lead", `拆解产出 0 个子任务，降级为 adhoc：${clarification}`);
+    setWorkspaceStatus(groupId, requirement.id, "blocked");
+
+    const emptyMsg = `\n⚠ 拆解产出 0 个子任务，需要澄清：\n${clarification}\n\n已降级为 adhoc 任务。\n`;
+    guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: emptyMsg });
+    logText(emptyMsg);
+    guildEventBus.emit({
+      type: "agent_plan",
+      agentId: leadAgentId,
+      taskId: requirement.id,
+      phase: "planner_failed",
+      payload: { reason: "empty_subtasks", openQuestions: questions, risks },
+    });
+    logPlan("planner_failed", { reason: "empty_subtasks", openQuestions: questions, risks });
+    finalizeExecutionLog(groupId, requirement.id, "failed");
+    return { ok: false, reason: `Empty subtasks: ${clarification}`, raw, result: parsed };
+  }
+
   // Persist subtasks in definition order so dependsOn indices line up.
   const createdSubtasks: GuildTask[] = [];
   const idByIndex = new Map<number, string>();

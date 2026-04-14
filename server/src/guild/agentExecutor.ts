@@ -1,6 +1,8 @@
+import { mkdirSync, existsSync } from "fs";
+import { join } from "path";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { GuildAgent, GuildTask, TaskResult, GuildEvent } from "./types.js";
-import { getAgent, updateAgent, updateAgentStats } from "./guildManager.js";
+import { getAgent, updateAgent, updateAgentStats, getAgentWorkspaceDir, getGroupSharedDir } from "./guildManager.js";
 import { completeTask, failTask, getTask, updateTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
 import { searchRelevant, settleExperience } from "./memoryManager.js";
 import { resolveAssetContext } from "./assetResolver.js";
@@ -127,6 +129,14 @@ function buildGuildAgentPrompt(
     sections.push(`Acceptance: ${task.acceptanceCriteria}`);
   }
 
+  // Workspace paths — tell the agent where to write files
+  const wsPath = getAgentWorkspaceDir(agent.id);
+  const sharedPath = join(getGroupSharedDir(groupId), agent.id);
+  sections.push(`\n## Your Workspace`);
+  sections.push(`- 你的私有工作空间: \`${wsPath}\` — 在这里创建和编辑工作文件`);
+  sections.push(`- 小组共享目录: \`${sharedPath}\` — 希望小组成员看到的产物放在这里`);
+  sections.push(`- 写入共享目录的文件会自动对小组可见`);
+
   sections.push(`\n## Instructions`);
   sections.push(`完成上面的任务。如果任务包含不属于你领域的工作，**不要硬做** — 在 Handoff 中说明"哪部分需要谁"，Lead 会补发新子任务。`);
   sections.push(``);
@@ -137,10 +147,18 @@ function buildGuildAgentPrompt(
   sections.push(`  "artifacts": [`);
   sections.push(`    { "kind": "commit|file|url|note", "ref": "具体引用", "description": "可选说明" }`);
   sections.push(`  ],`);
+  sections.push(`  "memories": [`);
+  sections.push(`    { "type": "knowledge|preference", "title": "短标题", "content": "具体内容", "tags": ["标签"] }`);
+  sections.push(`  ],`);
   sections.push(`  "inputsConsumed": ["上游 handoff/文件/决策"],`);
   sections.push(`  "openQuestions": ["留给下游的问题"]`);
   sections.push(`}`);
   sections.push("```");
+  sections.push(`memories 用于记录你在本次任务中学到的重要信息：`);
+  sections.push(`- knowledge: 领域知识、技术要点、API 用法、架构细节等可复用的事实`);
+  sections.push(`- preference: 你发现的有效工作方式、工具偏好、代码风格等行为偏好`);
+  sections.push(`不需要每次都写 memories，只在确实学到新东西时添加。experience 类型会自动从任务结果生成。`);
+  sections.push(``);
   sections.push(`Handoff 块之外的内容仍可以自由书写（解释、思考、代码片段），但 JSON 必须是有效的。`);
 
   return sections.join("\n");
@@ -158,6 +176,12 @@ export async function executeAgentTask(
 
   const task = getTask(groupId, taskId);
   if (!task) throw new Error(`Task ${taskId} not found in group ${groupId}`);
+
+  // Ensure workspace directories exist before execution
+  const wsDir = getAgentWorkspaceDir(agentId);
+  const sharedDir = join(getGroupSharedDir(groupId), agentId);
+  if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
+  if (!existsSync(sharedDir)) mkdirSync(sharedDir, { recursive: true });
 
   const key = execKey(groupId, taskId);
   activeExecutions.add(key);
@@ -281,6 +305,7 @@ export async function executeAgentTask(
         artifacts: parsedHandoff.artifacts ?? [],
         inputsConsumed: parsedHandoff.inputsConsumed,
         openQuestions: parsedHandoff.openQuestions,
+        memories: parsedHandoff.memories,
         createdAt: new Date().toISOString(),
       };
     }
@@ -334,8 +359,8 @@ export async function executeAgentTask(
     }
 
     // Settle memory
-    const memory = settleExperience(agentId, task, result);
-    result.memoryCreated = [memory.id];
+    const memories = settleExperience(agentId, task, result);
+    result.memoryCreated = memories.map((m) => m.id);
 
     // Update agent stats
     const stats = agent.stats;

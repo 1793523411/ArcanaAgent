@@ -18,6 +18,11 @@ interface Props {
   selected?: boolean;
 }
 
+const ASSET_TYPE_ICON: Record<string, string> = {
+  repo: "📦", document: "📄", api: "🔌", database: "🗄️",
+  prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
+};
+
 export default function AgentCard({ agent, onClick, selected }: Props) {
   return (
     <div
@@ -32,6 +37,16 @@ export default function AgentCard({ agent, onClick, selected }: Props) {
       <div className="flex-1 min-w-0">
         <div className="text-sm font-medium truncate" style={{ color: agent.color }}>{agent.name}</div>
         <div className="text-xs truncate" style={{ color: "var(--color-text-muted)" }}>{agent.description}</div>
+        {agent.assets.length > 0 && (
+          <div className="flex items-center gap-1 mt-0.5">
+            {[...new Set(agent.assets.map((a) => a.type))].slice(0, 4).map((t) => (
+              <span key={t} className="text-[10px]" title={t}>{ASSET_TYPE_ICON[t] ?? "📎"}</span>
+            ))}
+            <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
+              {agent.assets.length} 项资产
+            </span>
+          </div>
+        )}
       </div>
       <span
         className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium"

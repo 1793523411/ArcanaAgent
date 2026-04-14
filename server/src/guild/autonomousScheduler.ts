@@ -1,6 +1,6 @@
 import type { GuildTask, Group, TaskStatus } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
-import { listGroups } from "./guildManager.js";
+import { listGroups, getGroupAgents } from "./guildManager.js";
 import { getGroupTasks, getTask, findTaskGroup } from "./taskBoard.js";
 import { autoBid } from "./bidding.js";
 import { executeAgentTask } from "./agentExecutor.js";
@@ -9,6 +9,8 @@ import { serverLogger } from "../lib/logger.js";
 import { appendSchedulerDispatched, appendSchedulerStalled } from "./schedulerLogStore.js";
 import { planRequirement } from "./planner.js";
 import { areDepsReady } from "./taskBoard.js";
+import { warmBiddingEmbeddings, clearTaskEmbeddingCache, isEmbeddingAvailable, preloadEmbeddingModel } from "./embeddingScorer.js";
+import { warmLlmScores, clearTaskLlmCache } from "./llmScorer.js";
 
 interface SchedulerDeps {
   listGroupsFn?: () => Group[];
@@ -53,6 +55,10 @@ export class GuildAutonomousScheduler {
     if (this.started) return;
     this.started = true;
     guildEventBus.onAll(this.onEventBound);
+
+    // Start loading the embedding model in the background so semantic scoring
+    // is available for subsequent dispatch cycles (first cycle uses token fallback).
+    preloadEmbeddingModel();
 
     // Recover orphaned tasks/agents from prior process death before scheduling.
     for (const group of this.listGroupsFn()) {
@@ -194,13 +200,46 @@ export class GuildAutonomousScheduler {
         return areDepsReady(groupId, t);
       });
 
+      // Pre-warm embeddings for all eligible tasks so the sync bidding path
+      // can use semantic similarity instead of token overlap.
+      // Only runs when the embedding model is already loaded — the first dispatch
+      // cycle uses token matching; subsequent cycles get semantic scoring.
+      const groupAgents = getGroupAgents(groupId);
+      if (isEmbeddingAvailable()) {
+        for (const candidate of eligible) {
+          try {
+            await warmBiddingEmbeddings(groupAgents, candidate);
+          } catch {
+            // Embedding warmup is best-effort; token fallback will be used.
+          }
+        }
+      }
+
+      // Pre-warm LLM scores for small groups (<10 agents).
+      // LLM scoring is more context-aware than embeddings but adds latency,
+      // so it's only enabled for small groups where the extra calls are tolerable.
+      // Must await before the bid loop so getCachedLlmScore() can return results.
+      for (const candidate of eligible) {
+        try {
+          await warmLlmScores(groupAgents, candidate);
+        } catch {
+          // LLM scoring is best-effort; embedding/token fallback will be used.
+        }
+      }
+
       let assignedAny = false;
+      const warmedTaskIds = isEmbeddingAvailable() ? eligible.map(t => t.id) : [];
+      try {
       for (const candidate of eligible) {
         if (!this.started) break;
         const task = this.getTaskFn(groupId, candidate.id);
         if (!task || (task.status !== "open" && task.status !== "bidding")) continue;
         const winner = this.autoBidFn(groupId, task);
-        if (!winner) continue;
+        if (!winner) {
+          clearTaskEmbeddingCache(candidate.id);
+          clearTaskLlmCache(candidate.id);
+          continue;
+        }
         assignedAny = true;
         const atDispatched = new Date().toISOString();
         const schedulerLogEntry = appendSchedulerDispatched(
@@ -220,6 +259,8 @@ export class GuildAutonomousScheduler {
           confidence: winner.confidence,
           schedulerLogEntry,
         });
+        clearTaskEmbeddingCache(task.id);
+        clearTaskLlmCache(task.id);
         this.executeAgentTaskFn(winner.agentId, groupId, task.id).catch((e) => {
           serverLogger.error("[guild] autonomous scheduler execution failed", {
             groupId,
@@ -241,6 +282,10 @@ export class GuildAutonomousScheduler {
           message: stallMessage,
           schedulerLogEntry,
         });
+      }
+      } finally {
+        // Sweep any orphaned task embedding caches (e.g. from early break)
+        for (const tid of warmedTaskIds) clearTaskEmbeddingCache(tid);
       }
     } finally {
       this.runningGroups.delete(groupId);

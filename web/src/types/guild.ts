@@ -113,6 +113,12 @@ export interface ScoreBreakdown {
   loadPenalty: number;
   threshold: number;
   final: number;
+  /** Semantic embedding similarity [0,1]. Present when embedding model is active. */
+  embedding?: number;
+  /** LLM scorer result [0,10]. Present when LLM scoring is active (small groups). */
+  llmScore?: number;
+  /** LLM scorer rationale. */
+  llmReason?: string;
 }
 
 export interface TaskBid {

@@ -242,7 +242,7 @@ export function settleTaskMemory(
   agentId: string,
   task: GuildTask,
   result: TaskResult,
-): AgentMemory {
+): AgentMemory[] {
   const tags = [
     ...task.title.split(/\s+/).filter((w) => w.length > 2).slice(0, 5),
     task.priority,
@@ -285,7 +285,7 @@ export function settleTaskMemory(
     contentLines.push(result.agentNotes);
   }
 
-  return saveMemory(agentId, {
+  const experienceMemory = saveMemory(agentId, {
     type: "experience",
     title: `Completed: ${task.title}`,
     summary,
@@ -295,6 +295,26 @@ export function settleTaskMemory(
     groupId: task.groupId,
     strength: 1,
   });
+
+  const created: AgentMemory[] = [experienceMemory];
+
+  // Create knowledge/preference memories declared in handoff
+  if (result.handoff?.memories) {
+    for (const m of result.handoff.memories) {
+      const mem = saveMemory(agentId, {
+        type: m.type,
+        title: m.title,
+        content: m.content,
+        tags: [...(m.tags ?? []), task.groupId],
+        sourceTaskId: task.id,
+        groupId: task.groupId,
+        strength: 1,
+      });
+      created.push(mem);
+    }
+  }
+
+  return created;
 }
 
 /** Back-compat alias — old call sites still use `settleExperience`. */
