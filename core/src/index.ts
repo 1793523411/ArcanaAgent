@@ -19,7 +19,7 @@ export type { StoredMessage } from "./lib/tokenizer.js";
 
 export { buildPlanningPrelude, extractPlanSteps } from "./agent/planning.js";
 export type { PlanStep } from "./agent/planning.js";
-export { createRuntimePlanSteps, summarizeToolEvidence, applyEvidenceToPlan, computeCurrentStep, forceCompletePlan } from "./agent/planTracker.js";
+export { createRuntimePlanSteps, summarizeToolEvidence, isErrorEvidence, applyEvidenceToPlan, computeCurrentStep, forceCompletePlan } from "./agent/planTracker.js";
 export type { RuntimePlanStep } from "./agent/planTracker.js";
 
 export { pruneConversationIfNeeded } from "./agent/pruning.js";

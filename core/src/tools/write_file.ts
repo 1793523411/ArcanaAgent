@@ -1,6 +1,6 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
-import { writeFileSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, mkdirSync, existsSync, appendFileSync } from "fs";
 import { dirname, resolve } from "path";
 
 const MAX_WRITE_SIZE = 1024 * 1024;
@@ -33,16 +33,15 @@ export const write_file = tool(
     }
 
     try {
-      const dir = dirname(input.path);
+      const dir = dirname(resolvedPath);
       if (!existsSync(dir)) {
         mkdirSync(dir, { recursive: true });
       }
 
       if (input.append) {
-        const { appendFileSync } = require("fs") as typeof import("fs");
-        appendFileSync(input.path, content, "utf-8");
+        appendFileSync(resolvedPath, content, "utf-8");
       } else {
-        writeFileSync(input.path, content, "utf-8");
+        writeFileSync(resolvedPath, content, "utf-8");
       }
 
       const lines = content.split("\n").length;

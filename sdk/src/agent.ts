@@ -161,7 +161,8 @@ function createPlanContext(
     },
     applyEvidence(toolName: string | undefined, result: string) {
       if (!ctx.hasPlan()) return;
-      ctx.steps = applyEvidenceToPlan(ctx.steps, summarizeToolEvidence(toolName, result));
+      const isError = result.startsWith("[error]") || result.startsWith("Error:");
+      ctx.steps = applyEvidenceToPlan(ctx.steps, summarizeToolEvidence(toolName, result, isError));
       ctx.currentStep = computeCurrentStep(ctx.steps);
     },
     forceComplete() {

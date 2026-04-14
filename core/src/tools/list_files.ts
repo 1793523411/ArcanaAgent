@@ -160,15 +160,21 @@ function collectFiles(
     return { entries, totalFound };
   }
 
+  // Pre-compute isDirectory for each item to avoid O(n log n) statSync calls in sort
+  const isDirMap = new Map<string, boolean>();
+  for (const item of items) {
+    try {
+      isDirMap.set(item, statSync(join(currentPath, item)).isDirectory());
+    } catch {
+      isDirMap.set(item, false);
+    }
+  }
+
   // Sort: directories first, then alphabetically
   items.sort((a, b) => {
-    try {
-      const aIsDir = statSync(join(currentPath, a)).isDirectory();
-      const bIsDir = statSync(join(currentPath, b)).isDirectory();
-      if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
-    } catch {
-      // ignore stat errors
-    }
+    const aIsDir = isDirMap.get(a) ?? false;
+    const bIsDir = isDirMap.get(b) ?? false;
+    if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
     return a.localeCompare(b);
   });
 
@@ -181,15 +187,8 @@ function collectFiles(
     }
 
     const fullPath = join(currentPath, item);
-    let stat;
-    try {
-      stat = statSync(fullPath);
-    } catch {
-      continue;
-    }
-
+    const isDir = isDirMap.get(item) ?? false;
     const relPath = relative(basePath, fullPath);
-    const isDir = stat.isDirectory();
 
     if (pattern) {
       // For directories, include them if they could contain matches
