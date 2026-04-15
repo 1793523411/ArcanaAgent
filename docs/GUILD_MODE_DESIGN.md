@@ -1112,3 +1112,91 @@ Agent 在执行任务时，其 system prompt 中包含自我认知信息：
 | **Memory Settlement** | 记忆沉淀，任务完成后自动提取经验 |
 | **Growth Track** | 成长轨迹，Agent 的履历和经验积累 |
 | **Shared Memory Pool** | 共享记忆池，Group 级别的知识共享 |
+| **Pipeline Template** | 固定流水线模板，跳过 Planner LLM 直接展开为 subtask DAG |
+
+---
+
+## 附录 B：固定 Pipeline 模板
+
+当一个工作流的拆解方式是固定的（「永远这样」），没必要每次都让 Planner LLM 重拆一遍。Pipeline 模板让用户把 subtask DAG 预定义好，一次创建就展开成真实子任务，交给正常的 bidding / scheduling 路径执行。
+
+### 适用场景
+
+- 拆解方式稳定的工作流（抓页面→拆知识点→出图→上传 CDN…）
+- 不想把预算花在 Planner 的重复调用上
+- 希望执行路径「可复现、可追溯、可版本化」
+
+不确定怎么拆的场景继续用 `kind: "requirement"` 走 Planner；两种模式共存，不互相替代。
+
+### 模板格式
+
+JSON 文件放在 `data/guild/pipelines/*.json`，按需扫描（无需重启）：
+
+```json
+{
+  "id": "knowledge-point",
+  "name": "知识点图文生成",
+  "description": "抓页面→拆知识点→出图→上传CDN→题目→汇总",
+  "inputs": [
+    { "name": "url", "label": "目标网页 URL", "required": true }
+  ],
+  "steps": [
+    { "title": "抓取规划页面", "description": "用 playwright 抓取 ${url}", "suggestedSkills": ["web-capture"], "dependsOn": [] },
+    { "title": "拆分知识点", "description": "...", "dependsOn": [0] },
+    { "title": "生成配图", "description": "...", "dependsOn": [1] },
+    { "title": "组装输出", "description": "...", "dependsOn": [1, 2] }
+  ]
+}
+```
+
+字段要点：
+
+- `inputs[].required` 为 `true` 时创建任务前必须填值；`inputs[].default` 为可选默认值
+- `steps[].dependsOn` 是前面 step 的数组下标（从 0 开始），形成 DAG；展开时映射成真实 task id
+- `steps[].title` / `description` / `acceptanceCriteria` 支持 `${varName}` 变量替换
+
+### 数据流
+
+```
+用户选模板 + 填 inputs
+   ▼
+POST /api/guild/groups/:groupId/tasks/from-pipeline
+   ▼
+createTask(kind:"pipeline")        ← parent，记录 pipelineId / pipelineInputs
+   ▼
+expandPipeline()                   ← 无 LLM 调用
+   ├─ validateInputs / withDefaults
+   ├─ substituteVars 逐步替换 ${var}
+   ├─ createTask(kind:"subtask") × N，dependsOn 按下标映射到真实 id
+   └─ 写 workspace.plan / scope / decisions
+   ▼
+Scheduler 正常竞标分派 subtask
+   ▼
+子任务全部结束 → rollupParentRequirement 把 pipeline 父节点置为 completed / failed
+```
+
+### 与 Planner 的边界
+
+| 场景 | 选择 |
+|------|------|
+| 每次拆法都一样 | Pipeline（省 LLM，稳定可追溯） |
+| 需要动态判断怎么拆 | Planner（`kind: "requirement"`） |
+| 人工明确的一步任务 | `adhoc` |
+
+Scheduler / bidding 将 `kind === "pipeline"` 与 `kind === "requirement"` 一并跳过竞标——父节点不被执行，只作为编排容器存在。
+
+### API
+
+- `GET /api/guild/pipelines` — 列出所有模板
+- `GET /api/guild/pipelines/:id` — 取单个模板
+- `POST /api/guild/groups/:groupId/tasks/from-pipeline` — body: `{pipelineId, inputs, title?, priority?}`
+- 通用 `POST /api/guild/groups/:groupId/tasks` **拒绝** `kind: "pipeline"`，避免创建不展开的孤儿父节点
+
+### 当前状态
+
+- ✅ 模板存储 / 展开 / 变量替换 / 校验
+- ✅ `kind: "pipeline"` 类型贯通，父节点跳过竞标、自动 rollup
+- ✅ 路由（list / get / **create / update / delete** / from-pipeline）
+- ✅ UI：创建侧的 Tab + inputs 表单；管理侧的模板编辑器 Modal
+- ⏳ **条件分支 / 循环 / 失败重试** — 见 [`PIPELINE_CONTROL_FLOW_DESIGN.md`](./PIPELINE_CONTROL_FLOW_DESIGN.md)（设计草稿，未实现）
+- ⏳ 模板版本化与审计（未动工）

@@ -189,7 +189,9 @@ export function calculateConfidence(agent: GuildAgent, task: GuildTask): number 
 /** Single agent evaluates a task and produces a bid */
 export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null {
   // Requirement-kind tasks are routed to the planner, never bid on.
-  if (biddingConfig.skipParentRequirement && task.kind === "requirement") return null;
+  if (biddingConfig.skipParentRequirement && (task.kind === "requirement" || task.kind === "pipeline")) return null;
+  // Retry backoff gate — task is technically open but must wait.
+  if (task.retryAt && Date.parse(task.retryAt) > Date.now()) return null;
   // Subtasks with unmet deps are not biddable yet.
   if (!areDepsReady(task.groupId, task)) return null;
   // Skip if agent is busy
@@ -318,7 +320,8 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
     return null;
   }
   // Never bid on requirement-kind tasks — they belong to the planner.
-  if (biddingConfig.skipParentRequirement && fresh.kind === "requirement") return null;
+  if (biddingConfig.skipParentRequirement && (fresh.kind === "requirement" || fresh.kind === "pipeline")) return null;
+  if (fresh.retryAt && Date.parse(fresh.retryAt) > Date.now()) return null;
   // Subtasks with unmet deps must wait for upstream completion.
   if (!areDepsReady(groupId, fresh)) return null;
 

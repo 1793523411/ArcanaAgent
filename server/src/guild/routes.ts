@@ -24,6 +24,7 @@ import { guildEventBus } from "./eventBus.js";
 import type { GuildEvent } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
 import { clearSchedulerLog, getSchedulerLog } from "./schedulerLogStore.js";
+import { listPipelines, getPipeline, expandPipeline, savePipeline, deletePipeline, validatePipeline, validateInputs } from "./pipelines.js";
 
 /** Safely extract a single string from Express 5 params (string | string[]) */
 function p(val: string | string[] | undefined): string {
@@ -260,11 +261,111 @@ export function postGroupTask(req: Request, res: Response): void {
       res.status(400).json({ error: "title and description are required" });
       return;
     }
+    if (req.body.kind === "pipeline") {
+      res.status(400).json({
+        error: "Use POST /api/guild/groups/:groupId/tasks/from-pipeline to create pipeline tasks",
+      });
+      return;
+    }
     const task = createTask(groupId, req.body);
     // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
     // to avoid double autoBid / race with in_progress tasks.
 
     res.status(201).json(task);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── Pipelines ──────────────────────────────────────────────────
+
+export function getPipelineList(_req: Request, res: Response): void {
+  try {
+    res.json(listPipelines());
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function getPipelineById(req: Request, res: Response): void {
+  try {
+    const tpl = getPipeline(p(req.params.id));
+    if (!tpl) { res.status(404).json({ error: "Pipeline not found" }); return; }
+    res.json(tpl);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function postPipeline(req: Request, res: Response): void {
+  try {
+    const body = req.body;
+    const errs = validatePipeline(body);
+    if (errs.length > 0) { res.status(400).json({ errors: errs }); return; }
+    const out = savePipeline(body);
+    if (!out.ok) { res.status(400).json({ error: out.reason, errors: out.errors }); return; }
+    res.status(201).json(out.template);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function putPipeline(req: Request, res: Response): void {
+  try {
+    const id = p(req.params.id);
+    const out = savePipeline(req.body, { expectedId: id, allowOverwrite: true });
+    if (!out.ok) { res.status(400).json({ error: out.reason, errors: out.errors }); return; }
+    res.json(out.template);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function deletePipelineById(req: Request, res: Response): void {
+  try {
+    const ok = deletePipeline(p(req.params.id));
+    if (!ok) { res.status(404).json({ error: "Pipeline not found" }); return; }
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+export function postGroupTaskFromPipeline(req: Request, res: Response): void {
+  try {
+    const groupId = p(req.params.groupId);
+    const { pipelineId, inputs = {}, title, description, priority, createdBy } = req.body ?? {};
+    if (!pipelineId) { res.status(400).json({ error: "pipelineId is required" }); return; }
+    const tpl = getPipeline(String(pipelineId));
+    if (!tpl) { res.status(404).json({ error: "Pipeline not found" }); return; }
+
+    if (!Array.isArray(tpl.steps) || tpl.steps.length === 0) {
+      res.status(400).json({ error: "Pipeline template has no steps" });
+      return;
+    }
+    const missing = validateInputs(tpl, inputs);
+    if (missing.length > 0) {
+      res.status(400).json({ error: `Missing required inputs: ${missing.join(", ")}` });
+      return;
+    }
+
+    const parent = createTask(groupId, {
+      title: title || tpl.name,
+      description: description || tpl.description || `Pipeline: ${tpl.name}`,
+      kind: "pipeline",
+      priority,
+      createdBy,
+      pipelineId: tpl.id,
+      pipelineInputs: inputs,
+    });
+
+    const outcome = expandPipeline(groupId, parent, tpl, inputs);
+    if (!outcome.ok) {
+      res.status(400).json({ error: outcome.reason ?? "Failed to expand pipeline", task: parent });
+      return;
+    }
+    const refreshed = getTask(groupId, parent.id);
+    res.status(201).json({ task: refreshed ?? parent, subtaskIds: outcome.subtaskIds });
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }

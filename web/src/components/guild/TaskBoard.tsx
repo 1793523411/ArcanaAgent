@@ -10,6 +10,12 @@ interface Props {
   selectedTaskId: string | null;
   onSelectTask: (id: string) => void;
   onCreateTask: (text: string, priority: GuildTask["priority"], kind: NonNullable<GuildTask["kind"]>) => void;
+  onCreateTaskFromPipeline?: (payload: {
+    pipelineId: string;
+    inputs: Record<string, string>;
+    priority: GuildTask["priority"];
+    title?: string;
+  }) => void;
   onAutoBid: (taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
   onAssignTask: (taskId: string, agentId: string) => void;
@@ -24,7 +30,7 @@ const COLUMNS: { key: GuildTask["status"][]; label: string }[] = [
 
 export default function TaskBoard({
   tasks, agents, groupAgentIds, selectedTaskId,
-  onSelectTask, onCreateTask, onAutoBid, onDeleteTask, onAssignTask, creating,
+  onSelectTask, onCreateTask, onCreateTaskFromPipeline, onAutoBid, onDeleteTask, onAssignTask, creating,
 }: Props) {
   const [assigningTask, setAssigningTask] = useState<string | null>(null);
   const [confirmingDeleteTask, setConfirmingDeleteTask] = useState<string | null>(null);
@@ -92,7 +98,7 @@ export default function TaskBoard({
             )}
           </div>
         </div>
-        <InstructionInput onSubmit={onCreateTask} loading={creating} showPriority />
+        <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority />
       </div>
     );
   }
@@ -178,7 +184,7 @@ export default function TaskBoard({
           );
         })}
       </div>
-      <InstructionInput onSubmit={onCreateTask} loading={creating} showPriority />
+      <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority />
     </div>
   );
 }

@@ -9,6 +9,29 @@ export interface ParsedHandoff {
 }
 
 const FENCE_RE = /```handoff\s*([\s\S]*?)```/i;
+const OUTPUT_FENCE_RE = /```pipeline-output\s*([\s\S]*?)```/i;
+
+/**
+ * Extract a `pipeline-output` JSON block from the agent output. Pipeline steps
+ * whose downstream consumers (branch/foreach) need structured data ask the
+ * agent to wrap a JSON object inside ```pipeline-output ... ```.
+ * Returns null when the fence is missing or the JSON is invalid — callers
+ * should not assume the key exists.
+ */
+export function parseStructuredOutput(raw: string): Record<string, unknown> | null {
+  if (!raw) return null;
+  const match = raw.match(OUTPUT_FENCE_RE);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1].trim());
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Extract a `handoff` JSON block from an agent's final output. The agent is

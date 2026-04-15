@@ -9,7 +9,7 @@ import { resolveAssetContext } from "./assetResolver.js";
 import { guildEventBus } from "./eventBus.js";
 import { buildTeammateRoster } from "./teammateRoster.js";
 import { snapshotForPrompt, appendHandoff } from "./workspace.js";
-import { parseHandoffFromSummary } from "./handoffParser.js";
+import { parseHandoffFromSummary, parseStructuredOutput } from "./handoffParser.js";
 import type { TaskHandoff } from "./types.js";
 import { streamAgentWithTokens } from "../agent/index.js";
 import { serverLogger } from "../lib/logger.js";
@@ -178,6 +178,12 @@ function buildGuildAgentPrompt(
   sections.push(`不需要每次都写 memories，只在确实学到新东西时添加。experience 类型会自动从任务结果生成。`);
   sections.push(``);
   sections.push(`Handoff 块之外的内容仍可以自由书写（解释、思考、代码片段），但 JSON 必须是有效的。`);
+  sections.push(``);
+  sections.push(`如果任务要求产出结构化数据（例如下游步骤需要一个数组或字段），再追加一个 \`pipeline-output\` 块：`);
+  sections.push("```pipeline-output");
+  sections.push(`{ "key": "value", "items": [ ... ] }`);
+  sections.push("```");
+  sections.push(`该块仅在任务描述明确要求时添加；对普通任务可省略。`);
 
   return sections.join("\n");
 }
@@ -333,10 +339,13 @@ export async function executeAgentTask(
       };
     }
 
+    const structuredOutput = parseStructuredOutput(accumulatedContent) ?? undefined;
+
     // Build result
     const result: TaskResult = {
       summary: accumulatedContent || "Task completed (no output)",
       handoff,
+      structuredOutput,
     };
 
     // Detect agent rejection: the agent says it can't do this task and asks

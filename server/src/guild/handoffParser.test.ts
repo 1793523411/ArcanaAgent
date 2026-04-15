@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { parseHandoffFromSummary } from "./handoffParser.js";
+import { parseHandoffFromSummary, parseStructuredOutput } from "./handoffParser.js";
+
+describe("parseStructuredOutput", () => {
+  it("parses a valid pipeline-output fence", () => {
+    const raw = "Done.\n```pipeline-output\n{ \"items\": [1,2,3], \"format\": \"html\" }\n```";
+    expect(parseStructuredOutput(raw)).toEqual({ items: [1, 2, 3], format: "html" });
+  });
+  it("returns null when fence missing", () => {
+    expect(parseStructuredOutput("no fence here")).toBeNull();
+  });
+  it("returns null on malformed JSON", () => {
+    expect(parseStructuredOutput("```pipeline-output\n{ bad json }\n```")).toBeNull();
+  });
+  it("rejects non-object roots (array)", () => {
+    expect(parseStructuredOutput("```pipeline-output\n[1,2,3]\n```")).toBeNull();
+  });
+});
 
 describe("parseHandoffFromSummary", () => {
   it("extracts fenced handoff json", () => {

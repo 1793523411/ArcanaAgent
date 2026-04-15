@@ -81,6 +81,8 @@ import {
   putAgentById as putGuildAgentById, deleteAgentById as deleteGuildAgentById,
   getAgentMemories, getAgentStats, postAgentAsset, deleteAgentAsset,
   getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
+  getPipelineList, getPipelineById, postGroupTaskFromPipeline,
+  postPipeline, putPipeline, deletePipelineById,
   postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
   postReleaseAgent,
   getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead, updateAgentAsset, updateGroupAssetRoute,
@@ -194,6 +196,12 @@ app.delete("/api/guild/groups/:id/agents/:agentId", deleteGroupAgent);
 app.get("/api/guild/groups/:groupId/stream", getGroupStream);
 app.get("/api/guild/groups/:groupId/tasks", getGroupTaskList);
 app.post("/api/guild/groups/:groupId/tasks", postGroupTask);
+app.post("/api/guild/groups/:groupId/tasks/from-pipeline", postGroupTaskFromPipeline);
+app.get("/api/guild/pipelines", getPipelineList);
+app.get("/api/guild/pipelines/:id", getPipelineById);
+app.post("/api/guild/pipelines", postPipeline);
+app.put("/api/guild/pipelines/:id", putPipeline);
+app.delete("/api/guild/pipelines/:id", deletePipelineById);
 app.post("/api/guild/groups/:groupId/assign", postAssignTask);
 app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
 app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);

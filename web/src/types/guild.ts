@@ -11,7 +11,55 @@ export type TaskStatus =
   | "planning"
   | "blocked";
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-export type TaskKind = "requirement" | "subtask" | "adhoc";
+export type TaskKind = "requirement" | "subtask" | "adhoc" | "pipeline";
+
+export interface PipelineInputSpec {
+  name: string;
+  label?: string;
+  required?: boolean;
+  default?: string;
+}
+
+export interface PipelineRetryPolicy {
+  max: number;
+  backoffMs?: number;
+  onExhausted?: "fail" | "fallback" | "skip";
+  preferSameAgent?: boolean;
+  fallback?: PipelineStepSpec;
+}
+
+export type PipelineStepKind = "task" | "branch" | "foreach";
+
+export type Expression = Record<string, unknown>;
+
+export interface PipelineStepSpec {
+  kind?: PipelineStepKind;
+  title: string;
+  description: string;
+  suggestedSkills?: string[];
+  suggestedAgentId?: string;
+  dependsOn?: number[];
+  priority?: TaskPriority;
+  acceptanceCriteria?: string;
+  retry?: PipelineRetryPolicy;
+  // branch
+  when?: Expression;
+  then?: PipelineStepSpec[];
+  else?: PipelineStepSpec[];
+  // foreach
+  items?: string;
+  as?: string;
+  body?: PipelineStepSpec[];
+  join?: PipelineStepSpec;
+}
+
+export interface PipelineTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  inputs?: PipelineInputSpec[];
+  steps: PipelineStepSpec[];
+}
 
 export interface AgentAsset {
   id: string;

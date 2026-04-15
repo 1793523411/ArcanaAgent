@@ -70,6 +70,9 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
     suggestedAgentId: params.suggestedAgentId,
     acceptanceCriteria: params.acceptanceCriteria,
     workspaceRef: params.workspaceRef,
+    pipelineId: params.pipelineId,
+    pipelineInputs: params.pipelineInputs,
+    retryPolicy: params.retryPolicy,
   };
   tasks.push(task);
   saveTasks(groupId, tasks);
@@ -100,6 +103,7 @@ export function updateTask(
     | "result" | "startedAt" | "completedAt" | "bids" | "blockedBy"
     | "kind" | "parentTaskId" | "subtaskIds" | "suggestedSkills"
     | "suggestedAgentId" | "acceptanceCriteria" | "workspaceRef" | "handoff"
+    | "retryCount" | "retryAt" | "skippedReason" | "_rejectedBy" | "dependsOn"
   >>
 ): GuildTask | null {
   const tasks = loadTasks(groupId);
@@ -165,7 +169,7 @@ function rollupParentRequirement(groupId: string, child: GuildTask): void {
   const parentId = child.parentTaskId;
   if (!parentId) return;
   const parent = getTask(groupId, parentId);
-  if (!parent || parent.kind !== "requirement") return;
+  if (!parent || (parent.kind !== "requirement" && parent.kind !== "pipeline")) return;
   if (isTerminalStatus(parent.status)) return;
   const siblings = getSubtasks(groupId, parentId);
   if (siblings.length === 0) return;
@@ -200,6 +204,85 @@ function rollupParentRequirement(groupId: string, child: GuildTask): void {
 export function failTask(groupId: string, taskId: string, agentId: string, error: string): GuildTask | null {
   const existing = getTask(groupId, taskId);
   if (existing && isTerminalStatus(existing.status)) return existing;
+
+  // Retry handling: if the task has a retry policy and has budget left,
+  // reopen it instead of finalizing. Honors backoffMs via retryAt gate and
+  // clears _rejectedBy unless the policy pins the same agent.
+  if (existing?.retryPolicy) {
+    const policy = existing.retryPolicy;
+    const tries = existing.retryCount ?? 0;
+    if (tries < policy.max) {
+      const retryAt = policy.backoffMs && policy.backoffMs > 0
+        ? new Date(Date.now() + policy.backoffMs).toISOString()
+        : undefined;
+      const task = updateTask(groupId, taskId, {
+        status: "open",
+        retryCount: tries + 1,
+        retryAt,
+        assignedAgentId: undefined,
+        startedAt: undefined,
+        result: undefined,
+        _rejectedBy: policy.preferSameAgent ? existing._rejectedBy ?? [] : [],
+      });
+      if (task) {
+        guildEventBus.emit({ type: "task_updated", task });
+      }
+      return task;
+    }
+    // Budget exhausted: branch on onExhausted.
+    const mode = policy.onExhausted ?? "fail";
+    if (mode === "skip") {
+      const now = new Date().toISOString();
+      const task = updateTask(groupId, taskId, {
+        status: "cancelled",
+        completedAt: now,
+        skippedReason: `retry exhausted (${policy.max}) — skipped: ${error}`,
+      });
+      if (task) {
+        guildEventBus.emit({ type: "task_cancelled", taskId });
+        rollupParentRequirement(groupId, task);
+      }
+      return task;
+    }
+    if (mode === "fallback" && policy.fallback) {
+      const fb = policy.fallback;
+      const fallback = createTask(groupId, {
+        title: fb.title,
+        description: fb.description,
+        kind: "subtask",
+        priority: existing.priority,
+        parentTaskId: existing.parentTaskId,
+        suggestedSkills: fb.suggestedSkills,
+        suggestedAgentId: fb.suggestedAgentId,
+        acceptanceCriteria: fb.acceptanceCriteria,
+        workspaceRef: existing.workspaceRef,
+        dependsOn: existing.dependsOn,
+        createdBy: `retry-fallback:${taskId}`,
+      });
+      // Rewire anyone who depended on the failed task to depend on the fallback.
+      const siblings = loadTasks(groupId);
+      for (const sib of siblings) {
+        if (sib.id === taskId) continue;
+        if (sib.dependsOn?.includes(taskId)) {
+          const newDeps = sib.dependsOn.map((d) => (d === taskId ? fallback.id : d));
+          updateTask(groupId, sib.id, { dependsOn: newDeps });
+        }
+      }
+      const now = new Date().toISOString();
+      const task = updateTask(groupId, taskId, {
+        status: "cancelled",
+        completedAt: now,
+        skippedReason: `retry exhausted (${policy.max}) — fallback=${fallback.id}: ${error}`,
+      });
+      if (task) {
+        guildEventBus.emit({ type: "task_cancelled", taskId });
+        rollupParentRequirement(groupId, task);
+      }
+      return task;
+    }
+    // mode === "fail" → fall through to standard failure.
+  }
+
   const now = new Date().toISOString();
   const task = updateTask(groupId, taskId, {
     status: "failed",
@@ -278,7 +361,7 @@ export function reconcileRequirementRollups(groupId: string): number {
   }
   let rolled = 0;
   for (const t of tasks) {
-    if (t.kind !== "requirement") continue;
+    if (t.kind !== "requirement" && t.kind !== "pipeline") continue;
     if (isTerminalStatus(t.status)) continue;
     const subs = subtasksByParent.get(t.id) ?? [];
     if (subs.length === 0) continue;

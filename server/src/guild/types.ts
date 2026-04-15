@@ -97,7 +97,7 @@ export type TaskStatus =
   | "planning"   // requirement waiting for lead decomposition
   | "blocked";   // subtask waiting for upstream deps
 export type TaskPriority = "low" | "medium" | "high" | "urgent";
-export type TaskKind = "requirement" | "subtask" | "adhoc";
+export type TaskKind = "requirement" | "subtask" | "adhoc" | "pipeline";
 
 export interface TaskHandoffArtifact {
   kind: "commit" | "file" | "url" | "note";
@@ -145,6 +145,26 @@ export interface TaskResult {
   agentNotes?: string;
   memoryCreated?: string[];
   handoff?: TaskHandoff;
+  /** Free-form key/value payload extracted from the agent's ```pipeline-output``` fence.
+   *  Consumed by branch/foreach expansion in downstream pipeline steps. */
+  structuredOutput?: Record<string, unknown>;
+}
+
+export interface TaskRetryFallback {
+  title: string;
+  description: string;
+  suggestedSkills?: string[];
+  suggestedAgentId?: string;
+  acceptanceCriteria?: string;
+}
+
+export interface TaskRetryPolicy {
+  max: number;
+  backoffMs?: number;
+  onExhausted?: "fail" | "fallback" | "skip";
+  preferSameAgent?: boolean;
+  /** Pre-substituted fallback task spec; applied when onExhausted="fallback". */
+  fallback?: TaskRetryFallback;
 }
 
 export interface GuildTask {
@@ -173,6 +193,18 @@ export interface GuildTask {
   workspaceRef?: string;
   /** Handoff produced when a subtask completes. */
   handoff?: TaskHandoff;
+  /** For kind === "pipeline" parents: id of the template that was expanded. */
+  pipelineId?: string;
+  /** For kind === "pipeline" parents: user-supplied input values at creation. */
+  pipelineInputs?: Record<string, string>;
+  /** Retry behavior when the task fails (populated from pipeline step.retry). */
+  retryPolicy?: TaskRetryPolicy;
+  /** How many times the task has already been retried. */
+  retryCount?: number;
+  /** ISO timestamp — scheduler/bidding skip this task until now >= retryAt. */
+  retryAt?: string;
+  /** Populated when the task was resolved via skip/fallback/branch-miss. */
+  skippedReason?: string;
   createdBy: string;
   createdAt: string;
   startedAt?: string;
@@ -350,4 +382,7 @@ export interface CreateTaskParams {
   suggestedAgentId?: string;
   acceptanceCriteria?: string;
   workspaceRef?: string;
+  pipelineId?: string;
+  pipelineInputs?: Record<string, string>;
+  retryPolicy?: TaskRetryPolicy;
 }

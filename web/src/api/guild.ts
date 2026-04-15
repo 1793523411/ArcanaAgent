@@ -1,4 +1,4 @@
-import type { Guild, Group, GuildAgent, GuildTask, AgentMemory, AgentStats, AgentAsset, AssetType } from "../types/guild";
+import type { Guild, Group, GuildAgent, GuildTask, AgentMemory, AgentStats, AgentAsset, AssetType, PipelineTemplate } from "../types/guild";
 
 const BASE = "/api";
 
@@ -216,6 +216,50 @@ export async function getGroupTasks(groupId: string): Promise<GuildTask[]> {
 
 export async function createGroupTask(groupId: string, payload: { title: string; description: string; priority?: GuildTask["priority"]; dependsOn?: string[]; kind?: GuildTask["kind"]; acceptanceCriteria?: string; suggestedSkills?: string[]; suggestedAgentId?: string; parentTaskId?: string }): Promise<GuildTask> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function listPipelines(): Promise<PipelineTemplate[]> {
+  const r = await fetch(`${BASE}/guild/pipelines`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function createPipeline(tpl: PipelineTemplate): Promise<PipelineTemplate> {
+  const r = await fetch(`${BASE}/guild/pipelines`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(tpl),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function updatePipeline(id: string, tpl: PipelineTemplate): Promise<PipelineTemplate> {
+  const r = await fetch(`${BASE}/guild/pipelines/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(tpl),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function deletePipeline(id: string): Promise<void> {
+  const r = await fetch(`${BASE}/guild/pipelines/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await r.text());
+}
+
+export async function createTaskFromPipeline(
+  groupId: string,
+  payload: { pipelineId: string; inputs: Record<string, string>; title?: string; priority?: GuildTask["priority"] },
+): Promise<{ task: GuildTask; subtaskIds: string[] }> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/tasks/from-pipeline`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

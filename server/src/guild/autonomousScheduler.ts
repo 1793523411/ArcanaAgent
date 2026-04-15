@@ -195,8 +195,11 @@ export class GuildAutonomousScheduler {
         if (byPriority !== 0) return byPriority;
         return Date.parse(a.createdAt) - Date.parse(b.createdAt);
       });
+      const nowMs = Date.now();
       const eligible = refreshed.filter((t) => {
-        if (t.kind === "requirement") return false;
+        if (t.kind === "requirement" || t.kind === "pipeline") return false;
+        // Respect retry backoff — don't dispatch until the backoff window elapses.
+        if (t.retryAt && Date.parse(t.retryAt) > nowMs) return false;
         return areDepsReady(groupId, t);
       });
 

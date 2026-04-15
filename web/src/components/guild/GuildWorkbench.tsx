@@ -12,6 +12,7 @@ import LiveAgentPanel from "./LiveAgentPanel";
 import GuildArtifactPanel from "./GuildArtifactPanel";
 import GroupAssetPanel from "./GroupAssetPanel";
 import Select from "./Select";
+import type { GuildTask } from "../../types/guild";
 
 interface Props {
   onClose: () => void;
@@ -157,13 +158,31 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   const handleCreateTask = async (
     text: string,
     priority: "low" | "medium" | "high" | "urgent",
-    kind: "requirement" | "subtask" | "adhoc",
+    kind: NonNullable<GuildTask["kind"]>,
   ) => {
     if (!guild.selectedGroupId) return;
     setCreatingTask(true);
     try {
       await guild.createTask(guild.selectedGroupId, { title: text, description: text, priority, kind });
       showToast(kind === "requirement" ? "需求已提交，Lead 将开始分解" : "任务已创建", "success");
+    } catch (e) {
+      showToast(`创建任务失败: ${e}`, "error");
+    } finally {
+      setCreatingTask(false);
+    }
+  };
+
+  const handleCreateTaskFromPipeline = async (payload: {
+    pipelineId: string;
+    inputs: Record<string, string>;
+    priority: GuildTask["priority"];
+    title?: string;
+  }) => {
+    if (!guild.selectedGroupId) return;
+    setCreatingTask(true);
+    try {
+      await guild.createTaskFromPipeline(guild.selectedGroupId, payload);
+      showToast(`已按模板创建任务`, "success");
     } catch (e) {
       showToast(`创建任务失败: ${e}`, "error");
     } finally {
@@ -401,6 +420,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                   selectedTaskId={selectedDetail?.type === "task" ? selectedDetail.id : null}
                   onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
                   onCreateTask={handleCreateTask}
+                  onCreateTaskFromPipeline={handleCreateTaskFromPipeline}
                   onAutoBid={handleAutoBid}
                   onDeleteTask={handleDeleteTask}
                   onAssignTask={handleAssignTask}

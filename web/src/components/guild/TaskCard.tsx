@@ -19,12 +19,14 @@ const KIND_LABEL: Record<NonNullable<GuildTask["kind"]>, string> = {
   requirement: "需求",
   subtask: "子任务",
   adhoc: "普通",
+  pipeline: "流水线",
 };
 
 const KIND_COLOR: Record<NonNullable<GuildTask["kind"]>, string> = {
   requirement: "#8b5cf6",
   subtask: "#0ea5e9",
   adhoc: "var(--color-text-muted)",
+  pipeline: "#14b8a6",
 };
 
 /** Extra decoration for the "soft" statuses that aren't really done or running. */
