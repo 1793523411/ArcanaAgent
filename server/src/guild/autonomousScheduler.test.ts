@@ -1,10 +1,28 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { rmSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup, createAgent, assignAgentToGroup, updateAgent } from "./guildManager.js";
 import { createTask, getTask } from "./taskBoard.js";
 import { guildEventBus } from "./eventBus.js";
 import { GuildAutonomousScheduler } from "./autonomousScheduler.js";
+
+// Mock scoring modules to avoid real LLM/embedding calls that would time out
+// long past the test's flush window.
+vi.mock("./embeddingScorer.js", () => ({
+  warmBiddingEmbeddingsBatch: vi.fn(async () => {}),
+  clearTaskEmbeddingCache: vi.fn(),
+  isEmbeddingAvailable: vi.fn(() => false),
+  preloadEmbeddingModel: vi.fn(),
+  invalidateAgentEmbedding: vi.fn(),
+  getCachedSemanticScore: vi.fn(() => null),
+}));
+vi.mock("./llmScorer.js", () => ({
+  warmLlmScores: vi.fn(async () => false),
+  clearTaskLlmCache: vi.fn(),
+  invalidateAgentLlmScores: vi.fn(),
+  getCachedLlmScore: vi.fn(() => null),
+}));
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
 
@@ -14,11 +32,11 @@ function flush(ms = 30): Promise<void> {
 
 describe("GuildAutonomousScheduler", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("dispatches newly created open task without user assignment", async () => {

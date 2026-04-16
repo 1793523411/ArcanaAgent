@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup } from "./guildManager.js";
 import { createTask, getSubtasks, getTask, failTask, getGroupTasks } from "./taskBoard.js";
@@ -35,12 +36,12 @@ const sample: PipelineTemplate = {
 
 describe("pipelines", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
     mkdirSync(PIPELINES_DIR, { recursive: true });
     writeFileSync(join(PIPELINES_DIR, "test-pl.json"), JSON.stringify(sample));
   });
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("substituteVars replaces known tokens and leaves unknown literal", () => {

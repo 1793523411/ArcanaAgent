@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync, writeFileSync, mkdirSync, readFileSync, existsSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import {
   saveMemory,
@@ -20,10 +21,10 @@ function memIndexPath(): string {
 
 describe("memoryManager v2", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("saveMemory persists v2 fields and marks schema version", () => {

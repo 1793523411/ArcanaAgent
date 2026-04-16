@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup, createAgent, assignAgentToGroup, getAgent, updateAgent } from "./guildManager.js";
 import { createTask, assignTask, completeTask } from "./taskBoard.js";
@@ -9,11 +10,11 @@ const TEST_DATA_DIR = process.env.DATA_DIR!;
 
 describe("agentReconcile", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("clears working state when task is already completed", () => {

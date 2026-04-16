@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup } from "./guildManager.js";
 import {
@@ -14,10 +15,10 @@ const TEST_DATA_DIR = process.env.DATA_DIR!;
 
 describe("taskBoard subtasks & deps", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("getSubtasks returns children of a requirement", () => {

@@ -3,6 +3,7 @@ import type { FileTreeNode, FileReadResult } from "../../api/guild";
 import MarkdownContent from "../MarkdownContent";
 
 type HtmlViewMode = "preview" | "source";
+const isHtmlExt = (ext: string) => ext === ".html" || ext === ".htm";
 
 interface Props {
   /** Fetch the directory tree */
@@ -21,7 +22,7 @@ const CODE_EXTS = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".json", ".py", ".go", ".rs", ".java",
   ".kt", ".rb", ".php", ".c", ".cpp", ".h", ".cs", ".swift", ".vue",
   ".svelte", ".sql", ".graphql", ".sh", ".yaml", ".yml", ".toml",
-  ".css", ".scss", ".html", ".xml",
+  ".css", ".scss", ".html", ".htm", ".xml",
 ]);
 
 const LANG_MAP: Record<string, string> = {
@@ -30,7 +31,7 @@ const LANG_MAP: Record<string, string> = {
   ".java": "java", ".rb": "ruby", ".php": "php", ".c": "c", ".cpp": "cpp",
   ".cs": "csharp", ".swift": "swift", ".sql": "sql", ".sh": "bash",
   ".yaml": "yaml", ".yml": "yaml", ".toml": "toml", ".css": "css",
-  ".scss": "scss", ".html": "html", ".xml": "xml", ".vue": "vue",
+  ".scss": "scss", ".html": "html", ".htm": "html", ".xml": "xml", ".vue": "vue",
   ".svelte": "svelte", ".graphql": "graphql",
 };
 
@@ -200,7 +201,7 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
             )}
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
-            {ext === ".html" && fileContent.content !== null && (
+            {isHtmlExt(ext) && fileContent.content !== null && (
               <div
                 className="flex items-center rounded overflow-hidden"
                 style={{ border: "1px solid var(--color-border)" }}
@@ -243,6 +244,7 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
               src={fileContent.dataUrl}
               className="w-full h-full border-0"
               title={selectedFile}
+              sandbox="allow-scripts"
             />
           ) : fileContent.dataUrl ? (
             <div className="flex items-center justify-center p-4 h-full">
@@ -260,7 +262,7 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
               <span className="text-xs">{formatSize(fileContent.size)}</span>
             </div>
           ) : fileContent.content !== null ? (
-            ext === ".html" && htmlViewMode === "preview" ? (
+            isHtmlExt(ext) && htmlViewMode === "preview" ? (
               <iframe
                 srcDoc={fileContent.content}
                 className="w-full h-full border-0"

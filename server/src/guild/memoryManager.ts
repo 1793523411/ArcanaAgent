@@ -68,7 +68,7 @@ function loadIndex(agentId: string): AgentMemory[] {
   try {
     const mtimeMs = statSync(p).mtimeMs;
     const cached = indexCache.get(agentId);
-    if (cached && cached.mtimeMs === mtimeMs) return cached.memories;
+    if (cached && cached.mtimeMs === mtimeMs) return cached.memories.map((m) => ({ ...m }));
     const raw = JSON.parse(readFileSync(p, "utf-8")) as Array<Partial<AgentMemory> & { id: string }>;
     const memories = raw.map(migrate);
     indexCache.set(agentId, { mtimeMs, memories });
@@ -212,6 +212,7 @@ export function pruneWeakMemories(agentId: string, maxItems = 500): number {
 }
 
 const CJK_RE = /[\u3400-\u9fff\uF900-\uFAFF]/;
+const CJK_RE_G = /[\u3400-\u9fff\uF900-\uFAFF]/g;
 
 /** Produce search tokens: whitespace-split Latin words + CJK character bigrams.
  *  Bigrams matter because `"部署失败"`-style Chinese queries otherwise degrade
@@ -220,7 +221,10 @@ function tokenize(text: string): string[] {
   const lower = text.toLowerCase();
   const tokens = new Set<string>();
   for (const w of lower.split(/[\s,;.!?，。；！？、"'`()\[\]{}<>]+/)) {
-    if (w.length > 2 && !CJK_RE.test(w)) tokens.add(w);
+    // Extract Latin-only substring (strip ALL CJK chars) so mixed words like
+    // "test测试" still contribute "test" as a Latin token.
+    const latin = w.replace(CJK_RE_G, "");
+    if (latin.length >= 2) tokens.add(latin);
   }
   // CJK bigrams — walk contiguous runs of CJK chars.
   let run = "";

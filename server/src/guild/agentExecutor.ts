@@ -494,10 +494,10 @@ export async function executeAgentTask(
     // `statsCounted` then guards the catch block from double-mutating.
     const stats = agent.stats;
     stats.tasksCompleted++;
+    stats.tasksFailed = stats.tasksFailed ?? 0;
     stats.totalWorkTimeMs += durationMs;
-    stats.successRate = stats.tasksCompleted > 0
-      ? (stats.successRate * (stats.tasksCompleted - 1) + 1) / stats.tasksCompleted
-      : 1;
+    const total = stats.tasksCompleted + stats.tasksFailed;
+    stats.successRate = total > 0 ? stats.tasksCompleted / total : 1;
     stats.lastActiveAt = new Date().toISOString();
     updateAgentStats(agentId, stats);
     statsCounted = true;
@@ -554,11 +554,11 @@ export async function executeAgentTask(
     // (rare but possible when code after completeTask throws).
     if (!statsCounted) {
       const stats = agent.stats;
+      stats.tasksFailed = (stats.tasksFailed ?? 0) + 1;
       stats.totalWorkTimeMs += durationMs;
       stats.lastActiveAt = new Date().toISOString();
-      if (stats.tasksCompleted > 0) {
-        stats.successRate = (stats.successRate * stats.tasksCompleted) / (stats.tasksCompleted + 1);
-      }
+      const total = stats.tasksCompleted + stats.tasksFailed;
+      stats.successRate = total > 0 ? stats.tasksCompleted / total : 0;
       updateAgentStats(agentId, stats);
     }
 

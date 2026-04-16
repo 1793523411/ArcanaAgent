@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import {
   createWorkspace,
@@ -20,10 +21,10 @@ describe("guild workspace", () => {
   const parentTaskId = "task_req_1";
 
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("creates a workspace and reads it back", () => {

@@ -31,6 +31,7 @@ export interface AgentAsset {
 
 export interface AgentStats {
   tasksCompleted: number;
+  tasksFailed: number;
   totalWorkTimeMs: number;
   avgConfidence: number;
   successRate: number;

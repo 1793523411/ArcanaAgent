@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync, existsSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import {
   createGroup,
@@ -16,10 +17,10 @@ const TEST_DATA_DIR = process.env.DATA_DIR!;
 
 describe("deleteGroup", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("removes the group directory, releases agents to the pool, and updates the guild index", () => {

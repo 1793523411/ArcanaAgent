@@ -33,6 +33,7 @@ function readJSON<T>(path: string): T | null {
 
 const defaultStats = (): AgentStats => ({
   tasksCompleted: 0,
+  tasksFailed: 0,
   totalWorkTimeMs: 0,
   avgConfidence: 0,
   successRate: 0,

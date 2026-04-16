@@ -300,7 +300,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
 }
 
 export function cancelTask(groupId: string, taskId: string): GuildTask | null {
-  const task = updateTask(groupId, taskId, { status: "cancelled" });
+  const task = updateTask(groupId, taskId, { status: "cancelled", completedAt: new Date().toISOString() });
   if (task) {
     guildEventBus.emit({ type: "task_cancelled", taskId });
     cascadeFailureToDependents(groupId, taskId, `依赖任务已取消（${task.title}）`);
@@ -316,14 +316,19 @@ export function cancelTask(groupId: string, taskId: string): GuildTask | null {
  * parent, recursively cancel the dependents so the parent can finalize.
  */
 function cascadeFailureToDependents(groupId: string, failedTaskId: string, reason: string): void {
-  const tasks = loadTasks(groupId);
   const queue: string[] = [failedTaskId];
-  const visited = new Set<string>();
+  const visited = new Set<string>();     // sources already dequeued
+  const cancelled = new Set<string>();   // tasks already cascade-cancelled (avoid duplicates)
   while (queue.length) {
     const src = queue.shift()!;
     if (visited.has(src)) continue;
     visited.add(src);
+    // Reload tasks each iteration so we see the latest status on disk and
+    // don't attempt to cancel an already-terminal task a second time (e.g.
+    // when a task depends on multiple failed ancestors).
+    const tasks = loadTasks(groupId);
     for (const t of tasks) {
+      if (cancelled.has(t.id)) continue;
       if (isTerminalStatus(t.status)) continue;
       if (!t.dependsOn?.includes(src)) continue;
       const now = new Date().toISOString();
@@ -334,6 +339,7 @@ function cascadeFailureToDependents(groupId: string, failedTaskId: string, reaso
       });
       if (updated) {
         guildEventBus.emit({ type: "task_cancelled", taskId: t.id });
+        cancelled.add(t.id);
         queue.push(t.id);
         rollupParentRequirement(groupId, updated);
       }
@@ -477,7 +483,7 @@ export function appendExecutionLog(groupId: string, taskId: string, entry: Execu
     } else {
       log.events.push(entry);
     }
-    writeFileSync(p, JSON.stringify(log, null, 2));
+    atomicWriteFileSync(p, JSON.stringify(log, null, 2));
   } catch {
     // ignore
   }
@@ -491,7 +497,7 @@ export function finalizeExecutionLog(groupId: string, taskId: string, status: "c
     const log: TaskExecutionLog = JSON.parse(readFileSync(p, "utf-8"));
     log.status = status;
     log.completedAt = new Date().toISOString();
-    writeFileSync(p, JSON.stringify(log, null, 2));
+    atomicWriteFileSync(p, JSON.stringify(log, null, 2));
   } catch {
     // ignore
   }

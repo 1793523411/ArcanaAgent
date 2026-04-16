@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { rmSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup, createAgent, assignAgentToGroup } from "./guildManager.js";
 import { createTask, getTask } from "./taskBoard.js";
@@ -9,12 +10,12 @@ const TEST_DATA_DIR = process.env.DATA_DIR!;
 
 describe("guild bidding", () => {
   beforeEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
     setBiddingConfig({ minConfidenceThreshold: 0.3, assetBonusWeight: 0.15, loadDecayFactor: 0.9 });
   });
 
   afterEach(() => {
-    rmSync(join(TEST_DATA_DIR, "guild"), { recursive: true, force: true });
+    cleanGuildDir();
   });
 
   it("priority widens the bidding threshold without inflating confidence", () => {
