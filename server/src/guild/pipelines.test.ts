@@ -217,6 +217,20 @@ describe("pipelines", () => {
     expect(r.skippedReason).toMatch(/skipped/);
   });
 
+  it("failTask cascades cancellation to downstream dependents", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const a = createTask(group.id, { title: "A", description: "", kind: "subtask" });
+    const b = createTask(group.id, { title: "B", description: "", kind: "subtask", dependsOn: [a.id] });
+    const c = createTask(group.id, { title: "C", description: "", kind: "subtask", dependsOn: [b.id] });
+    const aFinal = failTask(group.id, a.id, "x", "boom")!;
+    expect(aFinal.status).toBe("failed");
+    const bAfter = getTask(group.id, b.id)!;
+    const cAfter = getTask(group.id, c.id)!;
+    expect(bAfter.status).toBe("cancelled");
+    expect(cAfter.status).toBe("cancelled");
+    expect(bAfter.skippedReason).toMatch(/级联/);
+  });
+
   it("failTask with onExhausted=fallback creates a replacement task and rewires deps", () => {
     const group = createGroup({ name: "G", description: "d" });
     const a = createTask(group.id, {
@@ -353,6 +367,73 @@ describe("pipelines", () => {
     expect(outcome.ok).toBe(true);
     const subs = getSubtasks(group.id, parent.id);
     expect(subs.map((s) => s.title)).toEqual(["do one", "do two"]);
+  });
+
+  it("branch inside foreach body sees loop variable in when context", () => {
+    const tpl: PipelineTemplate = {
+      id: "fe-branch",
+      name: "fe branch",
+      inputs: [{ name: "items", required: true }],
+      steps: [
+        {
+          kind: "foreach",
+          title: "loop",
+          description: "",
+          items: "${items}",
+          as: "x",
+          body: [
+            {
+              kind: "branch",
+              title: "is-pdf",
+              description: "",
+              when: { eq: ["${x}", "pdf"] },
+              then: [{ title: "pdf ${x}", description: "", dependsOn: [] }],
+              else: [{ title: "other ${x}", description: "", dependsOn: [] }],
+            },
+          ],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    expandPipeline(group.id, parent, getPipeline("fe-branch")!, { items: "pdf,html" });
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs.map((s) => s.title)).toEqual(["pdf pdf", "other html"]);
+  });
+
+  it("exposes parent_* context vars to when/substitution", () => {
+    const tpl: PipelineTemplate = {
+      id: "parent-ctx",
+      name: "parent ctx",
+      steps: [
+        {
+          kind: "branch",
+          title: "urgent?",
+          description: "",
+          when: { eq: ["${parent_priority}", "urgent"] },
+          then: [{ title: "rush: ${parent_title}", description: "", dependsOn: [] }],
+          else: [{ title: "normal", description: "", dependsOn: [] }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "Ship it",
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+      priority: "urgent",
+    });
+    expandPipeline(group.id, parent, getPipeline("parent-ctx")!, {});
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs.map((s) => s.title)).toEqual(["rush: Ship it"]);
   });
 
   it("expandPipeline is idempotent", () => {

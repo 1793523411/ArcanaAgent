@@ -153,6 +153,43 @@ describe("memoryManager v2", () => {
     expect(mem.content).toContain("auth scope?");
   });
 
+  it("searchRelevant matches CJK queries via character bigrams", () => {
+    const hit = saveMemory(AGENT_ID, {
+      type: "experience",
+      title: "部署失败排查",
+      content: "线上部署时容器健康检查超时",
+      tags: ["部署"],
+    });
+    saveMemory(AGENT_ID, {
+      type: "experience",
+      title: "unrelated english doc",
+      content: "nothing about the above",
+      tags: ["other"],
+    });
+    // Whitespace tokenization alone would miss this — bigrams "部署" / "失败" let it land.
+    const hits = searchRelevant(AGENT_ID, "部署失败");
+    expect(hits.map((h) => h.id)).toContain(hit.id);
+    expect(hits[0].id).toBe(hit.id);
+  });
+
+  it("searchRelevant weights title hits above content hits", () => {
+    const titleHit = saveMemory(AGENT_ID, {
+      type: "experience",
+      title: "oauth token refresh",
+      content: "mentions something else entirely",
+      tags: [],
+    });
+    saveMemory(AGENT_ID, {
+      type: "experience",
+      title: "log rotation config",
+      // Repeats the keyword 5 times in content — should still lose to title match.
+      content: "oauth oauth oauth oauth oauth",
+      tags: [],
+    });
+    const hits = searchRelevant(AGENT_ID, "oauth");
+    expect(hits[0].id).toBe(titleHit.id);
+  });
+
   it("writes human-readable markdown alongside the index", () => {
     const m = saveMemory(AGENT_ID, {
       type: "experience",

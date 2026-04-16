@@ -194,6 +194,10 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     await withToast(() => guild.setGroupLead(groupId, agentId), agentId ? "Lead 已设置" : "已清除 Lead", "设置 Lead 失败");
   };
 
+  const handleUpdateGroup = async (groupId: string, payload: { name?: string; description?: string }) => {
+    await withToast(() => guild.updateGroup(groupId, payload), "小组已更新", "更新小组失败");
+  };
+
   const handleAutoBid = async (taskId: string) => {
     if (!guild.selectedGroupId) return;
     try {
@@ -378,6 +382,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
               onDeleteGroup={handleDeleteGroup}
               onSetGroupLead={handleSetGroupLead}
+              onUpdateGroup={handleUpdateGroup}
             />
           )}
         </div>
@@ -424,6 +429,18 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                   onAutoBid={handleAutoBid}
                   onDeleteTask={handleDeleteTask}
                   onAssignTask={handleAssignTask}
+                  onStopTask={async (taskId) => {
+                    const t = mergedTasks.find((x) => x.id === taskId);
+                    if (!t?.assignedAgentId) {
+                      showToast("任务未分配 Agent，无法停止", "info");
+                      return;
+                    }
+                    await withToast(
+                      () => guild.releaseAgent(t.assignedAgentId!),
+                      "任务已停止，Agent 已释放",
+                      "停止任务失败",
+                    );
+                  }}
                   creating={creatingTask}
                 />
               </div>

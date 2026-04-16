@@ -1,14 +1,7 @@
-1. 上下文压缩超过了配置的阈值75%，没自动压缩
+产物区域，对齐普通模式其他类型预览：（已完成 PDF base64 iframe 渲染 + HTML sandbox 预览/源码双模式）
 
-小组无法修改信息
-按模板创建之后，待处理会多出一个独立于需求之外的任务
-产物区域，图片不支持预览，没有对齐普通模式
-中断流程，pipeline模式中某个agent失败了，应该判断要不要继续进行下去，而不是一股脑的执行到底
-guild模式手动停止功能
-agent应该彼此知道对方工作产出，对共享产物和自己的产物了如指掌
-agent应该知道自己的产物有啥，管理好自己的产物，因为这些产物会一直存在，agent不能随便做错误的覆盖文件，比如删除了某个文件，或者修改了某个文件的内容，而没有通知到其他agent，感觉当前的工作产物管理不太好，脚本生成了之后agent在执行就会覆盖，agent自己知道覆盖了嘛？
+agent 产物感知：（初版已接入）执行前将 workspace 私有产物 + group-shared 按 owner 分组列入 system prompt，附"未声明直接覆盖视为错误"的硬约束；后续可在 handoff 解析阶段校验 inputsConsumed / summary 是否显式声明了覆盖。
 
-整体检查一下页面，有点击之后调用接口的都加上loading，提高下用户体验
- 
-Pipeline步骤不自动推进、失败任务无限重试、调度竞态
-when条件上下文不全、workspace并发写入、经验检索效果差、性能问题
+页面 loading 巡检剩余：（已补齐 TaskBoard 指派 Agent、GroupList 添加/移除成员/设置 Lead 的 busy 反馈；DetailPanel 释放/删除、GroupAssetPanel、创建 Agent/Group 表单此前已具备 loading）
+
+经验检索：（已优化）索引加 mtime 缓存避免重复磁盘读取/解析；token 化区分 Latin 单词与 CJK bigram；字段加权打分（title 3x / tag 2.5x / summary 1.5x / content 1x 上限），新增 token 覆盖度奖励

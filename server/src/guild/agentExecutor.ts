@@ -1,5 +1,5 @@
-import { mkdirSync, existsSync } from "fs";
-import { join } from "path";
+import { mkdirSync, existsSync, readdirSync, statSync } from "fs";
+import { join, relative } from "path";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 import type { GuildAgent, GuildTask, TaskResult, GuildEvent } from "./types.js";
 import { getAgent, updateAgent, updateAgentStats, getAgentWorkspaceDir, getGroupSharedDir } from "./guildManager.js";
@@ -77,6 +77,96 @@ function buildGuildHarnessConfig(): HarnessConfig | undefined {
   };
 }
 
+/** Walk a directory up to maxDepth and emit files as `{relPath, size, ownerDir}`.
+ *  Skips the usual noise (hidden files, node_modules) and caps total entries. */
+function listArtifacts(rootDir: string, maxDepth = 3, cap = 40): Array<{ path: string; size: number }> {
+  if (!existsSync(rootDir)) return [];
+  const out: Array<{ path: string; size: number }> = [];
+  const walk = (dir: string, depth: number) => {
+    if (depth > maxDepth || out.length >= cap) return;
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      if (out.length >= cap) return;
+      if (name.startsWith(".") || name === "node_modules") continue;
+      const full = join(dir, name);
+      let st;
+      try { st = statSync(full); } catch { continue; }
+      if (st.isDirectory()) walk(full, depth + 1);
+      else if (st.isFile()) {
+        out.push({ path: relative(rootDir, full), size: st.size });
+      }
+    }
+  };
+  walk(rootDir, 0);
+  return out;
+}
+
+function formatSizeHuman(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/** Produce a compact inventory of existing artifacts so the agent knows what
+ *  already exists before it writes — the todo item was "agent 应该彼此知道对方
+ *  工作产出 ... 不能随便做错误的覆盖". Kept concise (per-bucket cap + dir-aware)
+ *  to avoid bloating the system prompt. */
+function buildArtifactInventory(agent: GuildAgent, groupId: string): string | null {
+  const ownWorkspace = listArtifacts(getAgentWorkspaceDir(agent.id));
+  const sharedRoot = getGroupSharedDir(groupId);
+
+  // Group shared dir is organized as `{sharedRoot}/{agentId}/...` — split by top-level
+  // agent subfolder so the prompt clearly attributes each file to its producer.
+  const sharedByOwner = new Map<string, Array<{ path: string; size: number }>>();
+  if (existsSync(sharedRoot)) {
+    let ownerDirs: string[] = [];
+    try { ownerDirs = readdirSync(sharedRoot); } catch { ownerDirs = []; }
+    for (const owner of ownerDirs) {
+      if (owner.startsWith(".")) continue;
+      const ownerPath = join(sharedRoot, owner);
+      let st;
+      try { st = statSync(ownerPath); } catch { continue; }
+      if (!st.isDirectory()) continue;
+      const files = listArtifacts(ownerPath, 3, 15);
+      if (files.length > 0) sharedByOwner.set(owner, files);
+    }
+  }
+
+  if (ownWorkspace.length === 0 && sharedByOwner.size === 0) return null;
+
+  const lines: string[] = [];
+  lines.push(`## Existing Artifacts (read before writing!)`);
+  lines.push(`下面是当前已存在的产物清单。**在创建或覆盖文件前**请先对照此清单：`);
+  lines.push(`- 若你要修改他人产物，必须在 Handoff 的 \`inputsConsumed\` 中声明，并在 \`summary\` 里写明变更原因；`);
+  lines.push(`- 若你要覆盖自己之前的产物，需在 Handoff 中明确指出"覆盖了 X 文件、因为 Y"；`);
+  lines.push(`- 未声明直接覆盖会被视为错误操作。`);
+
+  if (ownWorkspace.length > 0) {
+    lines.push(``);
+    lines.push(`### 你自己的产物 (workspace)`);
+    for (const f of ownWorkspace.slice(0, 25)) {
+      lines.push(`- \`${f.path}\` (${formatSizeHuman(f.size)})`);
+    }
+    if (ownWorkspace.length > 25) lines.push(`- …还有 ${ownWorkspace.length - 25} 个文件未列出`);
+  }
+
+  if (sharedByOwner.size > 0) {
+    lines.push(``);
+    lines.push(`### 小组共享产物（按生产者 agent 分组）`);
+    for (const [owner, files] of sharedByOwner) {
+      const isSelf = owner === agent.id;
+      lines.push(`- **${owner}${isSelf ? " (= you)" : ""}**`);
+      for (const f of files.slice(0, 10)) {
+        lines.push(`  - \`${f.path}\` (${formatSizeHuman(f.size)})`);
+      }
+      if (files.length > 10) lines.push(`  - …还有 ${files.length - 10} 个文件`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 /** Build a system prompt that includes agent identity, assets, memories,
  *  teammate roster, and the shared workspace snapshot (for subtasks). */
 function buildGuildAgentPrompt(
@@ -130,6 +220,13 @@ function buildGuildAgentPrompt(
       sections.push(`\n## Shared Workspace (living blackboard — read before you start)`);
       sections.push(snapshot);
     }
+  }
+
+  // Artifact inventory — let the agent see its own + teammates' existing files
+  // before it starts writing, so it doesn't silently overwrite prior output.
+  const inventory = buildArtifactInventory(agent, groupId);
+  if (inventory) {
+    sections.push(`\n${inventory}`);
   }
 
   if (memories.length > 0) {

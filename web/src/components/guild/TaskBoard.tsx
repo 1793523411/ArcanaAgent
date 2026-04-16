@@ -18,7 +18,8 @@ interface Props {
   }) => void;
   onAutoBid: (taskId: string) => void;
   onDeleteTask: (taskId: string) => void;
-  onAssignTask: (taskId: string, agentId: string) => void;
+  onAssignTask: (taskId: string, agentId: string) => Promise<void> | void;
+  onStopTask?: (taskId: string) => Promise<void> | void;
   creating?: boolean;
 }
 
@@ -30,7 +31,7 @@ const COLUMNS: { key: GuildTask["status"][]; label: string }[] = [
 
 export default function TaskBoard({
   tasks, agents, groupAgentIds, selectedTaskId,
-  onSelectTask, onCreateTask, onCreateTaskFromPipeline, onAutoBid, onDeleteTask, onAssignTask, creating,
+  onSelectTask, onCreateTask, onCreateTaskFromPipeline, onAutoBid, onDeleteTask, onAssignTask, onStopTask, creating,
 }: Props) {
   const [assigningTask, setAssigningTask] = useState<string | null>(null);
   const [confirmingDeleteTask, setConfirmingDeleteTask] = useState<string | null>(null);
@@ -136,13 +137,13 @@ export default function TaskBoard({
                       // individual collapses the user had set in other columns.
                       const completedReqIds = new Set<string>();
                       for (const t of colTasks) {
-                        if (t.kind === "requirement") completedReqIds.add(t.id);
+                        if (isParentKind(t.kind)) completedReqIds.add(t.id);
                       }
                       const inColReqIds = new Set(
-                        colTasks.filter((t) => t.kind === "requirement").map((t) => t.id),
+                        colTasks.filter((t) => isParentKind(t.kind)).map((t) => t.id),
                       );
                       for (const t of colTasks) {
-                        if (t.kind !== "requirement" && t.parentTaskId && !inColReqIds.has(t.parentTaskId)) {
+                        if (!isParentKind(t.kind) && t.parentTaskId && !inColReqIds.has(t.parentTaskId)) {
                           completedReqIds.add(t.parentTaskId);
                         }
                       }
@@ -179,6 +180,7 @@ export default function TaskBoard({
                 idleGroupAgents={idleGroupAgents}
                 collapsedReqs={collapsedReqs}
                 setCollapsedReqs={setCollapsedReqs}
+                onStopTask={onStopTask}
               />
             </div>
           );
@@ -210,9 +212,10 @@ function ActionButtons({
 }: {
   task: GuildTask; idleGroupAgents: GuildAgent[];
   assigningTask: string | null; setAssigningTask: (id: string | null) => void;
-  onAutoBid: (id: string) => void; onAssignTask: (id: string, agentId: string) => void;
+  onAutoBid: (id: string) => void; onAssignTask: (id: string, agentId: string) => Promise<void> | void;
   confirmingDeleteTask: string | null; handleDeleteClick: (id: string) => void;
 }) {
+  const [assigningAgentId, setAssigningAgentId] = useState<string | null>(null);
   if (task.status !== "open" && task.status !== "bidding") return null;
   return (
     <div className="flex gap-1 mt-1 px-1">
@@ -222,18 +225,36 @@ function ActionButtons({
           {idleGroupAgents.length === 0 ? (
             <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>无空闲 Agent</div>
           ) : (
-            idleGroupAgents.map((a) => (
-              <button
-                key={a.id}
-                className="w-full flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-[var(--color-surface-hover)] text-left"
-                onClick={() => { onAssignTask(task.id, a.id); setAssigningTask(null); }}
-              >
-                <span>{a.icon}</span>
-                <span style={{ color: a.color }}>{a.name}</span>
-              </button>
-            ))
+            idleGroupAgents.map((a) => {
+              const busy = assigningAgentId === a.id;
+              return (
+                <button
+                  key={a.id}
+                  disabled={assigningAgentId !== null}
+                  className="w-full flex items-center gap-1 px-2 py-1 rounded text-xs hover:bg-[var(--color-surface-hover)] text-left disabled:opacity-60"
+                  onClick={async () => {
+                    setAssigningAgentId(a.id);
+                    try {
+                      await onAssignTask(task.id, a.id);
+                      setAssigningTask(null);
+                    } finally {
+                      setAssigningAgentId(null);
+                    }
+                  }}
+                >
+                  <span>{a.icon}</span>
+                  <span style={{ color: a.color }}>{a.name}</span>
+                  {busy && <span className="ml-auto text-[10px]" style={{ color: "var(--color-text-muted)" }}>分配中…</span>}
+                </button>
+              );
+            })
           )}
-          <button className="text-[10px] px-2" style={{ color: "var(--color-text-muted)" }} onClick={() => setAssigningTask(null)}>取消</button>
+          <button
+            className="text-[10px] px-2 disabled:opacity-50"
+            style={{ color: "var(--color-text-muted)" }}
+            disabled={assigningAgentId !== null}
+            onClick={() => setAssigningTask(null)}
+          >取消</button>
         </div>
       ) : (
         <>
@@ -276,20 +297,25 @@ interface CompletedColumnProps {
   idleGroupAgents: GuildAgent[];
   collapsedReqs: Set<string>;
   setCollapsedReqs: React.Dispatch<React.SetStateAction<Set<string>>>;
+  onStopTask?: (taskId: string) => Promise<void> | void;
 }
 
+type ParentKind = "requirement" | "pipeline";
 type GroupedItem =
-  | { type: "req"; task: GuildTask; children: GuildTask[]; ghost: false }
-  | { type: "ghost-req"; parentTitle: string; parentId: string; children: GuildTask[] }
+  | { type: "req"; task: GuildTask; children: GuildTask[]; ghost: false; parentKind: ParentKind }
+  | { type: "ghost-req"; parentTitle: string; parentId: string; children: GuildTask[]; parentKind: ParentKind }
   | { type: "task"; task: GuildTask };
+
+const isParentKind = (k?: string): k is ParentKind => k === "requirement" || k === "pipeline";
 
 function CompletedColumn({
   colTasks, col, tasks, agents, selectedTaskId, onSelectTask,
   onAutoBid, onAssignTask, blockedByDepsSet, assigningTask, setAssigningTask,
   confirmingDeleteTask, handleDeleteClick, idleGroupAgents,
-  collapsedReqs, setCollapsedReqs,
+  collapsedReqs, setCollapsedReqs, onStopTask,
 }: CompletedColumnProps) {
   const isTerminalCol = col.label === "已完成";
+  const [stoppingTask, setStoppingTask] = useState<string | null>(null);
 
   const grouped = useMemo(() => {
     // Identify requirement tasks in this column
@@ -297,7 +323,7 @@ function CompletedColumn({
     const childMap = new Map<string, GuildTask[]>();
     const standalone: GuildTask[] = [];
     for (const t of colTasks) {
-      if (t.kind === "requirement") continue;
+      if (isParentKind(t.kind)) continue;
       if (t.parentTaskId) {
         const arr = childMap.get(t.parentTaskId) ?? [];
         arr.push(t);
@@ -307,17 +333,30 @@ function CompletedColumn({
       }
     }
     const items: GroupedItem[] = [];
-    // Requirements present in this column
+    // Parent group headers (requirement / pipeline) present in this column
     for (const t of colTasks) {
-      if (t.kind === "requirement") {
-        items.push({ type: "req", task: t, children: childMap.get(t.id) ?? [], ghost: false });
+      if (isParentKind(t.kind)) {
+        items.push({
+          type: "req",
+          task: t,
+          children: childMap.get(t.id) ?? [],
+          ghost: false,
+          parentKind: t.kind,
+        });
         childMap.delete(t.id);
       }
     }
-    // Ghost headers for subtasks whose parent requirement is in a different column
+    // Ghost headers for subtasks whose parent is in a different column
     for (const [parentId, children] of childMap) {
       const parent = tasks.find((t) => t.id === parentId);
-      items.push({ type: "ghost-req", parentTitle: parent?.title ?? parentId.slice(0, 12), parentId, children });
+      const parentKind: ParentKind = isParentKind(parent?.kind) ? parent!.kind : "requirement";
+      items.push({
+        type: "ghost-req",
+        parentTitle: parent?.title ?? parentId.slice(0, 12),
+        parentId,
+        children,
+        parentKind,
+      });
     }
     for (const t of standalone) {
       items.push({ type: "task", task: t });
@@ -360,10 +399,41 @@ function CompletedColumn({
     });
   };
 
-  const renderSideAction = (task: GuildTask) =>
-    (task.status === "completed" || task.status === "failed" || task.status === "cancelled")
-      ? <DeleteButton taskId={task.id} confirming={confirmingDeleteTask === task.id} onClick={() => handleDeleteClick(task.id)} />
-      : undefined;
+  const handleStopClick = async (taskId: string) => {
+    if (!onStopTask || stoppingTask) return;
+    setStoppingTask(taskId);
+    try {
+      await onStopTask(taskId);
+    } finally {
+      setStoppingTask(null);
+    }
+  };
+
+  const renderSideAction = (task: GuildTask) => {
+    if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
+      return <DeleteButton taskId={task.id} confirming={confirmingDeleteTask === task.id} onClick={() => handleDeleteClick(task.id)} />;
+    }
+    if (onStopTask && task.status === "in_progress") {
+      const isStopping = stoppingTask === task.id;
+      return (
+        <button
+          className="text-[11px] px-2 py-0.5 rounded shrink-0"
+          style={{
+            background: "rgba(239,68,68,0.12)",
+            color: "#ef4444",
+            border: "1px solid rgba(239,68,68,0.3)",
+            opacity: isStopping ? 0.6 : 1,
+          }}
+          disabled={isStopping}
+          onClick={(e) => { e.stopPropagation(); handleStopClick(task.id); }}
+          title="停止当前任务，Agent 将被释放"
+        >
+          {isStopping ? "停止中…" : "停止"}
+        </button>
+      );
+    }
+    return undefined;
+  };
 
   const renderTaskWithActions = (task: GuildTask) => (
     <div key={task.id}>
@@ -392,13 +462,23 @@ function CompletedColumn({
     reqId: string,
     title: string,
     children: GuildTask[],
-    opts: { clickable?: boolean; selected?: boolean; ghost?: boolean; deleteBtn?: boolean },
+    opts: {
+      clickable?: boolean;
+      selected?: boolean;
+      ghost?: boolean;
+      deleteBtn?: boolean;
+      parentKind?: ParentKind;
+    },
   ) => {
     const collapsed = collapsedReqs.has(reqId);
     const childCount = children.length;
-    const borderColor = opts.ghost ? "var(--color-border)" : "#8b5cf633";
-    const bgColor = opts.ghost ? "var(--color-surface)" : "rgba(139,92,246,0.06)";
-    const leftBorder = opts.ghost ? "3px solid var(--color-border)" : "3px solid #8b5cf6";
+    const isPipeline = opts.parentKind === "pipeline";
+    const accent = isPipeline ? "#3b82f6" : "#8b5cf6";
+    const badgeLabel = isPipeline ? "流水线" : "需求";
+    const ghostLabel = isPipeline ? "来自流水线" : "来自需求";
+    const borderColor = opts.ghost ? "var(--color-border)" : `${accent}33`;
+    const bgColor = opts.ghost ? "var(--color-surface)" : `${accent}10`;
+    const leftBorder = opts.ghost ? "3px solid var(--color-border)" : `3px solid ${accent}`;
     return (
       <div key={reqId} className="rounded-lg overflow-hidden" style={{ border: `2px solid ${borderColor}` }}>
         <div
@@ -411,11 +491,11 @@ function CompletedColumn({
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-bold"
                 style={{
-                  background: opts.ghost ? "var(--color-border)" : "#8b5cf622",
-                  color: opts.ghost ? "var(--color-text-muted)" : "#8b5cf6",
+                  background: opts.ghost ? "var(--color-border)" : `${accent}22`,
+                  color: opts.ghost ? "var(--color-text-muted)" : accent,
                 }}
               >
-                {opts.ghost ? "来自需求" : "需求"}
+                {opts.ghost ? ghostLabel : badgeLabel}
               </span>
               <span
                 className="text-sm font-semibold truncate"
@@ -466,10 +546,14 @@ function CompletedColumn({
             clickable: true,
             selected: item.task.id === selectedTaskId,
             deleteBtn: isTerminalCol,
+            parentKind: item.parentKind,
           });
         }
         if (item.type === "ghost-req") {
-          return renderReqGroup(item.parentId, item.parentTitle, item.children, { ghost: true });
+          return renderReqGroup(item.parentId, item.parentTitle, item.children, {
+            ghost: true,
+            parentKind: item.parentKind,
+          });
         }
         return renderTaskWithActions(item.task);
       })}

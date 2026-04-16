@@ -1030,9 +1030,10 @@ function RetrySubEditor({
               <input
                 type="number"
                 min={1}
+                max={10}
                 className={inputCls + " w-20"}
                 value={r.max}
-                onChange={(e) => update({ max: Math.max(1, parseInt(e.target.value || "1", 10)) })}
+                onChange={(e) => update({ max: Math.min(10, Math.max(1, parseInt(e.target.value || "1", 10))) })}
               />
             </label>
             <label className="flex items-center gap-1">

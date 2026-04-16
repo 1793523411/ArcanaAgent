@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import type { FileTreeNode, FileReadResult } from "../../api/guild";
 import MarkdownContent from "../MarkdownContent";
 
+type HtmlViewMode = "preview" | "source";
+
 interface Props {
   /** Fetch the directory tree */
   fetchTree: () => Promise<FileTreeNode[]>;
@@ -55,6 +57,7 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [fileContent, setFileContent] = useState<FileReadResult | null>(null);
   const [fileLoading, setFileLoading] = useState(false);
+  const [htmlViewMode, setHtmlViewMode] = useState<HtmlViewMode>("preview");
 
   const loadTree = useCallback(async () => {
     setLoading(true);
@@ -100,6 +103,7 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
     setSelectedFile(path);
     setFileLoading(true);
     setFileContent(null);
+    setHtmlViewMode("preview");
     try {
       const result = await fetchFile(path);
       setFileContent(result);
@@ -195,24 +199,75 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
               </span>
             )}
           </div>
-          <button
-            onClick={() => { setSelectedFile(null); setFileContent(null); }}
-            className="text-xs px-2 py-0.5 rounded shrink-0"
-            style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
-          >
-            {"\u2190"} 返回
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            {ext === ".html" && fileContent.content !== null && (
+              <div
+                className="flex items-center rounded overflow-hidden"
+                style={{ border: "1px solid var(--color-border)" }}
+              >
+                <button
+                  onClick={() => setHtmlViewMode("preview")}
+                  className="px-2 py-0.5 text-[11px] transition-colors"
+                  style={{
+                    background: htmlViewMode === "preview" ? "var(--color-accent)" : "transparent",
+                    color: htmlViewMode === "preview" ? "white" : "var(--color-text-muted)",
+                  }}
+                >
+                  预览
+                </button>
+                <button
+                  onClick={() => setHtmlViewMode("source")}
+                  className="px-2 py-0.5 text-[11px] transition-colors"
+                  style={{
+                    background: htmlViewMode === "source" ? "var(--color-accent)" : "transparent",
+                    color: htmlViewMode === "source" ? "white" : "var(--color-text-muted)",
+                  }}
+                >
+                  源码
+                </button>
+              </div>
+            )}
+            <button
+              onClick={() => { setSelectedFile(null); setFileContent(null); }}
+              className="text-xs px-2 py-0.5 rounded"
+              style={{ background: "var(--color-surface-hover)", color: "var(--color-text-muted)" }}
+            >
+              {"\u2190"} 返回
+            </button>
+          </div>
         </div>
         {/* File content */}
         <div className="flex-1 overflow-auto">
-          {fileContent.binary ? (
+          {fileContent.dataUrl && ext === ".pdf" ? (
+            <iframe
+              src={fileContent.dataUrl}
+              className="w-full h-full border-0"
+              title={selectedFile}
+            />
+          ) : fileContent.dataUrl ? (
+            <div className="flex items-center justify-center p-4 h-full">
+              <img
+                src={fileContent.dataUrl}
+                alt={selectedFile}
+                className="max-w-full max-h-full object-contain rounded-lg"
+                style={{ background: "var(--color-surface)" }}
+              />
+            </div>
+          ) : fileContent.binary ? (
             <div className="flex flex-col items-center justify-center h-full gap-2" style={{ color: "var(--color-text-muted)" }}>
               <span className="text-3xl">{"\uD83D\uDCE6"}</span>
               <span className="text-sm">二进制文件 ({ext})</span>
               <span className="text-xs">{formatSize(fileContent.size)}</span>
             </div>
           ) : fileContent.content !== null ? (
-            ext === ".md" ? (
+            ext === ".html" && htmlViewMode === "preview" ? (
+              <iframe
+                srcDoc={fileContent.content}
+                className="w-full h-full border-0"
+                title={selectedFile}
+                sandbox="allow-scripts"
+              />
+            ) : ext === ".md" ? (
               <div className="p-4"><MarkdownContent>{fileContent.content}</MarkdownContent></div>
             ) : CODE_EXTS.has(ext) ? (
               <div className="p-4"><MarkdownContent>{`\`\`\`${LANG_MAP[ext] ?? ""}\n${fileContent.content}\n\`\`\``}</MarkdownContent></div>

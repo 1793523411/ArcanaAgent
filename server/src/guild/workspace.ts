@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, resolve, relative } from "path";
 import type { TaskHandoff } from "./types.js";
+import { atomicWriteFileSync } from "./atomicFs.js";
 
 /**
  * Per-requirement shared workspace ("living blackboard").
@@ -189,7 +190,7 @@ export function createWorkspace(
     handoffs: "_No handoffs yet._",
     openQuestions: "_No open questions._",
   };
-  writeFileSync(workspacePath(groupId, parentTaskId), renderWorkspace(ws));
+  atomicWriteFileSync(workspacePath(groupId, parentTaskId), renderWorkspace(ws));
   return getWorkspaceRef(groupId, parentTaskId);
 }
 
@@ -215,7 +216,7 @@ export function readWorkspaceRaw(groupId: string, parentTaskId: string): string 
 
 function writeWorkspace(groupId: string, parentTaskId: string, ws: Workspace): void {
   ws.meta.updatedAt = new Date().toISOString();
-  writeFileSync(workspacePath(groupId, parentTaskId), renderWorkspace(ws));
+  atomicWriteFileSync(workspacePath(groupId, parentTaskId), renderWorkspace(ws));
 }
 
 export function setWorkspaceStatus(

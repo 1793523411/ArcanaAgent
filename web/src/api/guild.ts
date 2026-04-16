@@ -18,6 +18,8 @@ export interface FileReadResult {
   size: number;
   ext: string;
   binary: boolean;
+  /** For image files: data URL the UI can drop straight into <img src>. */
+  dataUrl?: string;
 }
 
 // ─── AI Generation ────────────────────────────────────

@@ -16,8 +16,8 @@ interface Props {
   agentOutputs: Record<string, string>;
   onClose: () => void;
   onEditAgent?: (id: string) => void;
-  onDeleteAgent?: (id: string) => void;
-  onReleaseAgent?: (id: string) => void;
+  onDeleteAgent?: (id: string) => Promise<void> | void;
+  onReleaseAgent?: (id: string) => Promise<void> | void;
   onViewLog?: (taskId: string) => void;
   onSelectTask?: (id: string) => void;
   onOpenWorkspace?: (agentId: string) => void;
@@ -68,6 +68,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
   const [expandedDAG, setExpandedDAG] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [releaseBusy, setReleaseBusy] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [workspaceMd, setWorkspaceMd] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -190,27 +192,41 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
 
             <ConfirmDialog
               open={confirmRelease}
-              onOpenChange={setConfirmRelease}
-              onConfirm={() => {
-                setConfirmRelease(false);
-                onReleaseAgent?.(selectedAgent.id);
+              onOpenChange={(o) => { if (!o && !releaseBusy) setConfirmRelease(false); }}
+              onConfirm={async () => {
+                if (!onReleaseAgent) return;
+                setReleaseBusy(true);
+                try {
+                  await onReleaseAgent(selectedAgent.id);
+                  setConfirmRelease(false);
+                } finally {
+                  setReleaseBusy(false);
+                }
               }}
               title={`释放 Agent「${selectedAgent.name}」?`}
               description={"当前任务会被取消，Agent 重置为空闲。\n自治调度器会重新分配新任务。"}
               confirmLabel="释放"
               variant="warning"
+              loading={releaseBusy}
             />
             <ConfirmDialog
               open={confirmDelete}
-              onOpenChange={setConfirmDelete}
-              onConfirm={() => {
-                setConfirmDelete(false);
-                onDeleteAgent?.(selectedAgent.id);
+              onOpenChange={(o) => { if (!o && !deleteBusy) setConfirmDelete(false); }}
+              onConfirm={async () => {
+                if (!onDeleteAgent) return;
+                setDeleteBusy(true);
+                try {
+                  await onDeleteAgent(selectedAgent.id);
+                  setConfirmDelete(false);
+                } finally {
+                  setDeleteBusy(false);
+                }
               }}
               title={`删除 Agent「${selectedAgent.name}」?`}
               description="删除后无法恢复，该 Agent 的历史任务记录仍会保留。"
               confirmLabel="删除"
               variant="danger"
+              loading={deleteBusy}
             />
 
             {/* Stats */}

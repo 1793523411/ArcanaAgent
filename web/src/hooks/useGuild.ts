@@ -19,6 +19,7 @@ import {
   removeAgentFromGroup,
   autoBidTask,
   setGroupLead,
+  updateGroup,
 } from "../api/guild";
 
 export function useGuild() {
@@ -175,6 +176,14 @@ export function useGuild() {
     [loadAll]
   );
 
+  const handleUpdateGroup = useCallback(
+    async (groupId: string, payload: { name?: string; description?: string }) => {
+      await updateGroup(groupId, payload);
+      await loadAll();
+    },
+    [loadAll]
+  );
+
   const handleDeleteTask = useCallback(
     async (taskId: string) => {
       await deleteGuildTask(taskId, selectedGroupId ?? undefined);
@@ -216,6 +225,7 @@ export function useGuild() {
     createGroup: handleCreateGroup,
     deleteGroup: handleDeleteGroup,
     setGroupLead: handleSetGroupLead,
+    updateGroup: handleUpdateGroup,
     createAgent: handleCreateAgent,
     updateAgent: handleUpdateAgent,
     deleteAgent: handleDeleteAgent,

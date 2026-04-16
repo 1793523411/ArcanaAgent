@@ -14,6 +14,7 @@ interface Props {
   onRemoveAgentFromGroup: (groupId: string, agentId: string) => Promise<void>;
   onDeleteGroup: (groupId: string) => Promise<void>;
   onSetGroupLead: (groupId: string, agentId: string | null) => Promise<void>;
+  onUpdateGroup: (groupId: string, payload: { name?: string; description?: string }) => Promise<void>;
 }
 
 function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
@@ -26,13 +27,43 @@ function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
 export default function GroupList({
   groups, agents, selectedGroupId,
   onSelectGroup, onSelectAgent, onCreateGroup, onCreateAgent,
-  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup, onSetGroupLead,
+  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup, onSetGroupLead, onUpdateGroup,
 }: Props) {
   // Pool: agents not in any group, plus all agents for multi-group assignment
   const poolAgents = agents.filter((a) => !a.groupId);
   const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
   const [assigningTo, setAssigningTo] = useState<string | null>(null);
   const [deletingGroup, setDeletingGroup] = useState<Group | null>(null);
+  const [deletingInFlight, setDeletingInFlight] = useState(false);
+  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [addingAgentKey, setAddingAgentKey] = useState<string | null>(null);
+  const [removingAgentKey, setRemovingAgentKey] = useState<string | null>(null);
+  const [settingLeadGroup, setSettingLeadGroup] = useState<string | null>(null);
+
+  const startEdit = (g: Group) => {
+    setEditingGroupId(g.id);
+    setEditName(g.name);
+    setEditDescription(g.description ?? "");
+  };
+  const cancelEdit = () => {
+    setEditingGroupId(null);
+    setEditName("");
+    setEditDescription("");
+  };
+  const saveEdit = async (groupId: string) => {
+    const trimmed = editName.trim();
+    if (!trimmed) return;
+    setSavingEdit(true);
+    try {
+      await onUpdateGroup(groupId, { name: trimmed, description: editDescription.trim() });
+      cancelEdit();
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full">
@@ -115,6 +146,49 @@ export default function GroupList({
               {/* Expanded: show group members + actions */}
               {expanded && (
                 <div className="ml-4 mt-1 mb-2 space-y-1">
+                  {editingGroupId === group.id && (
+                    <div
+                      className="px-2 py-2 space-y-1.5 rounded"
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <input
+                        className="w-full text-xs px-2 py-1 rounded"
+                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                        value={editName}
+                        placeholder="小组名称"
+                        disabled={savingEdit}
+                        onChange={(e) => setEditName(e.target.value)}
+                      />
+                      <textarea
+                        className="w-full text-xs px-2 py-1 rounded resize-none"
+                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+                        value={editDescription}
+                        placeholder="描述（可选）"
+                        rows={2}
+                        disabled={savingEdit}
+                        onChange={(e) => setEditDescription(e.target.value)}
+                      />
+                      <div className="flex gap-1.5 justify-end">
+                        <button
+                          className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                          style={{ color: "var(--color-text-muted)" }}
+                          disabled={savingEdit}
+                          onClick={cancelEdit}
+                        >
+                          取消
+                        </button>
+                        <button
+                          className="text-[10px] px-2 py-0.5 rounded"
+                          style={{ background: "var(--color-accent)", color: "white", opacity: savingEdit || !editName.trim() ? 0.6 : 1 }}
+                          disabled={savingEdit || !editName.trim()}
+                          onClick={() => saveEdit(group.id)}
+                        >
+                          {savingEdit ? "保存中…" : "保存"}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   {groupAgents.map((a) => (
                     <div
                       key={a.id}
@@ -128,15 +202,22 @@ export default function GroupList({
                         style={{ background: a.status === "working" ? "#22c55e" : "var(--color-border)" }}
                       />
                       <button
-                        className="text-[10px] px-1 hover:text-red-400"
+                        className="text-[10px] px-1 hover:text-red-400 disabled:opacity-50"
                         style={{ color: "var(--color-text-muted)" }}
                         title="移出小组"
-                        onClick={(e) => {
+                        disabled={removingAgentKey === `${group.id}:${a.id}`}
+                        onClick={async (e) => {
                           e.stopPropagation();
-                          onRemoveAgentFromGroup(group.id, a.id);
+                          const key = `${group.id}:${a.id}`;
+                          setRemovingAgentKey(key);
+                          try {
+                            await onRemoveAgentFromGroup(group.id, a.id);
+                          } finally {
+                            setRemovingAgentKey(null);
+                          }
                         }}
                       >
-                        ✕
+                        {removingAgentKey === `${group.id}:${a.id}` ? "…" : "✕"}
                       </button>
                     </div>
                   ))}
@@ -149,12 +230,18 @@ export default function GroupList({
                       </div>
                       <select
                         value={group.leadAgentId ?? ""}
-                        onChange={(e) => {
+                        disabled={settingLeadGroup === group.id}
+                        onChange={async (e) => {
                           const val = e.target.value;
-                          onSetGroupLead(group.id, val === "" ? null : val);
+                          setSettingLeadGroup(group.id);
+                          try {
+                            await onSetGroupLead(group.id, val === "" ? null : val);
+                          } finally {
+                            setSettingLeadGroup(null);
+                          }
                         }}
                         onClick={(e) => e.stopPropagation()}
-                        className="w-full text-xs px-2 py-1 rounded"
+                        className="w-full text-xs px-2 py-1 rounded disabled:opacity-60"
                         style={{
                           background: "var(--color-bg)",
                           border: "1px solid var(--color-border)",
@@ -186,20 +273,31 @@ export default function GroupList({
                             </div>
                           );
                         }
-                        return available.map((a) => (
-                          <button
-                            key={a.id}
-                            className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-xs hover:bg-[var(--color-surface-hover)] text-left"
-                            onClick={() => {
-                              onAddAgentToGroup(group.id, a.id);
-                              setAssigningTo(null);
-                            }}
-                          >
-                            <span>{a.icon}</span>
-                            <span style={{ color: a.color }}>{a.name}</span>
-                            {a.groupId && <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>(已在其他组)</span>}
-                          </button>
-                        ));
+                        return available.map((a) => {
+                          const key = `${group.id}:${a.id}`;
+                          const busy = addingAgentKey === key;
+                          return (
+                            <button
+                              key={a.id}
+                              disabled={addingAgentKey !== null}
+                              className="w-full flex items-center gap-1.5 px-2 py-1 rounded text-xs hover:bg-[var(--color-surface-hover)] text-left disabled:opacity-60"
+                              onClick={async () => {
+                                setAddingAgentKey(key);
+                                try {
+                                  await onAddAgentToGroup(group.id, a.id);
+                                  setAssigningTo(null);
+                                } finally {
+                                  setAddingAgentKey(null);
+                                }
+                              }}
+                            >
+                              <span>{a.icon}</span>
+                              <span style={{ color: a.color }}>{a.name}</span>
+                              {a.groupId && <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>(已在其他组)</span>}
+                              {busy && <span className="ml-auto text-[10px]" style={{ color: "var(--color-text-muted)" }}>添加中…</span>}
+                            </button>
+                          );
+                        });
                       })()}
                       <button
                         className="text-[10px] px-2 py-0.5"
@@ -217,6 +315,13 @@ export default function GroupList({
                         onClick={(e) => { e.stopPropagation(); setAssigningTo(group.id); }}
                       >
                         + 添加成员
+                      </button>
+                      <button
+                        className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: "var(--color-text-muted)" }}
+                        onClick={(e) => { e.stopPropagation(); startEdit(group); }}
+                      >
+                        编辑
                       </button>
                       <button
                         className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
@@ -272,16 +377,23 @@ export default function GroupList({
       </div>
       <ConfirmDialog
         open={!!deletingGroup}
-        onOpenChange={(o) => { if (!o) setDeletingGroup(null); }}
-        onConfirm={() => {
+        onOpenChange={(o) => { if (!o && !deletingInFlight) setDeletingGroup(null); }}
+        onConfirm={async () => {
           const g = deletingGroup;
-          setDeletingGroup(null);
-          if (g) onDeleteGroup(g.id);
+          if (!g) return;
+          setDeletingInFlight(true);
+          try {
+            await onDeleteGroup(g.id);
+            setDeletingGroup(null);
+          } finally {
+            setDeletingInFlight(false);
+          }
         }}
         title={deletingGroup ? `删除小组「${deletingGroup.name}」?` : "删除小组?"}
         description="删除后无法恢复。组内的 Agent 会被移到空闲池，历史任务记录保留。"
         confirmLabel="删除"
         variant="danger"
+        loading={deletingInFlight}
       />
     </div>
   );

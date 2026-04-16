@@ -140,7 +140,13 @@ export function validatePipeline(tpl: PipelineTemplate): PipelineValidationError
     errs.push({ path: "steps", message: "至少需要一个 step" });
     return errs;
   }
-  const inputNames = new Set((tpl.inputs ?? []).map((i) => i.name));
+  // Reserved context keys injected by expandPipeline — always available
+  // alongside user-declared inputs.
+  const RESERVED_CTX = ["parent_id", "parent_title", "parent_priority"] as const;
+  const inputNames = new Set<string>([
+    ...(tpl.inputs ?? []).map((i) => i.name),
+    ...RESERVED_CTX,
+  ]);
   for (const [i, inp] of (tpl.inputs ?? []).entries()) {
     if (!inp.name || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(inp.name)) {
       errs.push({ path: `inputs[${i}].name`, message: "input name 必须是合法标识符" });
@@ -196,11 +202,11 @@ export function validatePipeline(tpl: PipelineTemplate): PipelineValidationError
       }
       if (step.retry) {
         const r = step.retry;
-        if (typeof r.max !== "number" || r.max < 1 || !Number.isInteger(r.max)) {
-          errs.push({ path: `${base}.retry.max`, message: "retry.max 必须是 ≥1 的整数" });
+        if (typeof r.max !== "number" || r.max < 1 || r.max > 10 || !Number.isInteger(r.max)) {
+          errs.push({ path: `${base}.retry.max`, message: "retry.max 必须是 1-10 之间的整数" });
         }
-        if (r.backoffMs !== undefined && (typeof r.backoffMs !== "number" || r.backoffMs < 0)) {
-          errs.push({ path: `${base}.retry.backoffMs`, message: "retry.backoffMs 必须是 ≥0 的数字" });
+        if (r.backoffMs !== undefined && (typeof r.backoffMs !== "number" || r.backoffMs < 0 || r.backoffMs > 600000)) {
+          errs.push({ path: `${base}.retry.backoffMs`, message: "retry.backoffMs 必须是 0-600000（10分钟）之间的数字" });
         }
         if (r.onExhausted && !["fail", "fallback", "skip"].includes(r.onExhausted)) {
           errs.push({ path: `${base}.retry.onExhausted`, message: "onExhausted 必须是 fail/fallback/skip" });
@@ -217,27 +223,34 @@ export function validatePipeline(tpl: PipelineTemplate): PipelineValidationError
   validateSteps(tpl.steps, "steps");
   // Reference ${var} that isn't declared in inputs — hard error, deduplicated.
   const undeclared = new Set<string>();
-  const interpolate = (s: string | undefined) => {
+  const interpolate = (s: string | undefined, scope: Set<string>) => {
     if (!s) return;
     for (const m of s.matchAll(/\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g)) {
-      if (!inputNames.has(m[1])) undeclared.add(m[1]);
+      if (!scope.has(m[1])) undeclared.add(m[1]);
     }
   };
-  const walkStrings = (steps: PipelineStepSpec[]): void => {
+  const walkStrings = (steps: PipelineStepSpec[], scope: Set<string>): void => {
     for (const step of steps) {
-      interpolate(step.title);
-      interpolate(step.description);
-      interpolate(step.acceptanceCriteria);
+      interpolate(step.title, scope);
+      interpolate(step.description, scope);
+      interpolate(step.acceptanceCriteria, scope);
       if (step.retry?.fallback) {
-        interpolate(step.retry.fallback.title);
-        interpolate(step.retry.fallback.description);
-        interpolate(step.retry.fallback.acceptanceCriteria);
+        interpolate(step.retry.fallback.title, scope);
+        interpolate(step.retry.fallback.description, scope);
+        interpolate(step.retry.fallback.acceptanceCriteria, scope);
       }
-      if (step.then) walkStrings(step.then);
-      if (step.else) walkStrings(step.else);
+      if (step.then) walkStrings(step.then, scope);
+      if (step.else) walkStrings(step.else, scope);
+      if (step.body) {
+        // Inside foreach body, the loop variable is in scope.
+        const inner = step.as ? new Set([...scope, step.as]) : scope;
+        interpolate(step.items, scope); // items resolves against OUTER scope
+        walkStrings(step.body, inner);
+        if (step.join) walkStrings([step.join], inner);
+      }
     }
   };
-  walkStrings(tpl.steps);
+  walkStrings(tpl.steps, inputNames);
   for (const name of undeclared) {
     errs.push({ path: "steps", message: `引用了未声明的 input: \${${name}}` });
   }
@@ -423,7 +436,9 @@ function flattenSteps(
   steps: PipelineStepSpec[],
   inputs: Record<string, string>,
   decisions: BranchDecision[],
+  locals: Record<string, string> = {},
 ): FlatStep[] {
+  const ctx = { ...inputs, ...locals };
   const out: FlatStep[] = [];
   const outerToLastFlat = new Map<number, number>();
   steps.forEach((step, outerIdx) => {
@@ -435,7 +450,7 @@ function flattenSteps(
       out.push({ step, deps: outerDeps });
       outerToLastFlat.set(outerIdx, out.length - 1);
     } else if (kind === "foreach") {
-      const items = resolveForeachItems(step.items ?? "", inputs);
+      const items = resolveForeachItems(step.items ?? "", ctx);
       if (items.length === 0) {
         decisions.push({ label: step.title || `foreach#${outerIdx}`, taken: "empty" });
         return;
@@ -444,7 +459,7 @@ function flattenSteps(
       const iterLastIndices: number[] = [];
       for (const item of items) {
         const bodySteps = (step.body ?? []).map((s) => substituteStepVar(s, step.as!, item));
-        const subFlat = flattenSteps(bodySteps, inputs, decisions);
+        const subFlat = flattenSteps(bodySteps, inputs, decisions, { ...locals, [step.as!]: item });
         if (subFlat.length === 0) continue;
         const offset = out.length;
         subFlat.forEach((fs, i) => {
@@ -470,7 +485,7 @@ function flattenSteps(
       // branch — evaluate at expansion time.
       let result = false;
       try {
-        result = evaluate(step.when, inputs);
+        result = evaluate(step.when, ctx);
       } catch {
         result = false;
       }
@@ -482,7 +497,7 @@ function flattenSteps(
         return;
       }
       decisions.push({ label: step.title || `branch#${outerIdx}`, taken: result ? "then" : "else" });
-      const subFlat = flattenSteps(chosen, inputs, decisions);
+      const subFlat = flattenSteps(chosen, inputs, decisions, locals);
       const offset = out.length;
       subFlat.forEach((fs, i) => {
         const globalDeps = fs.deps.map((d) => d + offset);
@@ -550,7 +565,16 @@ export function expandPipeline(
   if (missing.length > 0) {
     return { ok: false, reason: `Missing required inputs: ${missing.join(", ")}` };
   }
-  const inputs = withDefaults(template, rawInputs);
+  const userInputs = withDefaults(template, rawInputs);
+  // Enrich context with parent task metadata so `when`/`items`/text
+  // substitution can reference `${parent_priority}`, `${parent_title}`,
+  // `${parent_id}`. Prefixed to avoid collisions with user-declared inputs.
+  const inputs: Record<string, string> = {
+    ...userInputs,
+    parent_id: parent.id,
+    parent_title: parent.title,
+    parent_priority: parent.priority,
+  };
 
   // Workspace up-front so the plan table has somewhere to live.
   const workspaceRef = createWorkspace(
@@ -598,7 +622,15 @@ export function expandPipeline(
   });
 
   const subtaskIds = created.map((t) => t.id);
-  updateTask(groupId, parent.id, { status: "open", subtaskIds });
+  // Move the pipeline parent into in_progress so the UI renders it in the
+  // same column as its running children. Leaving it in "open" caused the
+  // parent group header to orphan in 待处理 while subtasks showed as a
+  // ghost-req group in 进行中 — users read that as "一个独立于需求之外的任务".
+  updateTask(groupId, parent.id, {
+    status: "in_progress",
+    startedAt: new Date().toISOString(),
+    subtaskIds,
+  });
 
   updatePlanSection(groupId, parent.id, renderPlanTable(created));
   updateScopeSection(groupId, parent.id, renderScopeMd(template, inputs));

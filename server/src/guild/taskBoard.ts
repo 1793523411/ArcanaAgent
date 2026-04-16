@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, appendFileSync, rea
 import { join, resolve } from "path";
 import type { GuildTask, TaskStatus, TaskPriority, CreateTaskParams, TaskResult } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
+import { atomicWriteFileSync } from "./atomicFs.js";
 
 export interface ExecutionLogEntry {
   type: "text" | "reasoning" | "tool_call" | "tool_result" | "plan" | "harness";
@@ -46,7 +47,7 @@ function loadTasks(groupId: string): GuildTask[] {
 
 function saveTasks(groupId: string, tasks: GuildTask[]): void {
   ensureDir(join(GROUPS_DIR, groupId));
-  writeFileSync(tasksPath(groupId), JSON.stringify(tasks, null, 2));
+  atomicWriteFileSync(tasksPath(groupId), JSON.stringify(tasks, null, 2));
 }
 
 // ─── CRUD ───────────────────────────────────────────────────────
@@ -240,6 +241,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
       });
       if (task) {
         guildEventBus.emit({ type: "task_cancelled", taskId });
+        cascadeFailureToDependents(groupId, taskId, `依赖任务已跳过（${task.title}）`);
         rollupParentRequirement(groupId, task);
       }
       return task;
@@ -291,6 +293,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
   });
   if (task) {
     guildEventBus.emit({ type: "task_failed", taskId, agentId, error });
+    cascadeFailureToDependents(groupId, taskId, `依赖任务失败（${task.title}）`);
     rollupParentRequirement(groupId, task);
   }
   return task;
@@ -300,8 +303,42 @@ export function cancelTask(groupId: string, taskId: string): GuildTask | null {
   const task = updateTask(groupId, taskId, { status: "cancelled" });
   if (task) {
     guildEventBus.emit({ type: "task_cancelled", taskId });
+    cascadeFailureToDependents(groupId, taskId, `依赖任务已取消（${task.title}）`);
+    rollupParentRequirement(groupId, task);
   }
   return task;
+}
+
+/**
+ * When a task ends in a terminal non-completed state (failed/cancelled), any
+ * downstream task that depends on it will never have deps-ready. Rather than
+ * leaving the pipeline deadlocked with open children and an un-rolled-up
+ * parent, recursively cancel the dependents so the parent can finalize.
+ */
+function cascadeFailureToDependents(groupId: string, failedTaskId: string, reason: string): void {
+  const tasks = loadTasks(groupId);
+  const queue: string[] = [failedTaskId];
+  const visited = new Set<string>();
+  while (queue.length) {
+    const src = queue.shift()!;
+    if (visited.has(src)) continue;
+    visited.add(src);
+    for (const t of tasks) {
+      if (isTerminalStatus(t.status)) continue;
+      if (!t.dependsOn?.includes(src)) continue;
+      const now = new Date().toISOString();
+      const updated = updateTask(groupId, t.id, {
+        status: "cancelled",
+        completedAt: now,
+        skippedReason: `级联取消：${reason}`,
+      });
+      if (updated) {
+        guildEventBus.emit({ type: "task_cancelled", taskId: t.id });
+        queue.push(t.id);
+        rollupParentRequirement(groupId, updated);
+      }
+    }
+  }
 }
 
 /**
@@ -424,7 +461,7 @@ export function initExecutionLog(groupId: string, taskId: string, agentId: strin
     status: "working",
     startedAt: new Date().toISOString(),
   };
-  writeFileSync(logPath(groupId, taskId), JSON.stringify(log, null, 2));
+  atomicWriteFileSync(logPath(groupId, taskId), JSON.stringify(log, null, 2));
 }
 
 /** Append an event to a task execution log */

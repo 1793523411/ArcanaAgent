@@ -54,12 +54,28 @@ function scanInner(rootDir: string, currentDir: string, depth: number, maxDepth:
 }
 
 const MAX_FILE_SIZE = 2 * 1024 * 1024; // 2MB
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB — images are base64-inlined so allow a bit more.
+const MAX_PDF_SIZE = 10 * 1024 * 1024; // 10MB — PDFs inlined as base64 data URL for iframe rendering.
 const BINARY_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf", ".zip", ".tar", ".gz", ".bin", ".exe", ".dll", ".so", ".woff", ".woff2", ".ttf", ".eot"]);
+const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico"]);
+const IMAGE_MIME: Record<string, string> = {
+  ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+  ".gif": "image/gif", ".webp": "image/webp", ".ico": "image/x-icon",
+};
+
+export interface SafeReadResult {
+  content: string | null;
+  size: number;
+  ext: string;
+  binary: boolean;
+  /** Data URL (e.g. "data:image/png;base64,...") when the file is an inlineable image. */
+  dataUrl?: string;
+}
 
 /**
  * Safely read a file within a root directory. Returns null if path traversal is detected.
  */
-export function safeReadFile(rootDir: string, filePath: string): { content: string | null; size: number; ext: string; binary: boolean } | null {
+export function safeReadFile(rootDir: string, filePath: string): SafeReadResult | null {
   const absRoot = resolve(rootDir);
   const absFile = resolve(rootDir, filePath);
   // Path traversal protection (textual check first, then symlink-aware)
@@ -75,6 +91,20 @@ export function safeReadFile(rootDir: string, filePath: string): { content: stri
     if (!st.isFile()) return null;
     const ext = extname(filePath).toLowerCase();
     const binary = BINARY_EXTS.has(ext);
+
+    // Inline images as base64 data URLs so the UI can render <img src=...>.
+    if (IMAGE_EXTS.has(ext) && st.size <= MAX_IMAGE_SIZE) {
+      const buf = readFileSync(absFile);
+      const dataUrl = `data:${IMAGE_MIME[ext] ?? "application/octet-stream"};base64,${buf.toString("base64")}`;
+      return { content: null, size: st.size, ext, binary: true, dataUrl };
+    }
+
+    // Inline PDFs as base64 data URLs so the UI can render <iframe src=...>.
+    if (ext === ".pdf" && st.size <= MAX_PDF_SIZE) {
+      const buf = readFileSync(absFile);
+      const dataUrl = `data:application/pdf;base64,${buf.toString("base64")}`;
+      return { content: null, size: st.size, ext, binary: true, dataUrl };
+    }
 
     if (binary || st.size > MAX_FILE_SIZE) {
       return { content: null, size: st.size, ext, binary: true };

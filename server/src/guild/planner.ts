@@ -394,12 +394,14 @@ export async function planRequirement(
     idByIndex.set(i, sub.id);
   }
 
-  // Update requirement with subtaskIds and status. A requirement with children
-  // stays in a non-terminal "planning_done" state — we reuse "open" here but
-  // bidding.ts will refuse to bid on it (kind === "requirement").
+  // A requirement with children is an orchestration container, not a
+  // biddable task. Mark it in_progress so the UI renders the group header
+  // in the same column as its running subtasks. Bidding/scheduling skip
+  // kind === "requirement" regardless of status.
   const subtaskIds = createdSubtasks.map((t) => t.id);
   updateTask(groupId, requirement.id, {
-    status: "open",
+    status: "in_progress",
+    startedAt: new Date().toISOString(),
     subtaskIds,
   });
 

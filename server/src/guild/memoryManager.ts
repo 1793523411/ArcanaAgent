@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs";
 import { join, resolve } from "path";
 import type { AgentMemory, MemoryType, GuildTask, TaskResult } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
@@ -55,12 +55,24 @@ function migrate(m: AgentMemory | (Partial<AgentMemory> & { id: string })): Agen
   };
 }
 
+// Cache loaded indexes across calls; invalidate via file mtime so external
+// writers (tests, ad-hoc edits) still get picked up automatically.
+const indexCache = new Map<string, { mtimeMs: number; memories: AgentMemory[] }>();
+
 function loadIndex(agentId: string): AgentMemory[] {
   const p = indexPath(agentId);
-  if (!existsSync(p)) return [];
+  if (!existsSync(p)) {
+    indexCache.delete(agentId);
+    return [];
+  }
   try {
+    const mtimeMs = statSync(p).mtimeMs;
+    const cached = indexCache.get(agentId);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.memories;
     const raw = JSON.parse(readFileSync(p, "utf-8")) as Array<Partial<AgentMemory> & { id: string }>;
-    return raw.map(migrate);
+    const memories = raw.map(migrate);
+    indexCache.set(agentId, { mtimeMs, memories });
+    return memories;
   } catch {
     return [];
   }
@@ -68,7 +80,13 @@ function loadIndex(agentId: string): AgentMemory[] {
 
 function saveIndex(agentId: string, memories: AgentMemory[]): void {
   ensureDir(memoryBaseDir(agentId));
-  writeFileSync(indexPath(agentId), JSON.stringify(memories, null, 2));
+  const p = indexPath(agentId);
+  writeFileSync(p, JSON.stringify(memories, null, 2));
+  try {
+    indexCache.set(agentId, { mtimeMs: statSync(p).mtimeMs, memories });
+  } catch {
+    indexCache.delete(agentId);
+  }
 }
 
 // ─── CRUD ───────────────────────────────────────────────────────
@@ -193,36 +211,88 @@ export function pruneWeakMemories(agentId: string, maxItems = 500): number {
   return dropped;
 }
 
-/** Search memories by keyword matching against title, summary, content, and tags.
- *  Persists access-count increments — the v1 version mutated in-memory only. */
+const CJK_RE = /[\u3400-\u9fff\uF900-\uFAFF]/;
+
+/** Produce search tokens: whitespace-split Latin words + CJK character bigrams.
+ *  Bigrams matter because `"部署失败"`-style Chinese queries otherwise degrade
+ *  to a single-token substring match and miss closely related memories. */
+function tokenize(text: string): string[] {
+  const lower = text.toLowerCase();
+  const tokens = new Set<string>();
+  for (const w of lower.split(/[\s,;.!?，。；！？、"'`()\[\]{}<>]+/)) {
+    if (w.length > 2 && !CJK_RE.test(w)) tokens.add(w);
+  }
+  // CJK bigrams — walk contiguous runs of CJK chars.
+  let run = "";
+  const flush = () => {
+    if (run.length >= 2) {
+      for (let i = 0; i + 1 < run.length; i++) tokens.add(run.slice(i, i + 2));
+    }
+    run = "";
+  };
+  for (const ch of lower) {
+    if (CJK_RE.test(ch)) run += ch;
+    else flush();
+  }
+  flush();
+  return Array.from(tokens);
+}
+
+/** Count non-overlapping occurrences of `needle` in `haystack` (both lowercased). */
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let idx = 0;
+  while ((idx = haystack.indexOf(needle, idx)) !== -1) {
+    count++;
+    idx += needle.length;
+  }
+  return count;
+}
+
+/** Search memories with field-weighted token matching.
+ *  Title/tags are strongest signals, summary next, content weakest per hit.
+ *  Persists access-count increments so frequently-useful memories surface faster. */
 export function searchRelevant(agentId: string, taskDescription: string, limit = 10): AgentMemory[] {
   const memories = loadIndex(agentId);
-  const keywords = taskDescription
-    .toLowerCase()
-    .split(/[\s,;.!?]+/)
-    .filter((w) => w.length > 2);
+  if (memories.length === 0) return [];
+  const tokens = tokenize(taskDescription);
+  if (tokens.length === 0) return [];
 
-  const scored = memories.map((m) => {
-    const text = `${m.title} ${m.summary ?? ""} ${m.content} ${m.tags.join(" ")}`.toLowerCase();
+  const scored: Array<{ memory: AgentMemory; score: number }> = [];
+  for (const m of memories) {
+    const title = m.title.toLowerCase();
+    const summary = (m.summary ?? "").toLowerCase();
+    const content = m.content.toLowerCase();
+    const tagText = m.tags.join(" ").toLowerCase();
+
     let score = 0;
-    for (const kw of keywords) {
-      if (text.includes(kw)) score++;
+    let matchedTokens = 0;
+    for (const tk of tokens) {
+      const hTitle = countOccurrences(title, tk);
+      const hTags = countOccurrences(tagText, tk);
+      const hSummary = countOccurrences(summary, tk);
+      const hContent = countOccurrences(content, tk);
+      if (hTitle || hTags || hSummary || hContent) matchedTokens++;
+      // Weighted: title 4x, tags 2.5x, summary 1.5x, content 1x (content capped per-field to avoid length bias).
+      score += hTitle * 4 + hTags * 2.5 + hSummary * 1.5 + Math.min(hContent, 3);
     }
+    if (score === 0) continue;
+    // Coverage boost: matching many distinct tokens beats spamming the same token.
+    score += matchedTokens * 0.5;
+
     const ageDays = (Date.now() - new Date(m.createdAt).getTime()) / (1000 * 60 * 60 * 24);
     const recencyBoost = Math.max(0, 1 - ageDays / 60); // half-life ~2 months
     score += recencyBoost * 0.5;
     score += Math.min((m.accessCount ?? 0) / 10, 0.5);
     score += Math.min((m.strength ?? 0) / 10, 0.5);
     if (m.pinned) score += 0.5;
-    return { memory: m, score };
-  });
+    scored.push({ memory: m, score });
+  }
 
-  const hits = scored
-    .filter((s) => s.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
-
-  if (hits.length === 0) return [];
+  if (scored.length === 0) return [];
+  scored.sort((a, b) => b.score - a.score);
+  const hits = scored.slice(0, limit);
 
   // Persist access bumps once per call so lookups compound usefully over time.
   const now = new Date().toISOString();
