@@ -1,0 +1,85 @@
+{
+  "id": "blog-writer",
+  "name": "技术博客协作写作",
+  "description": "调研→拆分并行起草原理/示例/陷阱→整合→评审→定稿",
+  "inputs": [
+    {
+      "name": "topic",
+      "label": "博客主题",
+      "required": true
+    },
+    {
+      "name": "audience",
+      "label": "目标读者（如：Node.js 后端工程师）",
+      "required": true,
+      "default": "资深工程师"
+    }
+  ],
+  "steps": [
+    {
+      "title": "调研主题",
+      "description": "围绕主题「${topic}」为读者「${audience}」进行背景调研。**必须先用 Write 工具在共享目录创建 `research.md`**，内容包含：\n1. 主题的核心概念与定义（3-5 条）\n2. 当前最佳实践与主流方案（至少 3 条）\n3. 常见误区或反模式（至少 3 条）\n4. 给下游写作者的关键事实清单\n\n写文件后在 Handoff 的 `artifacts` 里声明 `{kind:'file', ref:'research.md'}`，并把 3-5 条关键事实写进 memories (type=knowledge)。\n\n⚠ 如果你只在对话里列出内容却没落盘 `research.md`，下游任务会拿不到资料直接失败。",
+      "suggestedSkills": ["web-search", "research"],
+      "priority": "medium",
+      "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 research.md，非空。",
+      "dependsOn": []
+    },
+    {
+      "title": "列文章大纲",
+      "description": "读取共享目录的 `research.md`。**必须先用 Write 工具在共享目录创建 `outline.md`**，再结束任务。outline 内容：5-8 节，每节有清晰标题 + 1 句导语，明确标注「原理 / 代码示例 / 陷阱」。总字数目标 2000-3500 字。\n\nHandoff 的 `inputsConsumed` 列出 `research.md`，`artifacts` 里声明 `{kind:'file', ref:'outline.md'}`。",
+      "priority": "medium",
+      "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 outline.md，非空。",
+      "dependsOn": [0]
+    },
+    {
+      "title": "起草 · 技术原理部分",
+      "description": "读取 `outline.md`。**必须用 Write 工具在共享目录创建 `draft-principles.md`**。内容要求：\n- 自包含（读者不需要查外部资料也能理解）\n- 对比至少 2 种方案并说明取舍\n- 避免口水，重点说「为什么」\n\nHandoff 声明 `{kind:'file', ref:'draft-principles.md'}`，并注明覆盖了哪些 outline 章节。",
+      "priority": "medium",
+      "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 draft-principles.md。",
+      "dependsOn": [1]
+    },
+    {
+      "title": "起草 · 代码示例部分",
+      "description": "读取 `outline.md`。**必须用 Write 工具在共享目录创建 `draft-examples.md`**，含至少 3 个可运行示例。每例：简短意图说明 + 完整代码 + 关键输出，语言风格贴合「${audience}」。\n\nHandoff 声明 `{kind:'file', ref:'draft-examples.md'}`。",
+      "priority": "medium",
+      "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 draft-examples.md。",
+      "dependsOn": [1]
+    },
+    {
+      "title": "起草 · 陷阱与反模式",
+      "description": "综合 `research.md` 和 `outline.md` 中的陷阱线索，**必须用 Write 工具在共享目录创建 `draft-pitfalls.md`**，列出至少 4 个踩坑点。每条含：现象 / 根因 / 正确做法。\n\nHandoff 声明 `{kind:'file', ref:'draft-pitfalls.md'}`。",
+      "priority": "medium",
+      "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 draft-pitfalls.md。",
+      "dependsOn": [0, 1]
+    },
+    {
+      "title": "整合全文",
+      "description": "**⚠ 关键约束：不要用 Read 工具读取 draft-*.md 的全文内容**（这些文件很大，读入 context 会撑爆 token 预算，你将无法完成后续输出）。\n\n**正确做法是用 Bash shell 直接拼接文件，你自己不消费原文内容。**\n\n精确执行以下步骤：\n1. 用 Bash 执行 `ls -la` 确认 4 个源文件（outline.md, draft-principles.md, draft-examples.md, draft-pitfalls.md）都在共享目录\n2. 用 Bash 执行 `wc -l` 看看每个 draft 的行数，对规模有个概念\n3. 用 Bash 一条命令生成 `draft-full.md`，格式如下：\n   ```bash\n   cd <shared_dir> && {\n     echo '# 博客草稿'; echo;\n     echo '## 原理'; echo;\n     cat draft-principles.md; echo;\n     echo '## 代码示例'; echo;\n     cat draft-examples.md; echo;\n     echo '## 陷阱与反模式'; echo;\n     cat draft-pitfalls.md;\n   } > draft-full.md\n   ```\n4. 用 Bash `wc -c draft-full.md` 验证产物非空\n5. **不需要输出任何整合后的内容**。直接在最终答复里简短写：\n   - \"已用 shell concat 拼接 3 份草稿到 draft-full.md，共 XXXX 字节\"\n   - Handoff: artifacts=[{kind:'file', ref:'draft-full.md'}], inputsConsumed=['outline.md','draft-principles.md','draft-examples.md','draft-pitfalls.md']",
+      "priority": "high",
+      "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 draft-full.md，非空。",
+      "dependsOn": [2, 3, 4]
+    },
+    {
+      "title": "同行评审",
+      "description": "读取共享目录 `draft-full.md`。站在「${audience}」角度审阅，**必须用 Write 工具在共享目录创建 `review.md`**，至少包含：\n- 3 处需要更清晰的表述（指出具体段落或句子）\n- 2 处事实或代码可疑（引用原文）\n- 整体节奏与信息密度评分（1-10）\n\nHandoff 声明 `{kind:'file', ref:'review.md'}`。",
+      "priority": "high",
+      "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
+      "acceptanceCriteria": "共享目录存在 review.md。",
+      "dependsOn": [5]
+    },
+    {
+      "title": "定稿",
+      "description": "**⚠ 同整合步骤：不要用 Read 读取 `draft-full.md` 全文**，它很大，读了你就没 token 输出 final.md 了。\n\n正确做法：\n1. 用 Bash 执行 `wc -c draft-full.md review.md` 看规模\n2. 用 Bash `cat review.md` 读审稿意见（这个文件小）\n3. 评估审稿意见，决定采纳 / 驳回，**列出 sed 或 Edit 指令**\n4. 用 Bash 先 `cp draft-full.md final.md`，再针对 review 中**具体**的问题用 Edit 工具对 final.md 做最小化修改（每处修改只触及几行，不读全文）\n5. 若 review 中没有具体可 actionable 的修改点（或作者评估认为不值得改），直接 `cp draft-full.md final.md` 即可，但 Handoff 必须明确说明「未作修改，原因：xxx」\n6. 用 `wc -c final.md` 验证非空\n\nHandoff summary：列出采纳/驳回的每条评审意见及理由；artifacts=[{kind:'file', ref:'final.md'}]; inputsConsumed=['draft-full.md','review.md']。",
+      "priority": "high",
+      "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
+      "acceptanceCriteria": "final.md 存在且非空；字数 2000-3500；含至少 3 个可运行代码示例；至少 4 个陷阱；评审里标记的事实疑点已处理或明确标注。",
+      "dependsOn": [5, 6]
+    }
+  ]
+}

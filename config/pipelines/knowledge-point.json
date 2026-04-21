@@ -1,0 +1,69 @@
+{
+  "id": "knowledge-point",
+  "name": "知识点图文生成",
+  "description": "抓页面→拆知识点→填内容→生成配图→上传CDN→生成题目→汇总",
+  "inputs": [
+    {
+      "name": "url",
+      "label": "目标网页 URL",
+      "required": true
+    }
+  ],
+  "steps": [
+    {
+      "title": "抓取规划页面",
+      "description": "用 playwright-web-capture 抓取 ${url} 的完整内容，保存为文本与 HTML 快照。",
+      "suggestedSkills": [
+        "playwright-web-capture"
+      ],
+      "dependsOn": []
+    },
+    {
+      "title": "拆分知识点",
+      "description": "阅读抓取结果，按二级标题拆为独立知识点，输出 JSON 骨架（每项含 title / summary）。",
+      "dependsOn": [
+        0
+      ]
+    },
+    {
+      "title": "填充知识点内容",
+      "description": "为每个知识点填写正文：violation / recommendation / enforcement_actions，严格忠于实原文。",
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "title": "生成配图",
+      "description": "为每个知识点用 image-generation 生成中文漫画风格配图。",
+      "suggestedSkills": [
+        "image-generation"
+      ],
+      "dependsOn": [
+        1
+      ]
+    },
+    {
+      "title": "图片打标与 CDN 上传",
+      "description": "对比原图与模型图，挑优后上传 CDN，回填地址。",
+      "dependsOn": [
+        3
+      ]
+    },
+    {
+      "title": "生成测试题",
+      "description": "为每个知识点设计 1–8 道深度测试题，覆盖认知 / 应用 / 决策三层。",
+      "dependsOn": [
+        2
+      ]
+    },
+    {
+      "title": "组装输出 + 质检",
+      "description": "组装最终 JSON + Markdown，按质检清单逐项检查。",
+      "dependsOn": [
+        2,
+        4,
+        5
+      ]
+    }
+  ]
+}
