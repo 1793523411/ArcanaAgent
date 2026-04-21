@@ -25,7 +25,7 @@ import { guildEventBus } from "./eventBus.js";
 import type { GuildEvent } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
 import { clearSchedulerLog, getSchedulerLog } from "./schedulerLogStore.js";
-import { listPipelines, getPipeline, expandPipeline, savePipeline, deletePipeline, validatePipeline, validateInputs } from "./pipelines.js";
+import { listPipelines, getPipeline, expandPipeline, savePipeline, deletePipeline, validatePipeline, validateInputs, withDefaults } from "./pipelines.js";
 
 /** Safely extract a single string from Express 5 params (string | string[]) */
 function p(val: string | string[] | undefined): string {
@@ -351,7 +351,8 @@ export function postGroupTaskFromPipeline(req: Request, res: Response): void {
       res.status(400).json({ error: "Pipeline template has no steps" });
       return;
     }
-    const missing = validateInputs(tpl, inputs);
+    const mergedInputs = withDefaults(tpl, inputs);
+    const missing = validateInputs(tpl, mergedInputs);
     if (missing.length > 0) {
       res.status(400).json({ error: `Missing required inputs: ${missing.join(", ")}` });
       return;
@@ -364,10 +365,10 @@ export function postGroupTaskFromPipeline(req: Request, res: Response): void {
       priority,
       createdBy,
       pipelineId: tpl.id,
-      pipelineInputs: inputs,
+      pipelineInputs: mergedInputs,
     });
 
-    const outcome = expandPipeline(groupId, parent, tpl, inputs);
+    const outcome = expandPipeline(groupId, parent, tpl, mergedInputs);
     if (!outcome.ok) {
       res.status(400).json({ error: outcome.reason ?? "Failed to expand pipeline", task: parent });
       return;

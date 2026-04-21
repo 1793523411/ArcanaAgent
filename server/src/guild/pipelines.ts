@@ -561,11 +561,12 @@ export function expandPipeline(
   if (!Array.isArray(template.steps) || template.steps.length === 0) {
     return { ok: false, reason: "Template has no steps" };
   }
-  const missing = validateInputs(template, rawInputs);
+  const mergedInputs = withDefaults(template, rawInputs);
+  const missing = validateInputs(template, mergedInputs);
   if (missing.length > 0) {
     return { ok: false, reason: `Missing required inputs: ${missing.join(", ")}` };
   }
-  const userInputs = withDefaults(template, rawInputs);
+  const userInputs = mergedInputs;
   // Enrich context with parent task metadata so `when`/`items`/text
   // substitution can reference `${parent_priority}`, `${parent_title}`,
   // `${parent_id}`. Prefixed to avoid collisions with user-declared inputs.
