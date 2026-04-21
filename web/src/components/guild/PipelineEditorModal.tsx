@@ -7,6 +7,7 @@ import {
   deletePipeline,
 } from "../../api/guild";
 import PipelineCanvas from "./PipelineCanvas";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   open: boolean;
@@ -28,6 +29,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
   const [view, setView] = useState<"list" | "canvas" | "json">("list");
   const [copied, setCopied] = useState<"ok" | "err" | null>(null);
   const [canvasSelected, setCanvasSelected] = useState<number | null>(null);
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   const refresh = async () => {
     try {
@@ -95,16 +97,28 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
     }
   };
 
-  const remove = async () => {
+  const remove = () => {
     if (!selectedId) return;
-    if (!confirm(`删除模板 "${draft.name}"？`)) return;
+    setConfirmingRemove(true);
+  };
+
+  const doRemove = async () => {
+    if (!selectedId) return;
     setSaving(true);
     try {
       await deletePipeline(selectedId);
+      // Dialog closes as soon as the delete call succeeds so the user sees
+      // success immediately. Any follow-up (refresh / onChange) that throws
+      // surfaces via setError but can't leave the dialog stuck in "处理中…".
+      setConfirmingRemove(false);
       setSelectedId(null);
       setDraft(BLANK);
       setCanvasSelected(null);
-      await refresh();
+      try {
+        await refresh();
+      } catch (e) {
+        setError(`删除成功但刷新失败: ${e}`);
+      }
       onChange?.();
     } catch (e) {
       setError(String(e));
@@ -493,6 +507,16 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={confirmingRemove}
+        onOpenChange={(o) => { if (!o && !saving) setConfirmingRemove(false); }}
+        onConfirm={doRemove}
+        title={`删除模板「${draft.name || "未命名"}」?`}
+        description="删除后无法恢复。仍在使用该模板的任务不受影响，但新建任务时将找不到该模板。"
+        confirmLabel="删除"
+        variant="danger"
+        loading={saving}
+      />
     </div>
   );
 }

@@ -12,7 +12,7 @@ import LiveAgentPanel from "./LiveAgentPanel";
 import GuildArtifactPanel from "./GuildArtifactPanel";
 import GroupAssetPanel from "./GroupAssetPanel";
 import Select from "./Select";
-import type { GuildTask } from "../../types/guild";
+import type { GuildTask, Group } from "../../types/guild";
 
 interface Props {
   onClose: () => void;
@@ -28,6 +28,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   const { models, modelId: globalModelId, setModelId: setGlobalModelId } = useConfig();
 
   const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [editingGroup, setEditingGroup] = useState<Group | null>(null);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [editingAgent, setEditingAgent] = useState<string | null>(null);
   const [selectedDetail, setSelectedDetail] = useState<DetailTarget>(null);
@@ -194,7 +195,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     await withToast(() => guild.setGroupLead(groupId, agentId), agentId ? "Lead 已设置" : "已清除 Lead", "设置 Lead 失败");
   };
 
-  const handleUpdateGroup = async (groupId: string, payload: { name?: string; description?: string }) => {
+  const handleUpdateGroup = async (groupId: string, payload: { name?: string; description?: string; artifactStrategy?: "isolated" | "collaborative" }) => {
     await withToast(() => guild.updateGroup(groupId, payload), "小组已更新", "更新小组失败");
   };
 
@@ -224,7 +225,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     );
   };
 
-  const handleCreateGroup = async (payload: { name: string; description: string; sharedContext?: string }) => {
+  const handleCreateGroup = async (payload: { name: string; description: string; sharedContext?: string; artifactStrategy?: "isolated" | "collaborative" }) => {
     await withToast(() => guild.createGroup(payload), "小组已创建", "创建小组失败");
   };
 
@@ -382,7 +383,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
               onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
               onDeleteGroup={handleDeleteGroup}
               onSetGroupLead={handleSetGroupLead}
-              onUpdateGroup={handleUpdateGroup}
+              onEditGroup={setEditingGroup}
             />
           )}
         </div>
@@ -477,6 +478,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
             agents={mergedAgents}
             tasks={mergedTasks}
             agentOutputs={stream.agentOutputs}
+            staleTaskIds={stream.staleTaskIds}
             onClose={() => setSelectedDetail(null)}
             onEditAgent={(id) => setEditingAgent(id)}
             onDeleteAgent={handleDeleteAgent}
@@ -505,6 +507,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                 tasks={mergedTasks}
                 agents={mergedAgents}
                 groupId={guild.selectedGroupId}
+                artifactStrategy={guild.groups.find(g => g.id === guild.selectedGroupId)?.artifactStrategy}
                 onClose={() => setShowArtifacts(false)}
                 onSelectTask={(id) => {
                   setSelectedDetail({ type: "task", id });
@@ -521,6 +524,18 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
         <CreateGroupModal
           onConfirm={handleCreateGroup}
           onClose={() => setShowCreateGroup(false)}
+        />
+      )}
+      {editingGroup && (
+        <CreateGroupModal
+          key={editingGroup.id}
+          initial={{
+            name: editingGroup.name,
+            description: editingGroup.description,
+            artifactStrategy: editingGroup.artifactStrategy,
+          }}
+          onConfirm={(payload) => handleUpdateGroup(editingGroup.id, payload)}
+          onClose={() => setEditingGroup(null)}
         />
       )}
       {(showCreateAgent || editingAgent) && (

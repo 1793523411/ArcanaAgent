@@ -4,7 +4,7 @@ import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentMemoryPanel from "./AgentMemoryPanel";
-import { getTaskWorkspaceRaw, updateAgentAsset } from "../../api/guild";
+import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections } from "../../api/guild";
 
 const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
 
@@ -14,6 +14,8 @@ interface Props {
   agents: GuildAgent[];
   tasks?: GuildTask[];
   agentOutputs: Record<string, string>;
+  /** Ids of in_progress tasks that haven't emitted an SSE event recently. */
+  staleTaskIds?: Set<string>;
   onClose: () => void;
   onEditAgent?: (id: string) => void;
   onDeleteAgent?: (id: string) => Promise<void> | void;
@@ -62,7 +64,7 @@ const ASSET_TYPE_ICON: Record<string, string> = {
   prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
@@ -559,10 +561,30 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   {PRIORITY_LABEL[selectedTask.priority]}
                 </span>
               </div>
-              <div className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-                状态：{selectedTask.status}
+              <div className="text-xs mt-1 flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
+                <span>状态：{selectedTask.status}</span>
+                {selectedTask.status === "in_progress" && staleTaskIds?.has(selectedTask.id) && (
+                  <span
+                    className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
+                    style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                    title="最近 8 秒没有收到任何输出 — Agent 可能正在深度推理（长 reasoning / 大 tool 调用）"
+                  >
+                    <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "currentColor" }} />
+                    思考中…
+                  </span>
+                )}
               </div>
             </div>
+
+            {/* Rejection hint: show when the auto-bidding blacklist would filter
+                everyone out. Lets the user reset and retry without digging into
+                the API. */}
+            {selectedTask.status === "open" && (selectedTask._rejectedBy?.length ?? 0) > 0 && (
+              <RejectionHint
+                task={selectedTask}
+                agents={agents}
+              />
+            )}
 
             {selectedTask.description && (
               <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--color-text)" }}>{selectedTask.description}</p>
@@ -943,6 +965,50 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** Shown on an `open` task whose auto-bidding blacklist is non-empty. Explains
+ *  why the scheduler isn't picking the task up and offers a one-click reset. */
+function RejectionHint({ task, agents }: { task: GuildTask; agents: GuildAgent[] }) {
+  const [clearing, setClearing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const rejected = task._rejectedBy ?? [];
+  const names = rejected
+    .map((id) => agents.find((a) => a.id === id)?.name ?? id.slice(0, 6))
+    .join("、");
+  const handleClear = async () => {
+    setClearing(true);
+    setError(null);
+    try {
+      await clearTaskRejections(task.id, task.groupId);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setClearing(false);
+    }
+  };
+  return (
+    <div
+      className="rounded-lg px-3 py-2 text-xs"
+      style={{ background: "var(--color-bg)", border: "1px dashed #f59e0b", color: "var(--color-text)" }}
+    >
+      <div className="font-medium mb-0.5" style={{ color: "#f59e0b" }}>
+        ⚠ 自动竞标已暂停
+      </div>
+      <div style={{ color: "var(--color-text-muted)" }}>
+        {rejected.length} 个 Agent 拒绝过此任务（{names}）。需要手动分配，或清空拒绝名单让调度器重新尝试。
+      </div>
+      {error && <div className="mt-1" style={{ color: "var(--color-error-text)" }}>{error}</div>}
+      <button
+        className="mt-1.5 text-[11px] px-2 py-0.5 rounded disabled:opacity-60"
+        style={{ background: "var(--color-surface)", color: "var(--color-accent)", border: "1px solid var(--color-border)" }}
+        disabled={clearing}
+        onClick={handleClear}
+      >
+        {clearing ? "清空中…" : "清空拒绝名单"}
+      </button>
     </div>
   );
 }

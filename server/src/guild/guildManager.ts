@@ -98,6 +98,7 @@ export function createGroup(params: CreateGroupParams): Group {
     leadAgentId: params.leadAgentId,
     assets: groupAssets,
     sharedContext: params.sharedContext,
+    artifactStrategy: params.artifactStrategy ?? "isolated",
     status: "active",
     createdAt: now,
     updatedAt: now,
@@ -130,7 +131,7 @@ export function listGroups(): Group[] {
 
 export function updateGroup(
   id: string,
-  updates: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status" | "leadAgentId">>,
+  updates: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status" | "leadAgentId" | "artifactStrategy">>,
 ): Group | null {
   const group = getGroup(id);
   if (!group) return null;
@@ -139,6 +140,7 @@ export function updateGroup(
   if (updates.sharedContext !== undefined) group.sharedContext = updates.sharedContext;
   if (updates.status !== undefined) group.status = updates.status;
   if (updates.leadAgentId !== undefined) group.leadAgentId = updates.leadAgentId;
+  if (updates.artifactStrategy !== undefined) group.artifactStrategy = updates.artifactStrategy;
   group.updatedAt = new Date().toISOString();
   writeJSON(groupMetaPath(id), group);
   guildEventBus.emit({ type: "group_updated", groupId: id });

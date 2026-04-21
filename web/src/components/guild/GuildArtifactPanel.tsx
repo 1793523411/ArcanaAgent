@@ -1,7 +1,7 @@
-import { useState, useMemo, useCallback } from "react";
-import type { GuildTask, GuildAgent } from "../../types/guild";
+import { useState, useEffect, useMemo, useCallback } from "react";
+import type { GuildTask, GuildAgent, ArtifactStrategy, ArtifactManifestEntry } from "../../types/guild";
 import {
-  getGroupSharedTree, getGroupSharedFile,
+  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest,
   getAgentWorkspaceTree, getAgentWorkspaceFile,
   getAgentMemoryTree, getAgentMemoryFile,
 } from "../../api/guild";
@@ -11,15 +11,35 @@ interface Props {
   tasks: GuildTask[];
   agents: GuildAgent[];
   groupId: string | null;
+  artifactStrategy?: ArtifactStrategy;
   onClose: () => void;
   onSelectTask?: (id: string) => void;
 }
 
 type TabId = "shared" | "workspace" | "memory";
 
-export default function GuildArtifactPanel({ tasks, agents, groupId, onClose }: Props) {
+export default function GuildArtifactPanel({ tasks, agents, groupId, artifactStrategy, onClose }: Props) {
   const [tab, setTab] = useState<TabId>("shared");
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [manifest, setManifest] = useState<Record<string, ArtifactManifestEntry>>({});
+
+  const strategy = artifactStrategy ?? "isolated";
+
+  // Refresh manifest when (a) group/strategy changes, or (b) the count of
+  // finished tasks changes — covers task_completed/failed SSE updates without
+  // subscribing to the raw stream here.
+  const completedTaskCount = useMemo(
+    () => tasks.filter(t => t.status === "completed" || t.status === "failed").length,
+    [tasks],
+  );
+
+  useEffect(() => {
+    if (strategy === "collaborative" && groupId) {
+      getGroupSharedManifest(groupId).then(setManifest).catch(() => setManifest({}));
+    } else {
+      setManifest({});
+    }
+  }, [strategy, groupId, completedTaskCount]);
 
   // Agents that belong to the current group (have completed tasks or are in the group)
   const groupAgentIds = useMemo(() => {
@@ -112,6 +132,26 @@ export default function GuildArtifactPanel({ tasks, agents, groupId, onClose }: 
         </div>
       )}
 
+      {/* Strategy indicator for shared tab */}
+      {tab === "shared" && groupId && (
+        <div className="flex items-center gap-2 px-3 py-1.5 border-b shrink-0 text-[11px]" style={{ borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}>
+          <span className="px-1.5 py-0.5 rounded" style={{
+            background: strategy === "collaborative" ? "var(--color-accent)" : "var(--color-surface-hover)",
+            color: strategy === "collaborative" ? "white" : "var(--color-text-muted)",
+          }}>
+            {strategy === "collaborative" ? "协作模式" : "隔离模式"}
+          </span>
+          <span>
+            {strategy === "isolated" ? "每个任务独立产物目录" : "共享目录 · 自动追踪归属"}
+          </span>
+          {strategy === "collaborative" && Object.keys(manifest).length > 0 && (
+            <span style={{ marginLeft: "auto" }}>
+              已追踪 {Object.keys(manifest).length} 个文件
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Content */}
       <div className="flex-1 min-h-0 overflow-hidden">
         {tab === "shared" && groupId && (
@@ -120,8 +160,8 @@ export default function GuildArtifactPanel({ tasks, agents, groupId, onClose }: 
             fetchFile={sharedFileFetcher}
             refreshKey={groupId}
             emptyIcon={"\uD83D\uDC65"}
-            emptyTitle={"\u6682\u65E0\u5171\u4EAB\u4EA7\u7269"}
-            emptyDesc={"Agent \u5B8C\u6210\u4EFB\u52A1\u540E\u7684\u5171\u4EAB\u6587\u4EF6\u4F1A\u51FA\u73B0\u5728\u8FD9\u91CC"}
+            emptyTitle={"暂无共享产物"}
+            emptyDesc={"Agent 完成任务后的共享文件会出现在这里"}
           />
         )}
         {tab === "shared" && !groupId && (

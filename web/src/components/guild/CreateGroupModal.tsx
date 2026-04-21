@@ -1,22 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { ArtifactStrategy } from "../../types/guild";
 
 interface Props {
-  onConfirm: (data: { name: string; description: string }) => Promise<void>;
+  /** Presence switches the modal into edit mode. */
+  initial?: { name: string; description: string; artifactStrategy?: ArtifactStrategy };
+  onConfirm: (data: { name: string; description: string; artifactStrategy?: ArtifactStrategy }) => Promise<void>;
   onClose: () => void;
 }
 
-export default function CreateGroupModal({ onConfirm, onClose }: Props) {
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
+export default function CreateGroupModal({ initial, onConfirm, onClose }: Props) {
+  const isEdit = !!initial;
+  const initialStrategy: ArtifactStrategy = initial?.artifactStrategy ?? "isolated";
+  const [name, setName] = useState(initial?.name ?? "");
+  const [description, setDescription] = useState(initial?.description ?? "");
+  const [artifactStrategy, setArtifactStrategy] = useState<ArtifactStrategy>(initialStrategy);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // ESC closes (unless mid-save).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !saving) onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose, saving]);
+
+  const strategyChanged = isEdit && artifactStrategy !== initialStrategy;
 
   const handleSubmit = async () => {
     if (!name.trim()) return;
     setSaving(true);
     setError(null);
     try {
-      await onConfirm({ name: name.trim(), description: description.trim() });
+      await onConfirm({ name: name.trim(), description: description.trim(), artifactStrategy });
       onClose();
     } catch (e) {
       setError(String(e));
@@ -33,7 +50,7 @@ export default function CreateGroupModal({ onConfirm, onClose }: Props) {
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
       >
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold" style={{ color: "var(--color-text)" }}>新建小组</h3>
+          <h3 className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{isEdit ? "编辑小组" : "新建小组"}</h3>
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
@@ -66,6 +83,38 @@ export default function CreateGroupModal({ onConfirm, onClose }: Props) {
               placeholder="小组用途描述"
             />
           </div>
+          <div>
+            <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>产物策略</label>
+            <div className="flex gap-2">
+              {([
+                { value: "isolated" as const, label: "隔离模式", desc: "每个任务独立产物目录" },
+                { value: "collaborative" as const, label: "协作模式", desc: "共享目录 + 自动追踪" },
+              ]).map((opt) => (
+                <button
+                  key={opt.value}
+                  type="button"
+                  className="flex-1 px-3 py-2 rounded-lg text-xs text-left"
+                  style={{
+                    background: artifactStrategy === opt.value ? "var(--color-accent)" : "var(--color-bg)",
+                    color: artifactStrategy === opt.value ? "white" : "var(--color-text)",
+                    border: artifactStrategy === opt.value ? "1px solid var(--color-accent)" : "1px solid var(--color-border)",
+                  }}
+                  onClick={() => setArtifactStrategy(opt.value)}
+                >
+                  <div className="font-medium">{opt.label}</div>
+                  <div style={{ opacity: 0.7 }}>{opt.desc}</div>
+                </button>
+              ))}
+            </div>
+            {strategyChanged && (
+              <div
+                className="mt-2 text-[11px] px-2 py-1.5 rounded"
+                style={{ color: "var(--color-text-muted)", background: "var(--color-bg)", border: "1px dashed var(--color-border)" }}
+              >
+                ⚠ 切换策略只影响后续任务，历史产物会保留在原目录结构中，不会自动迁移。
+              </div>
+            )}
+          </div>
           {error && (
             <div className="text-xs" style={{ color: "var(--color-error-text)" }}>{error}</div>
           )}
@@ -85,7 +134,7 @@ export default function CreateGroupModal({ onConfirm, onClose }: Props) {
             onClick={handleSubmit}
             disabled={saving || !name.trim()}
           >
-            {saving ? "创建中..." : "创建"}
+            {saving ? (isEdit ? "保存中…" : "创建中…") : isEdit ? "保存" : "创建"}
           </button>
         </div>
       </div>

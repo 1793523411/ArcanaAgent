@@ -12,6 +12,13 @@ export type AssetType =
 
 export type AssetScope = "agent" | "group";
 
+export type ArtifactStrategy = "isolated" | "collaborative";
+
+export interface ArtifactManifestEntry {
+  createdBy: { taskId: string; agentId: string; at: string };
+  modifiedBy: Array<{ taskId: string; agentId: string; at: string }>;
+}
+
 export interface AgentAsset {
   id: string;
   type: AssetType;
@@ -71,6 +78,8 @@ export interface Group {
   /** Group-level shared resource pool (repos, specs, docs). */
   assets?: AgentAsset[];
   sharedContext?: string;
+  /** Controls how task artifacts are organized: "isolated" = per-task dirs, "collaborative" = shared root with manifest. */
+  artifactStrategy?: ArtifactStrategy;
   status: "active" | "archived";
   createdAt: string;
   updatedAt: string;
@@ -369,6 +378,7 @@ export interface CreateGroupParams {
   sharedContext?: string;
   leadAgentId?: string;
   assets?: Omit<AgentAsset, "id" | "addedAt">[];
+  artifactStrategy?: ArtifactStrategy;
 }
 
 export interface CreateTaskParams {
@@ -386,4 +396,8 @@ export interface CreateTaskParams {
   pipelineId?: string;
   pipelineInputs?: Record<string, string>;
   retryPolicy?: TaskRetryPolicy;
+  /** Initial status — defaults to "open". Use "blocked" to create a task that
+   *  the scheduler won't pick up until its status is later flipped to "open"
+   *  (e.g. planner 2-pass: create all children then wire deps atomically). */
+  initialStatus?: TaskStatus;
 }

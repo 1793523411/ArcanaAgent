@@ -1,8 +1,9 @@
 import { mkdirSync, existsSync, readdirSync, statSync } from "fs";
-import { join, relative } from "path";
+import { join, relative, isAbsolute, resolve as resolvePath } from "path";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import type { GuildAgent, GuildTask, TaskResult, GuildEvent } from "./types.js";
-import { getAgent, updateAgent, updateAgentStats, getAgentWorkspaceDir, getGroupSharedDir } from "./guildManager.js";
+import type { GuildAgent, GuildTask, TaskResult, GuildEvent, ArtifactStrategy } from "./types.js";
+import { getAgent, getGroup, updateAgent, updateAgentStats, getAgentWorkspaceDir, getGroupSharedDir } from "./guildManager.js";
+import { snapshotDir, reconcileManifest } from "./manifestManager.js";
 import { completeTask, failTask, getTask, updateTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
 import { searchRelevant, settleExperience } from "./memoryManager.js";
 import { resolveAssetContext } from "./assetResolver.js";
@@ -102,6 +103,50 @@ function listArtifacts(rootDir: string, maxDepth = 3, cap = 40): Array<{ path: s
   return out;
 }
 
+/** Resolve a handoff file artifact against the agent's private/shared dirs.
+ *  Returns the first path that resolves to a regular file, or null otherwise.
+ *  Safeguards:
+ *   - Directories don't count (agent declared kind="file")
+ *   - Relative refs are contained inside sharedDir or wsDir (blocks `../`
+ *     traversal — we only probe existence but keep the check tidy anyway). */
+function resolveArtifactPath(ref: string, sharedDir: string, wsDir: string): string | null {
+  const cleaned = ref.replace(/^`+|`+$/g, "").trim();
+  if (!cleaned) return null;
+
+  const isFileAt = (p: string): boolean => {
+    try { return statSync(p).isFile(); } catch { return false; }
+  };
+
+  if (isAbsolute(cleaned)) return isFileAt(cleaned) ? cleaned : null;
+
+  for (const base of [sharedDir, wsDir]) {
+    const resolved = resolvePath(base, cleaned);
+    const baseResolved = resolvePath(base);
+    // Require that the resolved path stays within the base directory.
+    if (resolved !== baseResolved && !resolved.startsWith(baseResolved + "/")) continue;
+    if (isFileAt(resolved)) return resolved;
+  }
+  return null;
+}
+
+/** Extract `foo.md` / `foo.json` / etc. file references out of a free-form
+ *  acceptance criteria string, so we can check whether the agent produced them
+ *  even if it didn't populate handoff.artifacts properly. Only recognises
+ *  common extensions to avoid flagging prose that happens to contain dots. */
+const CRITERIA_FILE_RE = /[\w\u4e00-\u9fff\-\.]+\.(?:md|json|ts|tsx|js|jsx|py|sh|yaml|yml|txt|csv|html|css|sql)\b/g;
+
+function extractFileRefsFromCriteria(text?: string): string[] {
+  if (!text) return [];
+  const matches = text.match(CRITERIA_FILE_RE) ?? [];
+  // De-dupe and strip leading `./`
+  const seen = new Set<string>();
+  for (const m of matches) {
+    const cleaned = m.replace(/^\.\//, "");
+    seen.add(cleaned);
+  }
+  return [...seen];
+}
+
 function formatSizeHuman(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
@@ -112,12 +157,10 @@ function formatSizeHuman(bytes: number): string {
  *  already exists before it writes — the todo item was "agent 应该彼此知道对方
  *  工作产出 ... 不能随便做错误的覆盖". Kept concise (per-bucket cap + dir-aware)
  *  to avoid bloating the system prompt. */
-function buildArtifactInventory(agent: GuildAgent, groupId: string): string | null {
+function buildArtifactInventory(agent: GuildAgent, groupId: string, strategy: ArtifactStrategy): string | null {
   const ownWorkspace = listArtifacts(getAgentWorkspaceDir(agent.id));
   const sharedRoot = getGroupSharedDir(groupId);
 
-  // Group shared dir is organized as `{sharedRoot}/{agentId}/...` — split by top-level
-  // agent subfolder so the prompt clearly attributes each file to its producer.
   const sharedByOwner = new Map<string, Array<{ path: string; size: number }>>();
   if (existsSync(sharedRoot)) {
     let ownerDirs: string[] = [];
@@ -127,9 +170,14 @@ function buildArtifactInventory(agent: GuildAgent, groupId: string): string | nu
       const ownerPath = join(sharedRoot, owner);
       let st;
       try { st = statSync(ownerPath); } catch { continue; }
-      if (!st.isDirectory()) continue;
-      const files = listArtifacts(ownerPath, 3, 15);
-      if (files.length > 0) sharedByOwner.set(owner, files);
+      if (st.isDirectory()) {
+        const files = listArtifacts(ownerPath, 3, 15);
+        if (files.length > 0) sharedByOwner.set(owner, files);
+      } else if (strategy === "collaborative" && st.isFile()) {
+        const existing = sharedByOwner.get("__root__") ?? [];
+        existing.push({ path: owner, size: st.size });
+        sharedByOwner.set("__root__", existing);
+      }
     }
   }
 
@@ -153,14 +201,32 @@ function buildArtifactInventory(agent: GuildAgent, groupId: string): string | nu
 
   if (sharedByOwner.size > 0) {
     lines.push(``);
-    lines.push(`### 小组共享产物（按生产者 agent 分组）`);
-    for (const [owner, files] of sharedByOwner) {
-      const isSelf = owner === agent.id;
-      lines.push(`- **${owner}${isSelf ? " (= you)" : ""}**`);
-      for (const f of files.slice(0, 10)) {
-        lines.push(`  - \`${f.path}\` (${formatSizeHuman(f.size)})`);
+    if (strategy === "isolated") {
+      lines.push(`### 小组共享产物（按任务隔离）`);
+      for (const [taskOrAgent, files] of sharedByOwner) {
+        lines.push(`- **${taskOrAgent}**`);
+        for (const f of files.slice(0, 10)) {
+          lines.push(`  - \`${f.path}\` (${formatSizeHuman(f.size)})`);
+        }
+        if (files.length > 10) lines.push(`  - …还有 ${files.length - 10} 个文件`);
       }
-      if (files.length > 10) lines.push(`  - …还有 ${files.length - 10} 个文件`);
+    } else {
+      lines.push(`### 小组共享产物（协作模式）`);
+      const rootFiles = sharedByOwner.get("__root__");
+      if (rootFiles && rootFiles.length > 0) {
+        for (const f of rootFiles.slice(0, 15)) {
+          lines.push(`- \`${f.path}\` (${formatSizeHuman(f.size)})`);
+        }
+        if (rootFiles.length > 15) lines.push(`- …还有 ${rootFiles.length - 15} 个文件`);
+      }
+      for (const [owner, files] of sharedByOwner) {
+        if (owner === "__root__") continue;
+        lines.push(`- **${owner}/**`);
+        for (const f of files.slice(0, 10)) {
+          lines.push(`  - \`${f.path}\` (${formatSizeHuman(f.size)})`);
+        }
+        if (files.length > 10) lines.push(`  - …还有 ${files.length - 10} 个文件`);
+      }
     }
   }
 
@@ -174,6 +240,9 @@ function buildGuildAgentPrompt(
   task: GuildTask,
   groupId: string,
   memories: Array<{ title: string; content: string }>,
+  strategy: ArtifactStrategy,
+  sharedDir: string,
+  wsDir: string,
 ): string {
   const sections: string[] = [];
 
@@ -224,7 +293,7 @@ function buildGuildAgentPrompt(
 
   // Artifact inventory — let the agent see its own + teammates' existing files
   // before it starts writing, so it doesn't silently overwrite prior output.
-  const inventory = buildArtifactInventory(agent, groupId);
+  const inventory = buildArtifactInventory(agent, groupId, strategy);
   if (inventory) {
     sections.push(`\n${inventory}`);
   }
@@ -245,12 +314,16 @@ function buildGuildAgentPrompt(
   }
 
   // Workspace paths — tell the agent where to write files
-  const wsPath = getAgentWorkspaceDir(agent.id);
-  const sharedPath = join(getGroupSharedDir(groupId), agent.id);
   sections.push(`\n## Your Workspace`);
-  sections.push(`- 你的私有工作空间: \`${wsPath}\` — 在这里创建和编辑工作文件`);
-  sections.push(`- 小组共享目录: \`${sharedPath}\` — 希望小组成员看到的产物放在这里`);
+  sections.push(`- 你的私有工作空间: \`${wsDir}\` — 在这里创建和编辑工作文件`);
+  sections.push(`- 小组共享目录: \`${sharedDir}\` — 希望小组成员看到的产物放在这里`);
   sections.push(`- 写入共享目录的文件会自动对小组可见`);
+  if (strategy === "isolated") {
+    sections.push(`- 当前模式: **隔离模式** — 工作空间和共享产物目录按任务隔离，仅属于当前任务`);
+  } else {
+    sections.push(`- 当前模式: **协作模式** — 共享目录由所有任务共用，系统会自动追踪文件归属`);
+    sections.push(`- 你可以读取和修改其他任务留下的文件，但请在 Handoff 中声明修改原因`);
+  }
 
   sections.push(`\n## Instructions`);
   sections.push(`完成上面的任务。如果任务包含不属于你领域的工作，**不要硬做** — 在 Handoff 中说明"哪部分需要谁"，Lead 会补发新子任务。`);
@@ -298,11 +371,27 @@ export async function executeAgentTask(
   const task = getTask(groupId, taskId);
   if (!task) throw new Error(`Task ${taskId} not found in group ${groupId}`);
 
+  // Resolve artifact strategy for this group
+  const group = getGroup(groupId);
+  const artifactStrategy: ArtifactStrategy = group?.artifactStrategy ?? "isolated";
+
   // Ensure workspace directories exist before execution
-  const wsDir = getAgentWorkspaceDir(agentId);
-  const sharedDir = join(getGroupSharedDir(groupId), agentId);
+  let wsDir: string;
+  let sharedDir: string;
+  if (artifactStrategy === "isolated") {
+    wsDir = join(getAgentWorkspaceDir(agentId), taskId);
+    sharedDir = join(getGroupSharedDir(groupId), taskId);
+  } else {
+    wsDir = getAgentWorkspaceDir(agentId);
+    sharedDir = getGroupSharedDir(groupId);
+  }
   if (!existsSync(wsDir)) mkdirSync(wsDir, { recursive: true });
   if (!existsSync(sharedDir)) mkdirSync(sharedDir, { recursive: true });
+
+  // Snapshot for collaborative manifest reconciliation. Only the *shared*
+  // dir needs tracking — the private workspace is single-writer so nothing
+  // there needs createdBy/modifiedBy attribution.
+  const sharedSnapshotBefore = artifactStrategy === "collaborative" ? snapshotDir(sharedDir) : new Map<string, number>();
 
   const key = execKey(groupId, taskId);
   activeExecutions.add(key);
@@ -327,7 +416,7 @@ export async function executeAgentTask(
     const memoryContext = relevantMemories.map((m) => ({ title: m.title, content: m.content }));
 
     // Build system prompt (includes teammate roster + workspace snapshot)
-    const systemPrompt = buildGuildAgentPrompt(agent, task, groupId, memoryContext);
+    const systemPrompt = buildGuildAgentPrompt(agent, task, groupId, memoryContext, artifactStrategy, sharedDir, wsDir);
 
     // Build initial messages
     const messages = [new HumanMessage(task.description)];
@@ -482,6 +571,52 @@ export async function executeAgentTask(
       guildEventBus.emit({ type: "agent_status_changed", agentId, status: "idle" });
       guildEventBus.emit({ type: "agent_updated", agentId });
       return result;
+    }
+
+    // ─── Deliverable validation ─────────────────────────────────────
+    // An agent is only "done" if it actually produced something. Three checks:
+    //   1. The model emitted at least some content (not pure silence).
+    //   2. Any handoff artifact with kind="file" resolves to a real file.
+    //   3. Any `.md`/code-file name mentioned in the acceptance criteria is
+    //      on disk. Catches cases where the agent forgot to list artifacts.
+    // Any failure throws; the catch block then fails the task correctly,
+    // preventing downstream steps from consuming a phantom output.
+    if (!accumulatedContent.trim()) {
+      throw new Error("Agent produced no output");
+    }
+    if (handoff && handoff.artifacts.length > 0) {
+      const missing: string[] = [];
+      for (const a of handoff.artifacts) {
+        if (a.kind !== "file") continue;
+        if (!resolveArtifactPath(a.ref, sharedDir, wsDir)) missing.push(a.ref);
+      }
+      if (missing.length > 0) {
+        throw new Error(
+          `Handoff declared file artifact(s) not found on disk: ${missing.join(", ")}`,
+        );
+      }
+    }
+    const criteriaFiles = extractFileRefsFromCriteria(task.acceptanceCriteria);
+    if (criteriaFiles.length > 0) {
+      const missingCriteria = criteriaFiles.filter(
+        (f) => !resolveArtifactPath(f, sharedDir, wsDir),
+      );
+      if (missingCriteria.length > 0) {
+        throw new Error(
+          `Acceptance criteria require file(s) that weren't produced: ${missingCriteria.join(", ")}`,
+        );
+      }
+    }
+
+    // Reconcile manifest in collaborative mode — track which files this task
+    // created/modified in the shared dir only. Await so a late manifest write
+    // doesn't race the next task's snapshot.
+    if (artifactStrategy === "collaborative") {
+      try {
+        await reconcileManifest(sharedDir, taskId, agentId, sharedSnapshotBefore);
+      } catch (e) {
+        serverLogger.warn("[guild] manifest reconciliation failed", { taskId, error: String(e) });
+      }
     }
 
     // Complete task — once this returns, the task is persisted as completed.

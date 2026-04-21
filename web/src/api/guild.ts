@@ -1,4 +1,4 @@
-import type { Guild, Group, GuildAgent, GuildTask, AgentMemory, AgentStats, AgentAsset, AssetType, PipelineTemplate } from "../types/guild";
+import type { Guild, Group, GuildAgent, GuildTask, AgentMemory, AgentStats, AgentAsset, AssetType, PipelineTemplate, ArtifactManifestEntry } from "../types/guild";
 
 const BASE = "/api";
 
@@ -62,7 +62,7 @@ export async function listGroups(): Promise<Group[]> {
   return r.json();
 }
 
-export async function createGroup(payload: { name: string; description: string; sharedContext?: string }): Promise<Group> {
+export async function createGroup(payload: { name: string; description: string; sharedContext?: string; artifactStrategy?: Group["artifactStrategy"] }): Promise<Group> {
   const r = await fetch(`${BASE}/guild/groups`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -78,7 +78,7 @@ export async function getGroup(groupId: string): Promise<Group> {
   return r.json();
 }
 
-export async function updateGroup(groupId: string, payload: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status">>): Promise<Group> {
+export async function updateGroup(groupId: string, payload: Partial<Pick<Group, "name" | "description" | "sharedContext" | "status" | "artifactStrategy">>): Promise<Group> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -286,6 +286,13 @@ export async function deleteGuildTask(taskId: string, groupId?: string): Promise
   if (!r.ok) throw new Error(await r.text());
 }
 
+export async function clearTaskRejections(taskId: string, groupId?: string): Promise<GuildTask> {
+  const qs = groupId ? `?groupId=${encodeURIComponent(groupId)}` : "";
+  const r = await fetch(`${BASE}/guild/tasks/${taskId}/clear-rejections${qs}`, { method: "POST" });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function autoBidTask(groupId: string, taskId: string): Promise<{ assigned: boolean; bid?: import("../types/guild").TaskBid; message?: string }> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/autobid`, {
     method: "POST",
@@ -416,6 +423,12 @@ export async function getGroupSharedTree(groupId: string): Promise<FileTreeNode[
 
 export async function getGroupSharedFile(groupId: string, path: string): Promise<FileReadResult> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/shared/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function getGroupSharedManifest(groupId: string): Promise<Record<string, ArtifactManifestEntry>> {
+  const r = await fetch(`${BASE}/guild/groups/${groupId}/shared/manifest`);
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }

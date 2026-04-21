@@ -1,5 +1,11 @@
 export type AssetType = "repo" | "document" | "api" | "database" | "prompt" | "config" | "mcp_server" | "custom";
 export type AssetScope = "agent" | "group";
+export type ArtifactStrategy = "isolated" | "collaborative";
+
+export interface ArtifactManifestEntry {
+  createdBy: { taskId: string; agentId: string; at: string };
+  modifiedBy: Array<{ taskId: string; agentId: string; at: string }>;
+}
 export type AgentStatus = "idle" | "working" | "offline";
 export type TaskStatus =
   | "open"
@@ -77,6 +83,7 @@ export interface AgentAsset {
 
 export interface AgentStats {
   tasksCompleted: number;
+  tasksFailed?: number;
   totalWorkTimeMs: number;
   avgConfidence: number;
   successRate: number;
@@ -112,6 +119,7 @@ export interface Group {
   leadAgentId?: string;
   assets?: AgentAsset[];
   sharedContext?: string;
+  artifactStrategy?: ArtifactStrategy;
   status: "active" | "archived";
   createdAt: string;
   updatedAt: string;
@@ -202,6 +210,8 @@ export interface GuildTask {
   acceptanceCriteria?: string;
   workspaceRef?: string;
   handoff?: TaskHandoff;
+  /** Agents that rejected this task; auto-bidding skips them. */
+  _rejectedBy?: string[];
   createdBy: string;
   createdAt: string;
   startedAt?: string;

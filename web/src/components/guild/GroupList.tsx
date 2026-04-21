@@ -10,11 +10,11 @@ interface Props {
   onSelectAgent: (id: string) => void;
   onCreateGroup: () => void;
   onCreateAgent: () => void;
+  onEditGroup: (group: Group) => void;
   onAddAgentToGroup: (groupId: string, agentId: string) => Promise<void>;
   onRemoveAgentFromGroup: (groupId: string, agentId: string) => Promise<void>;
   onDeleteGroup: (groupId: string) => Promise<void>;
   onSetGroupLead: (groupId: string, agentId: string | null) => Promise<void>;
-  onUpdateGroup: (groupId: string, payload: { name?: string; description?: string }) => Promise<void>;
 }
 
 function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
@@ -26,8 +26,8 @@ function groupHasActiveAgents(group: Group, agents: GuildAgent[]): boolean {
 
 export default function GroupList({
   groups, agents, selectedGroupId,
-  onSelectGroup, onSelectAgent, onCreateGroup, onCreateAgent,
-  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup, onSetGroupLead, onUpdateGroup,
+  onSelectGroup, onSelectAgent, onCreateGroup, onCreateAgent, onEditGroup,
+  onAddAgentToGroup, onRemoveAgentFromGroup, onDeleteGroup, onSetGroupLead,
 }: Props) {
   // Pool: agents not in any group, plus all agents for multi-group assignment
   const poolAgents = agents.filter((a) => !a.groupId);
@@ -35,35 +35,9 @@ export default function GroupList({
   const [assigningTo, setAssigningTo] = useState<string | null>(null);
   const [deletingGroup, setDeletingGroup] = useState<Group | null>(null);
   const [deletingInFlight, setDeletingInFlight] = useState(false);
-  const [editingGroupId, setEditingGroupId] = useState<string | null>(null);
-  const [editName, setEditName] = useState("");
-  const [editDescription, setEditDescription] = useState("");
-  const [savingEdit, setSavingEdit] = useState(false);
   const [addingAgentKey, setAddingAgentKey] = useState<string | null>(null);
   const [removingAgentKey, setRemovingAgentKey] = useState<string | null>(null);
   const [settingLeadGroup, setSettingLeadGroup] = useState<string | null>(null);
-
-  const startEdit = (g: Group) => {
-    setEditingGroupId(g.id);
-    setEditName(g.name);
-    setEditDescription(g.description ?? "");
-  };
-  const cancelEdit = () => {
-    setEditingGroupId(null);
-    setEditName("");
-    setEditDescription("");
-  };
-  const saveEdit = async (groupId: string) => {
-    const trimmed = editName.trim();
-    if (!trimmed) return;
-    setSavingEdit(true);
-    try {
-      await onUpdateGroup(groupId, { name: trimmed, description: editDescription.trim() });
-      cancelEdit();
-    } finally {
-      setSavingEdit(false);
-    }
-  };
 
   return (
     <div className="flex flex-col h-full">
@@ -118,6 +92,13 @@ export default function GroupList({
                   <span className="flex-1 text-sm truncate font-medium" style={{ color: "var(--color-text)" }}>
                     {group.name}
                   </span>
+                  <span className="text-[10px] shrink-0 px-1 rounded" style={{
+                    color: (group.artifactStrategy ?? "isolated") === "collaborative" ? "var(--color-accent)" : "var(--color-text-muted)",
+                    border: "1px solid currentColor",
+                    opacity: 0.7,
+                  }}>
+                    {(group.artifactStrategy ?? "isolated") === "collaborative" ? "协作" : "隔离"}
+                  </span>
                   <span className="text-[11px] shrink-0" style={{ color: "var(--color-text-muted)" }}>
                     {memberCount}人
                   </span>
@@ -146,49 +127,6 @@ export default function GroupList({
               {/* Expanded: show group members + actions */}
               {expanded && (
                 <div className="ml-4 mt-1 mb-2 space-y-1">
-                  {editingGroupId === group.id && (
-                    <div
-                      className="px-2 py-2 space-y-1.5 rounded"
-                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
-                      onClick={(e) => e.stopPropagation()}
-                    >
-                      <input
-                        className="w-full text-xs px-2 py-1 rounded"
-                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
-                        value={editName}
-                        placeholder="小组名称"
-                        disabled={savingEdit}
-                        onChange={(e) => setEditName(e.target.value)}
-                      />
-                      <textarea
-                        className="w-full text-xs px-2 py-1 rounded resize-none"
-                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text)" }}
-                        value={editDescription}
-                        placeholder="描述（可选）"
-                        rows={2}
-                        disabled={savingEdit}
-                        onChange={(e) => setEditDescription(e.target.value)}
-                      />
-                      <div className="flex gap-1.5 justify-end">
-                        <button
-                          className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
-                          style={{ color: "var(--color-text-muted)" }}
-                          disabled={savingEdit}
-                          onClick={cancelEdit}
-                        >
-                          取消
-                        </button>
-                        <button
-                          className="text-[10px] px-2 py-0.5 rounded"
-                          style={{ background: "var(--color-accent)", color: "white", opacity: savingEdit || !editName.trim() ? 0.6 : 1 }}
-                          disabled={savingEdit || !editName.trim()}
-                          onClick={() => saveEdit(group.id)}
-                        >
-                          {savingEdit ? "保存中…" : "保存"}
-                        </button>
-                      </div>
-                    </div>
-                  )}
                   {groupAgents.map((a) => (
                     <div
                       key={a.id}
@@ -319,7 +257,7 @@ export default function GroupList({
                       <button
                         className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
                         style={{ color: "var(--color-text-muted)" }}
-                        onClick={(e) => { e.stopPropagation(); startEdit(group); }}
+                        onClick={(e) => { e.stopPropagation(); onEditGroup(group); }}
                       >
                         编辑
                       </button>

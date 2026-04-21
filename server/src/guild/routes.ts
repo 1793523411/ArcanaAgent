@@ -10,10 +10,11 @@ import {
   getAgentWorkspaceDir, getAgentMemoryDir, getGroupSharedDir,
 } from "./guildManager.js";
 import { scanDirectory, safeReadFile } from "./fileBrowser.js";
+import { readManifest } from "./manifestManager.js";
 import { readWorkspaceRaw, readWorkspace } from "./workspace.js";
 import {
   createTask, getTask, getGroupTasks, updateTask, cancelTask, assignTask, getExecutionLog,
-  removeTask, findTaskGroup,
+  removeTask, findTaskGroup, detectDependencyCycle,
 } from "./taskBoard.js";
 import { getMemories } from "./memoryManager.js";
 import { executeAgentTask, requestExecutionAbort, isExecutionActive } from "./agentExecutor.js";
@@ -63,12 +64,12 @@ export function getGroups(_req: Request, res: Response): void {
 
 export function postGroup(req: Request, res: Response): void {
   try {
-    const { name, description, sharedContext } = req.body;
+    const { name, description, sharedContext, artifactStrategy, leadAgentId, assets } = req.body;
     if (!name || !description) {
       res.status(400).json({ error: "name and description are required" });
       return;
     }
-    const group = createGroup({ name, description, sharedContext });
+    const group = createGroup({ name, description, sharedContext, artifactStrategy, leadAgentId, assets });
     res.status(201).json(group);
   } catch (e) {
     res.status(500).json({ error: String(e) });
@@ -267,6 +268,13 @@ export function postGroupTask(req: Request, res: Response): void {
       });
       return;
     }
+    if (Array.isArray(req.body.dependsOn) && req.body.dependsOn.length > 0) {
+      const cycle = detectDependencyCycle(groupId, null, req.body.dependsOn);
+      if (cycle) {
+        res.status(400).json({ error: `dependsOn 会产生循环依赖: ${cycle.join(" → ")}` });
+        return;
+      }
+    }
     const task = createTask(groupId, req.body);
     // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
     // to avoid double autoBid / race with in_progress tasks.
@@ -381,6 +389,13 @@ export function putTask(req: Request, res: Response): void {
       res.status(400).json({ error: "groupId is required in body" });
       return;
     }
+    if (Array.isArray(req.body.dependsOn)) {
+      const cycle = detectDependencyCycle(groupId, taskId, req.body.dependsOn);
+      if (cycle) {
+        res.status(400).json({ error: `dependsOn 会产生循环依赖: ${cycle.join(" → ")}` });
+        return;
+      }
+    }
     const task = updateTask(groupId, taskId, req.body);
     if (!task) { res.status(404).json({ error: "Task not found" }); return; }
     res.json(task);
@@ -410,6 +425,24 @@ export function deleteTask(req: Request, res: Response): void {
     const ok = removeTask(groupId, taskId);
     if (!ok) { res.status(404).json({ error: "Task not found" }); return; }
     res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+}
+
+/** Clear the agent rejection blacklist on a task so autobid can retry every
+ *  agent, not just the ones that haven't rejected before. */
+export function postClearTaskRejections(req: Request, res: Response): void {
+  try {
+    const taskId = p(req.params.id);
+    const hint = (req.query.groupId as string) || "";
+    let groupId: string | null = hint && getTask(hint, taskId) ? hint : null;
+    if (!groupId) groupId = findTaskGroup(taskId);
+    if (!groupId) { res.status(404).json({ error: "Task not found" }); return; }
+    const task = updateTask(groupId, taskId, { _rejectedBy: [] });
+    if (!task) { res.status(404).json({ error: "Task not found" }); return; }
+    guildEventBus.emit({ type: "task_updated", task });
+    res.json(task);
   } catch (e) {
     res.status(500).json({ error: String(e) });
   }
@@ -763,6 +796,16 @@ export function getGroupSharedFile(req: Request, res: Response): void {
   const result = safeReadFile(getGroupSharedDir(p(req.params.id)), filePath);
   if (!result) { res.status(404).json({ error: "File not found" }); return; }
   res.json(result);
+}
+
+// Read manifest from group shared
+export function getGroupSharedManifest(req: Request, res: Response): void {
+  try {
+    const dir = getGroupSharedDir(p(req.params.id));
+    res.json(readManifest(dir));
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 }
 
 // ─── SSE Stream ─────────────────────────────────────────────────

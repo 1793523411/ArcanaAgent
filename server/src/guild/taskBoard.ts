@@ -61,7 +61,7 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
     kind: params.kind ?? "adhoc",
     title: params.title,
     description: params.description,
-    status: "open",
+    status: params.initialStatus ?? "open",
     priority: params.priority ?? "medium",
     dependsOn: params.dependsOn,
     createdBy: params.createdBy ?? "user",
@@ -376,6 +376,76 @@ export function getSubtasks(groupId: string, parentTaskId: string): GuildTask[] 
  * Unknown deps (task id not in the group) are treated as completed so stale
  * references don't indefinitely block the DAG.
  */
+/**
+ * Check whether adding/updating a task with the given `dependsOn` would create
+ * a dependency cycle. Pass `candidateId=null` for a new task being created, or
+ * the task id being edited.
+ *
+ * Returns the list of ids that form the cycle (starting at `candidateId`) if
+ * one exists, or null if the graph remains acyclic.
+ */
+export function detectDependencyCycle(
+  groupId: string,
+  candidateId: string | null,
+  dependsOn: string[],
+): string[] | null {
+  if (!dependsOn || dependsOn.length === 0) return null;
+  const tasks = loadTasks(groupId);
+  const byId = new Map(tasks.map((t) => [t.id, t] as const));
+  // Build an adjacency list: nodeId -> ids it depends on. Override the
+  // candidate's edges with the proposed dependsOn.
+  const deps = new Map<string, string[]>();
+  for (const t of tasks) deps.set(t.id, t.dependsOn ?? []);
+  const myId = candidateId ?? "__candidate__";
+  deps.set(myId, dependsOn);
+
+  // Self-reference is an obvious cycle.
+  if (dependsOn.includes(myId)) return [myId, myId];
+
+  // DFS from the candidate node; any back-edge to a node in the current path
+  // proves a cycle.
+  const WHITE = 0, GRAY = 1, BLACK = 2;
+  const color = new Map<string, number>();
+  const parent = new Map<string, string>();
+  for (const id of deps.keys()) color.set(id, WHITE);
+
+  const stack: Array<{ id: string; i: number }> = [{ id: myId, i: 0 }];
+  color.set(myId, GRAY);
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const edges = deps.get(frame.id) ?? [];
+    if (frame.i >= edges.length) {
+      color.set(frame.id, BLACK);
+      stack.pop();
+      continue;
+    }
+    const next = edges[frame.i++];
+    // Skip unknown refs — `areDepsReady` already treats them as completed,
+    // so they can't form a cycle.
+    if (!byId.has(next) && next !== myId) continue;
+    const c = color.get(next) ?? WHITE;
+    if (c === GRAY) {
+      // Walk back through parents to reconstruct the cycle.
+      const cycle: string[] = [next];
+      let cur = frame.id;
+      while (cur !== next) {
+        cycle.push(cur);
+        const p = parent.get(cur);
+        if (!p) break;
+        cur = p;
+      }
+      cycle.push(next);
+      return cycle.reverse();
+    }
+    if (c === WHITE) {
+      color.set(next, GRAY);
+      parent.set(next, frame.id);
+      stack.push({ id: next, i: 0 });
+    }
+  }
+  return null;
+}
+
 export function areDepsReady(groupId: string, task: GuildTask): boolean {
   if (!task.dependsOn || task.dependsOn.length === 0) return true;
   const tasks = loadTasks(groupId);

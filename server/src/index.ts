@@ -84,12 +84,12 @@ import {
   getPipelineList, getPipelineById, postGroupTaskFromPipeline,
   postPipeline, putPipeline, deletePipelineById,
   postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
-  postReleaseAgent,
+  postReleaseAgent, postClearTaskRejections,
   getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead, updateAgentAsset, updateGroupAssetRoute,
   getTaskWorkspace, getGuildArtifactFile,
   getAgentWorkspaceTree, getAgentWorkspaceFile,
   getAgentMemoryTree, getAgentMemoryFile,
-  getGroupSharedTree, getGroupSharedFile,
+  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest,
 } from "./guild/routes.js";
 import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
 import { listGroups, reconcileRequirementRollups } from "./guild/index.js";
@@ -207,6 +207,7 @@ app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
 app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);
 app.delete("/api/guild/groups/:groupId/scheduler-log", deleteGroupSchedulerLog);
 app.put("/api/guild/tasks/:id", putGuildTask);
+app.post("/api/guild/tasks/:id/clear-rejections", postClearTaskRejections);
 app.delete("/api/guild/tasks/:id", deleteGuildTask);
 app.get("/api/guild/agents", getGuildAgents);
 app.post("/api/guild/agents", postAgent);
@@ -231,6 +232,7 @@ app.get("/api/guild/agents/:id/memory/tree", getAgentMemoryTree);
 app.get("/api/guild/agents/:id/memory/file", getAgentMemoryFile);
 app.get("/api/guild/groups/:id/shared/tree", getGroupSharedTree);
 app.get("/api/guild/groups/:id/shared/file", getGroupSharedFile);
+app.get("/api/guild/groups/:id/shared/manifest", getGroupSharedManifest);
 app.get("/api/guild/file", getGuildArtifactFile);
 
 // 提供前端静态文件（生产环境）

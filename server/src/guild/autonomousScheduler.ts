@@ -27,7 +27,7 @@ const PRIORITY_RANK: Record<GuildTask["priority"], number> = {
   low: 1,
 };
 
-const RECONCILE_INTERVAL_MS = 60 * 1000;
+const RECONCILE_INTERVAL_MS = 20 * 1000;
 
 export class GuildAutonomousScheduler {
   private started = false;
@@ -72,15 +72,21 @@ export class GuildAutonomousScheduler {
       this.scheduleGroup(group.id);
     }
 
-    // Periodic sweep: catches stuck-in-process executions (model timeout, lost stream).
+    // Periodic sweep: catches stuck-in-process executions (model timeout, lost
+    // stream) AND wakes up tasks whose retryAt backoff has expired. We always
+    // call scheduleGroup — not just when orphans were reset — because a task
+    // may have been reopened with a future retryAt by failTask, and the
+    // scheduler has no other event-driven path to re-evaluate it once that
+    // timestamp passes. scheduleGroup is idempotent (runningGroups/scheduled-
+    // Groups guards), so extra invocations are cheap.
     this.sweepTimer = setInterval(() => {
       if (!this.started) return;
       for (const group of this.listGroupsFn()) {
         if (group.status !== "active") continue;
         try {
-          const reset = reconcileGroupOrphanTasks(group.id);
+          reconcileGroupOrphanTasks(group.id);
           reconcileGroupWorkingAgents(group.id);
-          if (reset > 0) this.scheduleGroup(group.id);
+          this.scheduleGroup(group.id);
         } catch (e) {
           serverLogger.error("[guild] sweep reconcile failed", { groupId: group.id, error: String(e) });
         }

@@ -1,7 +1,8 @@
-import { useEffect, useState, useMemo } from "react";
+import { useState, useMemo } from "react";
 import type { GuildTask, GuildAgent } from "../../types/guild";
 import TaskCard from "./TaskCard";
 import InstructionInput from "./InstructionInput";
+import ConfirmDialog from "./ConfirmDialog";
 
 interface Props {
   tasks: GuildTask[];
@@ -34,7 +35,8 @@ export default function TaskBoard({
   onSelectTask, onCreateTask, onCreateTaskFromPipeline, onAutoBid, onDeleteTask, onAssignTask, onStopTask, creating,
 }: Props) {
   const [assigningTask, setAssigningTask] = useState<string | null>(null);
-  const [confirmingDeleteTask, setConfirmingDeleteTask] = useState<string | null>(null);
+  const [deletingTask, setDeletingTask] = useState<GuildTask | null>(null);
+  const [deletingInFlight, setDeletingInFlight] = useState(false);
   const [collapsedReqs, setCollapsedReqs] = useState<Set<string>>(new Set());
   const [collapseAllCompleted, setCollapseAllCompleted] = useState<boolean>(() => {
     try { return localStorage.getItem("guild_completed_collapsed_all") === "true"; } catch { return false; }
@@ -60,19 +62,9 @@ export default function TaskBoard({
   const idleGroupAgents = groupAgents.filter((a) => a.status === "idle" && !a.currentTaskId);
 
   const handleDeleteClick = (taskId: string) => {
-    if (confirmingDeleteTask === taskId) {
-      onDeleteTask(taskId);
-      setConfirmingDeleteTask(null);
-      return;
-    }
-    setConfirmingDeleteTask(taskId);
+    const task = tasks.find((t) => t.id === taskId) ?? null;
+    setDeletingTask(task);
   };
-
-  useEffect(() => {
-    if (!confirmingDeleteTask) return;
-    const timer = window.setTimeout(() => setConfirmingDeleteTask(null), 2500);
-    return () => window.clearTimeout(timer);
-  }, [confirmingDeleteTask]);
 
   const taskSortTime = (task: GuildTask): number => {
     const t = task.status === "completed" || task.status === "failed" || task.status === "cancelled"
@@ -105,6 +97,7 @@ export default function TaskBoard({
   }
 
   return (
+    <>
     <div className="flex flex-col h-full min-h-0">
       <div className="flex-1 grid grid-cols-3 gap-3 p-3 overflow-y-auto min-h-0">
         {COLUMNS.map((col) => {
@@ -175,7 +168,6 @@ export default function TaskBoard({
                 blockedByDepsSet={blockedByDepsSet}
                 assigningTask={assigningTask}
                 setAssigningTask={setAssigningTask}
-                confirmingDeleteTask={confirmingDeleteTask}
                 handleDeleteClick={handleDeleteClick}
                 idleGroupAgents={idleGroupAgents}
                 collapsedReqs={collapsedReqs}
@@ -188,32 +180,57 @@ export default function TaskBoard({
       </div>
       <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority />
     </div>
+    <ConfirmDialog
+      open={!!deletingTask}
+      onOpenChange={(o) => { if (!o && !deletingInFlight) setDeletingTask(null); }}
+      onConfirm={async () => {
+        const t = deletingTask;
+        if (!t) return;
+        setDeletingInFlight(true);
+        try {
+          await onDeleteTask(t.id);
+          setDeletingTask(null);
+        } finally {
+          setDeletingInFlight(false);
+        }
+      }}
+      title={deletingTask ? `删除任务「${deletingTask.title}」?` : "删除任务?"}
+      description={
+        deletingTask?.kind === "requirement" || deletingTask?.kind === "pipeline"
+          ? "这是一个父任务，其所有子任务也会被删除。此操作不可撤销。"
+          : "删除后无法恢复。"
+      }
+      confirmLabel="删除"
+      variant="danger"
+      loading={deletingInFlight}
+    />
+    </>
   );
 }
 
 // ─── Helpers ──────────────────────────────────────────────
 
-function DeleteButton({ confirming, onClick }: { taskId?: string; confirming: boolean; onClick: () => void }) {
+function DeleteButton({ onClick }: { taskId?: string; onClick: () => void }) {
   return (
     <button
-      className="px-1 py-0.5 rounded text-[11px] transition-colors hover:bg-[var(--color-surface-hover)]"
-      style={{ color: confirming ? "#dc2626" : "var(--color-text-muted)" }}
+      className="px-1 py-0.5 rounded text-[11px] transition-colors hover:bg-red-500/10 hover:text-red-500"
+      style={{ color: "var(--color-text-muted)" }}
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      title={confirming ? "再次点击确认删除" : "删除任务"}
+      title="删除任务"
     >
-      {confirming ? "确认" : "🗑"}
+      🗑
     </button>
   );
 }
 
 function ActionButtons({
   task, idleGroupAgents, assigningTask, setAssigningTask, onAutoBid, onAssignTask,
-  confirmingDeleteTask, handleDeleteClick,
+  handleDeleteClick,
 }: {
   task: GuildTask; idleGroupAgents: GuildAgent[];
   assigningTask: string | null; setAssigningTask: (id: string | null) => void;
   onAutoBid: (id: string) => void; onAssignTask: (id: string, agentId: string) => Promise<void> | void;
-  confirmingDeleteTask: string | null; handleDeleteClick: (id: string) => void;
+  handleDeleteClick: (id: string) => void;
 }) {
   const [assigningAgentId, setAssigningAgentId] = useState<string | null>(null);
   if (task.status !== "open" && task.status !== "bidding") return null;
@@ -261,16 +278,16 @@ function ActionButtons({
           <button className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]" style={{ color: "var(--color-accent)" }} onClick={() => onAutoBid(task.id)}>⚡ 竞标</button>
           <button className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]" style={{ color: "var(--color-text-muted)" }} onClick={() => setAssigningTask(task.id)}>👤 指派</button>
           <button
-            className="w-6 h-6 ml-auto rounded-md border transition-colors flex items-center justify-center text-[11px]"
+            className="w-6 h-6 ml-auto rounded-md border transition-colors flex items-center justify-center text-[11px] hover:text-red-500 hover:border-red-500"
             style={{
-              color: confirmingDeleteTask === task.id ? "#dc2626" : "var(--color-text-muted)",
-              borderColor: confirmingDeleteTask === task.id ? "#ef4444" : "var(--color-border)",
-              background: confirmingDeleteTask === task.id ? "rgba(239,68,68,0.1)" : "var(--color-surface)",
+              color: "var(--color-text-muted)",
+              borderColor: "var(--color-border)",
+              background: "var(--color-surface)",
             }}
             onClick={() => handleDeleteClick(task.id)}
-            title={confirmingDeleteTask === task.id ? "再次点击确认删除" : "删除任务"}
+            title="删除任务"
           >
-            {confirmingDeleteTask === task.id ? "!" : "🗑"}
+            🗑
           </button>
         </>
       )}
@@ -292,7 +309,6 @@ interface CompletedColumnProps {
   blockedByDepsSet: Set<string>;
   assigningTask: string | null;
   setAssigningTask: (id: string | null) => void;
-  confirmingDeleteTask: string | null;
   handleDeleteClick: (id: string) => void;
   idleGroupAgents: GuildAgent[];
   collapsedReqs: Set<string>;
@@ -311,7 +327,7 @@ const isParentKind = (k?: string): k is ParentKind => k === "requirement" || k =
 function CompletedColumn({
   colTasks, col, tasks, agents, selectedTaskId, onSelectTask,
   onAutoBid, onAssignTask, blockedByDepsSet, assigningTask, setAssigningTask,
-  confirmingDeleteTask, handleDeleteClick, idleGroupAgents,
+  handleDeleteClick, idleGroupAgents,
   collapsedReqs, setCollapsedReqs, onStopTask,
 }: CompletedColumnProps) {
   const isTerminalCol = col.label === "已完成";
@@ -411,7 +427,7 @@ function CompletedColumn({
 
   const renderSideAction = (task: GuildTask) => {
     if (task.status === "completed" || task.status === "failed" || task.status === "cancelled") {
-      return <DeleteButton taskId={task.id} confirming={confirmingDeleteTask === task.id} onClick={() => handleDeleteClick(task.id)} />;
+      return <DeleteButton taskId={task.id} onClick={() => handleDeleteClick(task.id)} />;
     }
     if (onStopTask && task.status === "in_progress") {
       const isStopping = stoppingTask === task.id;
@@ -452,7 +468,6 @@ function CompletedColumn({
         setAssigningTask={setAssigningTask}
         onAutoBid={onAutoBid}
         onAssignTask={onAssignTask}
-        confirmingDeleteTask={confirmingDeleteTask}
         handleDeleteClick={handleDeleteClick}
       />
     </div>
@@ -506,7 +521,7 @@ function CompletedColumn({
             </div>
             <div className="flex items-center gap-1.5 shrink-0">
               {opts.deleteBtn && (
-                <DeleteButton taskId={reqId} confirming={confirmingDeleteTask === reqId} onClick={() => handleDeleteClick(reqId)} />
+                <DeleteButton taskId={reqId} onClick={() => handleDeleteClick(reqId)} />
               )}
             </div>
           </div>

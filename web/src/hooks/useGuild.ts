@@ -73,7 +73,7 @@ export function useGuild() {
   }, [selectedGroupId, loadTasks]);
 
   const handleCreateGroup = useCallback(
-    async (payload: { name: string; description: string; sharedContext?: string }) => {
+    async (payload: { name: string; description: string; sharedContext?: string; artifactStrategy?: "isolated" | "collaborative" }) => {
       await createGroup(payload);
       await loadAll();
     },
@@ -177,7 +177,7 @@ export function useGuild() {
   );
 
   const handleUpdateGroup = useCallback(
-    async (groupId: string, payload: { name?: string; description?: string }) => {
+    async (groupId: string, payload: { name?: string; description?: string; artifactStrategy?: "isolated" | "collaborative" }) => {
       await updateGroup(groupId, payload);
       await loadAll();
     },

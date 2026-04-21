@@ -82,6 +82,11 @@ export function useGuildStream(groupId: string | null) {
   const [tasks, setTasks] = useState<GuildTask[]>([]);
   const [agents, setAgents] = useState<GuildAgent[]>([]);
   const [agentOutputs, setAgentOutputs] = useState<Record<string, string>>({});
+  // Last SSE event timestamp per task (ms). Used to flag tasks that haven't
+  // produced output for a while so the UI can show "thinking…" instead of
+  // making the user wonder whether the agent died.
+  const lastTaskEventAtRef = useRef<Record<string, number>>({});
+  const [staleTaskIds, setStaleTaskIds] = useState<Set<string>>(() => new Set());
   const [taskExecutions, setTaskExecutions] = useState<Record<string, TaskExecution>>({});
   const [schedulerLog, setSchedulerLog] = useState<SchedulerLogEntry[]>([]);
   const esRef = useRef<EventSource | null>(null);
@@ -123,6 +128,15 @@ export function useGuildStream(groupId: string | null) {
 
     // Helper: append or merge an event into a task execution
     const appendEvent = (taskId: string, agentId: string, evType: ExecutionEventType, content: string, extra?: { tool?: string; args?: string; payload?: unknown }) => {
+      lastTaskEventAtRef.current[taskId] = Date.now();
+      // If the task was flagged stale, clear it immediately so the UI stops
+      // showing "thinking…" without waiting for the next sweep tick.
+      setStaleTaskIds((prev) => {
+        if (!prev.has(taskId)) return prev;
+        const next = new Set(prev);
+        next.delete(taskId);
+        return next;
+      });
       ensureExec(taskId, agentId);
       setTaskExecutions((prev) => {
         const exec = prev[taskId];
@@ -520,6 +534,38 @@ export function useGuildStream(groupId: string | null) {
     }
   }, [groupId]);
 
+  // Stale-task sweeper: flag any in_progress task that hasn't produced an SSE
+  // event for > STALE_THRESHOLD_MS. Clears automatically when a new event
+  // arrives (see appendEvent). Runs every 5s; threshold 8s — picks up "quiet"
+  // reasoning without crying wolf on every small pause.
+  //
+  // We read `tasks` through a ref instead of putting it in the deps array —
+  // otherwise every SSE event (which changes `tasks`) would tear down and
+  // rebuild the interval, and the 5s timer would never actually elapse on an
+  // active group.
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
+  useEffect(() => {
+    const STALE_THRESHOLD_MS = 8000;
+    const timer = window.setInterval(() => {
+      const now = Date.now();
+      const inProgressIds = new Set(
+        tasksRef.current.filter((t) => t.status === "in_progress").map((t) => t.id),
+      );
+      const next = new Set<string>();
+      for (const id of inProgressIds) {
+        const last = lastTaskEventAtRef.current[id];
+        if (!last) continue; // No events yet — don't flag; the task just started.
+        if (now - last > STALE_THRESHOLD_MS) next.add(id);
+      }
+      setStaleTaskIds((prev) => {
+        if (prev.size === next.size && [...prev].every((x) => next.has(x))) return prev;
+        return next;
+      });
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   // Auto-load logs for in-progress tasks on initial state
   useEffect(() => {
     if (!groupId) return;
@@ -543,6 +589,7 @@ export function useGuildStream(groupId: string | null) {
     agentOutputs,
     taskExecutions,
     schedulerLog,
+    staleTaskIds,
     loadTaskLog,
     removeTaskExecution,
     clearSchedulerLog,

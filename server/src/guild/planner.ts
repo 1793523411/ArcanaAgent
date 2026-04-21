@@ -368,14 +368,21 @@ export async function planRequirement(
     return { ok: false, reason: `Empty subtasks: ${clarification}`, raw, result: parsed };
   }
 
-  // Persist subtasks in definition order so dependsOn indices line up.
+  // Two-pass creation: first create every subtask with empty deps, then resolve
+  // dependsOn indices to real ids. This makes forward references (i depends on
+  // j where j > i) work correctly — previously those were silently dropped by
+  // `idByIndex.get(...)` returning undefined.
+  const N = parsed.subtasks.length;
   const createdSubtasks: GuildTask[] = [];
   const idByIndex = new Map<number, string>();
-  for (let i = 0; i < parsed.subtasks.length; i++) {
+  const droppedDeps: Array<{ from: number; to: number; reason: string }> = [];
+
+  // Pass 1: create all subtasks in "blocked" state so the scheduler can't
+  // grab them between now and pass 2. If we left them in "open" with empty
+  // deps, the first subtask would race the second-pass update and might be
+  // dispatched before its real deps are wired.
+  for (let i = 0; i < N; i++) {
     const spec = parsed.subtasks[i];
-    const depIds = (spec.dependsOn ?? [])
-      .map((idx) => idByIndex.get(idx))
-      .filter((x): x is string => !!x);
     const params: CreateTaskParams = {
       title: spec.title,
       description: spec.description,
@@ -386,12 +393,60 @@ export async function planRequirement(
       suggestedAgentId: spec.suggestedAgentId ?? undefined,
       acceptanceCriteria: spec.acceptanceCriteria,
       workspaceRef,
-      dependsOn: depIds,
       createdBy: group.leadAgentId ?? "lead",
+      initialStatus: "blocked",
     };
     const sub = createTask(groupId, params);
     createdSubtasks.push(sub);
     idByIndex.set(i, sub.id);
+  }
+
+  // Pass 2: resolve dependsOn (validating each index) and atomically flip
+  // status to "open" in the same update so the scheduler sees a consistent
+  // "ready-for-dispatch-with-deps" state.
+  for (let i = 0; i < N; i++) {
+    const spec = parsed.subtasks[i];
+    const rawDeps = spec.dependsOn ?? [];
+    const depIds: string[] = [];
+    const seen = new Set<number>();
+    for (const idx of rawDeps) {
+      if (typeof idx !== "number" || !Number.isInteger(idx)) {
+        droppedDeps.push({ from: i, to: idx as number, reason: "非整数索引" });
+        continue;
+      }
+      if (idx === i) {
+        droppedDeps.push({ from: i, to: idx, reason: "自依赖" });
+        continue;
+      }
+      if (idx < 0 || idx >= N) {
+        droppedDeps.push({ from: i, to: idx, reason: `超出范围 [0, ${N - 1}]` });
+        continue;
+      }
+      if (seen.has(idx)) continue;
+      seen.add(idx);
+      const depId = idByIndex.get(idx);
+      if (depId) depIds.push(depId);
+    }
+    updateTask(groupId, createdSubtasks[i].id, {
+      status: "open",
+      dependsOn: depIds,
+    });
+    createdSubtasks[i].status = "open";
+    createdSubtasks[i].dependsOn = depIds;
+  }
+
+  if (droppedDeps.length > 0) {
+    const lines = droppedDeps.map((d) => `  - 子任务 ${d.from} → ${d.to}：${d.reason}`).join("\n");
+    const warning = `\n⚠ Planner 生成了 ${droppedDeps.length} 条无效依赖，已忽略：\n${lines}\n`;
+    serverLogger.warn("[guild.planner] dropped invalid deps", { requirementId: requirement.id, droppedDeps });
+    guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: warning });
+    logText(warning);
+    appendDecision(
+      groupId,
+      requirement.id,
+      group.leadAgentId ?? "lead",
+      `Planner 有 ${droppedDeps.length} 条无效依赖被忽略（详见执行日志）`,
+    );
   }
 
   // A requirement with children is an orchestration container, not a

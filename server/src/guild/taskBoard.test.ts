@@ -9,6 +9,7 @@ import {
   getSubtasks,
   areDepsReady,
   getUnplannedRequirements,
+  detectDependencyCycle,
 } from "./taskBoard.js";
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
@@ -71,6 +72,39 @@ describe("taskBoard subtasks & deps", () => {
       dependsOn: ["task_ghost_xxx"],
     });
     expect(areDepsReady(group.id, t)).toBe(true);
+  });
+
+  it("createTask honors initialStatus for planner 2-pass hold", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const held = createTask(group.id, {
+      title: "Hold me",
+      description: "waiting for deps",
+      kind: "subtask",
+      initialStatus: "blocked",
+    });
+    expect(held.status).toBe("blocked");
+    const normal = createTask(group.id, { title: "Normal", description: "x" });
+    expect(normal.status).toBe("open");
+  });
+
+  it("detectDependencyCycle finds self-references and 2-cycles", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const a = createTask(group.id, { title: "A", description: "x" });
+    const b = createTask(group.id, { title: "B", description: "y", dependsOn: [a.id] });
+
+    // Editing B with deps=[B.id] → self-ref
+    expect(detectDependencyCycle(group.id, b.id, [b.id])).not.toBeNull();
+
+    // Editing A to depend on B → A→B→A cycle (B already depends on A)
+    const cycle = detectDependencyCycle(group.id, a.id, [b.id]);
+    expect(cycle).not.toBeNull();
+    expect(cycle).toEqual(expect.arrayContaining([a.id, b.id]));
+
+    // Legit chain A→B, no cycle
+    expect(detectDependencyCycle(group.id, null, [a.id])).toBeNull();
+
+    // Unknown deps don't crash and don't report a cycle
+    expect(detectDependencyCycle(group.id, null, ["task_ghost"])).toBeNull();
   });
 
   it("getUnplannedRequirements lists requirement tasks without subtaskIds", () => {
