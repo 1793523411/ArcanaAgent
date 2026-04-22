@@ -66,6 +66,14 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   // Resizable right panel
   const [detailWidth, setDetailWidth] = useState(320);
   const [resizing, setResizing] = useState(false);
+  // Collapsible right panel — persisted so users don't have to re-close each session
+  const [detailCollapsed, setDetailCollapsedState] = useState<boolean>(() => {
+    try { return localStorage.getItem("guild.detailCollapsed") === "1"; } catch { return false; }
+  });
+  const setDetailCollapsed = (v: boolean) => {
+    setDetailCollapsedState(v);
+    try { localStorage.setItem("guild.detailCollapsed", v ? "1" : "0"); } catch {}
+  };
 
   // Resizable artifact panel
   const [artifactWidth, setArtifactWidth] = useState(340);
@@ -101,6 +109,13 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       window.removeEventListener("mouseup", onUp);
     };
   }, [leftResizing, resizing, artifactResizing]);
+
+  // Auto-expand the detail panel when user selects something while collapsed —
+  // otherwise the click appears to do nothing.
+  useEffect(() => {
+    if (selectedDetail && detailCollapsed) setDetailCollapsed(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDetail]);
 
   // Prefer REST-backed guild.agents as the source of truth for identity and
   // group membership (groupId, updatedAt, etc). Only overlay live-execution
@@ -460,39 +475,52 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
           )}
         </div>
 
-        {/* Resize handle */}
-        <div
-          className="w-1.5 shrink-0 cursor-col-resize hover:bg-[var(--color-accent)] transition-colors"
-          style={{ background: resizing ? "var(--color-accent)" : "var(--color-border)" }}
-          onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
-        />
-
-        {/* Right: detail panel */}
-        <div
-          className="shrink-0 overflow-hidden flex flex-col"
-          style={{ width: detailWidth, background: "var(--color-surface)" }}
-        >
-          <DetailPanel
-            selectedAgent={selectedAgent}
-            selectedTask={selectedTask}
-            agents={mergedAgents}
-            tasks={mergedTasks}
-            agentOutputs={stream.agentOutputs}
-            staleTaskIds={stream.staleTaskIds}
-            onClose={() => setSelectedDetail(null)}
-            onEditAgent={(id) => setEditingAgent(id)}
-            onDeleteAgent={handleDeleteAgent}
-            onReleaseAgent={handleReleaseAgent}
-            onViewLog={async (taskId) => {
-              await stream.loadTaskLog(taskId);
-              setViewingLogTaskId(taskId);
-            }}
-            onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
-            onOpenWorkspace={() => {
-              setShowArtifacts(true);
-            }}
-          />
-        </div>
+        {/* Collapsed: thin vertical expand strip. Expanded: resize handle + full panel. */}
+        {detailCollapsed ? (
+          <button
+            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-l transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{ background: "var(--color-surface)", borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
+            onClick={() => setDetailCollapsed(false)}
+            title="展开详情面板"
+          >
+            <span className="text-sm">◀</span>
+            <span className="text-[10px]" style={{ writingMode: "vertical-rl" }}>详情</span>
+          </button>
+        ) : (
+          <>
+            <div
+              className="w-1.5 shrink-0 cursor-col-resize hover:bg-[var(--color-accent)] transition-colors"
+              style={{ background: resizing ? "var(--color-accent)" : "var(--color-border)" }}
+              onMouseDown={(e) => { e.preventDefault(); setResizing(true); }}
+            />
+            <div
+              className="shrink-0 overflow-hidden flex flex-col"
+              style={{ width: detailWidth, background: "var(--color-surface)" }}
+            >
+              <DetailPanel
+                selectedAgent={selectedAgent}
+                selectedTask={selectedTask}
+                agents={mergedAgents}
+                tasks={mergedTasks}
+                agentOutputs={stream.agentOutputs}
+                staleTaskIds={stream.staleTaskIds}
+                onClose={() => setSelectedDetail(null)}
+                onCollapse={() => setDetailCollapsed(true)}
+                onEditAgent={(id) => setEditingAgent(id)}
+                onDeleteAgent={handleDeleteAgent}
+                onReleaseAgent={handleReleaseAgent}
+                onViewLog={async (taskId) => {
+                  await stream.loadTaskLog(taskId);
+                  setViewingLogTaskId(taskId);
+                }}
+                onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
+                onOpenWorkspace={() => {
+                  setShowArtifacts(true);
+                }}
+              />
+            </div>
+          </>
+        )}
 
         {/* Artifact panel (toggled, resizable) */}
         {showArtifacts && (

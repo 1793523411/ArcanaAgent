@@ -9,6 +9,18 @@
       "required": true
     }
   ],
+  "outputs": [
+    {
+      "ref": "knowledge-points.json",
+      "kind": "file",
+      "label": "知识点结构化数据"
+    },
+    {
+      "ref": "knowledge-points.md",
+      "kind": "file",
+      "label": "知识点可读文档"
+    }
+  ],
   "steps": [
     {
       "title": "抓取规划页面",
@@ -59,6 +71,22 @@
     {
       "title": "组装输出 + 质检",
       "description": "组装最终 JSON + Markdown，按质检清单逐项检查。",
+      "outputs": [
+        {
+          "ref": "knowledge-points.json",
+          "kind": "file",
+          "isFinal": true,
+          "label": "知识点结构化数据",
+          "description": "最终 JSON 聚合"
+        },
+        {
+          "ref": "knowledge-points.md",
+          "kind": "file",
+          "isFinal": true,
+          "label": "知识点可读文档",
+          "description": "最终 Markdown 聚合"
+        }
+      ],
       "dependsOn": [
         2,
         4,

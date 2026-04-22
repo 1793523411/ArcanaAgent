@@ -3,7 +3,8 @@ import { mkdirSync, rmSync, writeFileSync } from "fs";
 import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup } from "./guildManager.js";
-import { createTask, getSubtasks, getTask, failTask, getGroupTasks } from "./taskBoard.js";
+import { createTask, getSubtasks, getTask, failTask, getGroupTasks, completeTask } from "./taskBoard.js";
+import { readWorkspace } from "./workspace.js";
 import {
   listPipelines,
   getPipeline,
@@ -12,8 +13,12 @@ import {
   savePipeline,
   deletePipeline,
   validatePipeline,
+  reconcileDeclaredOutputs,
+  aggregateParentOutputs,
+  renderDeliverablesTable,
   type PipelineTemplate,
 } from "./pipelines.js";
+import type { TaskHandoff } from "./types.js";
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
 const PIPELINES_DIR = join(TEST_DATA_DIR, "guild", "pipelines");
@@ -435,6 +440,191 @@ describe("pipelines", () => {
     expandPipeline(group.id, parent, getPipeline("parent-ctx")!, {});
     const subs = getSubtasks(group.id, parent.id);
     expect(subs.map((s) => s.title)).toEqual(["rush: Ship it"]);
+  });
+
+  it("template-level outputs materialize onto parent as isFinal=true", () => {
+    const tpl: PipelineTemplate = {
+      id: "out-pl",
+      name: "Outputs",
+      inputs: [{ name: "slug", required: true }],
+      outputs: [
+        { ref: "${slug}.md", label: "终稿", description: "发布使用", kind: "file" },
+      ],
+      steps: [{ title: "draft", description: "", dependsOn: [] }],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("out-pl")!, { slug: "hello" });
+    const refreshed = getTask(group.id, parent.id)!;
+    expect(refreshed.declaredOutputs).toHaveLength(1);
+    expect(refreshed.declaredOutputs![0].ref).toBe("hello.md");
+    expect(refreshed.declaredOutputs![0].label).toBe("终稿");
+    expect(refreshed.declaredOutputs![0].isFinal).toBe(true);
+    expect(refreshed.declaredOutputs![0].status).toBe("pending");
+  });
+
+  it("step-level isFinal outputs bubble up to parent; non-final stay per-subtask", () => {
+    const tpl: PipelineTemplate = {
+      id: "mixed-out",
+      name: "mixed",
+      steps: [
+        {
+          title: "draft",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "draft.md", kind: "file" }], // intermediate
+        },
+        {
+          title: "final",
+          description: "",
+          dependsOn: [0],
+          outputs: [{ ref: "final.md", kind: "file", isFinal: true, label: "终稿" }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("mixed-out")!, {});
+    const refreshed = getTask(group.id, parent.id)!;
+    // Only the final output bubbles up to the parent
+    expect(refreshed.declaredOutputs?.map((o) => o.ref)).toEqual(["final.md"]);
+    const [draft, final] = getSubtasks(group.id, parent.id);
+    expect(draft.declaredOutputs?.map((o) => o.ref)).toEqual(["draft.md"]);
+    expect(final.declaredOutputs?.map((o) => o.ref)).toEqual(["final.md"]);
+  });
+
+  it("validatePipeline flags empty output refs and undeclared vars in refs", () => {
+    const bad: PipelineTemplate = {
+      id: "bad-out",
+      name: "bad",
+      inputs: [{ name: "ok" }],
+      outputs: [{ ref: "", kind: "file" } as any],
+      steps: [
+        {
+          title: "s",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "${nope}.md", kind: "file" }],
+        },
+      ],
+    };
+    const errs = validatePipeline(bad);
+    const paths = errs.map((e) => e.path);
+    expect(paths).toContain("outputs[0].ref");
+    expect(errs.some((e) => e.message.includes("nope"))).toBe(true);
+  });
+
+  it("reconcileDeclaredOutputs marks produced when handoff artifact matches by basename", () => {
+    const handoff: TaskHandoff = {
+      fromAgentId: "a",
+      summary: "done",
+      artifacts: [{ kind: "file", ref: "./shared/final.md" }],
+      createdAt: new Date().toISOString(),
+    };
+    const updated = reconcileDeclaredOutputs({
+      id: "task_1",
+      status: "completed",
+      assignedAgentId: "a",
+      result: { summary: "done", handoff },
+      completedAt: new Date().toISOString(),
+      declaredOutputs: [
+        { ref: "final.md", kind: "file", isFinal: true, status: "pending" },
+      ],
+    });
+    expect(updated?.[0].status).toBe("produced");
+    expect(updated?.[0].producedBy?.taskId).toBe("task_1");
+  });
+
+  it("reconcileDeclaredOutputs marks missing when task failed without artifact", () => {
+    const updated = reconcileDeclaredOutputs({
+      id: "task_2",
+      status: "failed",
+      declaredOutputs: [{ ref: "x.md", kind: "file", status: "pending" }],
+    });
+    expect(updated?.[0].status).toBe("missing");
+  });
+
+  it("aggregateParentOutputs rolls produced children up to parent", () => {
+    const parentOut = [{ ref: "final.md", kind: "file" as const, isFinal: true, status: "pending" as const }];
+    const child = {
+      id: "c1",
+      groupId: "g",
+      title: "c",
+      description: "",
+      status: "completed" as const,
+      priority: "medium" as const,
+      createdBy: "x",
+      createdAt: "",
+      declaredOutputs: [
+        {
+          ref: "final.md",
+          kind: "file" as const,
+          status: "produced" as const,
+          producedBy: { taskId: "c1", agentId: "a", at: "t" },
+        },
+      ],
+    };
+    const rolled = aggregateParentOutputs(parentOut, [child]);
+    expect(rolled?.[0].status).toBe("produced");
+    expect(rolled?.[0].producedBy?.taskId).toBe("c1");
+  });
+
+  it("completeTask + pipeline parent: handoff reconciles parent deliverables and workspace section", () => {
+    const tpl: PipelineTemplate = {
+      id: "e2e-out",
+      name: "e2e",
+      outputs: [{ ref: "final.md", kind: "file", label: "终稿" }],
+      steps: [
+        {
+          title: "write final",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "final.md", kind: "file", isFinal: true }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("e2e-out")!, {});
+    const [sub] = getSubtasks(group.id, parent.id);
+
+    // Initially pending in workspace
+    let ws = readWorkspace(group.id, parent.id)!;
+    expect(ws.deliverables).toContain("final.md");
+    expect(ws.deliverables).toContain("⏳");
+
+    // Complete the child with a matching file artifact
+    completeTask(group.id, sub.id, "agent_x", {
+      summary: "done",
+      handoff: {
+        fromAgentId: "agent_x",
+        summary: "wrote final.md",
+        artifacts: [{ kind: "file", ref: "final.md" }],
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const refreshedParent = getTask(group.id, parent.id)!;
+    expect(refreshedParent.declaredOutputs?.[0].status).toBe("produced");
+    expect(refreshedParent.declaredOutputs?.[0].producedBy?.agentId).toBe("agent_x");
+
+    ws = readWorkspace(group.id, parent.id)!;
+    expect(ws.deliverables).toContain("✅");
+    expect(ws.deliverables).toContain("agent_x");
+  });
+
+  it("renderDeliverablesTable handles empty and populated outputs", () => {
+    expect(renderDeliverablesTable(undefined)).toContain("_No declared deliverables._");
+    expect(renderDeliverablesTable([])).toContain("_No declared deliverables._");
+    const md = renderDeliverablesTable([
+      { ref: "x.md", kind: "file", isFinal: true, status: "pending", label: "Final" },
+    ]);
+    expect(md).toContain("⭐");
+    expect(md).toContain("⏳");
+    expect(md).toContain("x.md");
   });
 
   it("expandPipeline is idempotent", () => {

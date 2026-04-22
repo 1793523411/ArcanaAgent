@@ -3,6 +3,10 @@ import { join, resolve } from "path";
 import type { GuildTask, TaskStatus, TaskPriority, CreateTaskParams, TaskResult } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
 import { atomicWriteFileSync } from "./atomicFs.js";
+// Circular import is safe: pipelines.ts only calls createTask/updateTask/
+// getSubtasks from inside functions, and this import is used only inside
+// completeTask. Both sides' top-level bindings are ready before any call.
+import { syncPipelineOutputsAfterCompletion } from "./pipelines.js";
 
 export interface ExecutionLogEntry {
   type: "text" | "reasoning" | "tool_call" | "tool_result" | "plan" | "harness";
@@ -74,6 +78,7 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
     pipelineId: params.pipelineId,
     pipelineInputs: params.pipelineInputs,
     retryPolicy: params.retryPolicy,
+    declaredOutputs: params.declaredOutputs,
   };
   tasks.push(task);
   saveTasks(groupId, tasks);
@@ -105,6 +110,7 @@ export function updateTask(
     | "kind" | "parentTaskId" | "subtaskIds" | "suggestedSkills"
     | "suggestedAgentId" | "acceptanceCriteria" | "workspaceRef" | "handoff"
     | "retryCount" | "retryAt" | "skippedReason" | "_rejectedBy" | "dependsOn"
+    | "declaredOutputs"
   >>
 ): GuildTask | null {
   const tasks = loadTasks(groupId);
@@ -155,6 +161,15 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
     result,
   });
   if (task) {
+    // Reconcile pipeline declaredOutputs against this task's handoff
+    // BEFORE rollup — so when rollupParentRequirement finalizes the parent,
+    // the parent's deliverables state is already up to date.
+    try {
+      syncPipelineOutputsAfterCompletion(groupId, taskId);
+    } catch (e) {
+      // Non-fatal — deliverables tracking is best-effort and must not
+      // break completion.
+    }
     guildEventBus.emit({ type: "task_completed", taskId, agentId, result });
     rollupParentRequirement(groupId, task);
   }
@@ -240,6 +255,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
         skippedReason: `retry exhausted (${policy.max}) — skipped: ${error}`,
       });
       if (task) {
+        try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
         guildEventBus.emit({ type: "task_cancelled", taskId });
         cascadeFailureToDependents(groupId, taskId, `依赖任务已跳过（${task.title}）`);
         rollupParentRequirement(groupId, task);
@@ -277,6 +293,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
         skippedReason: `retry exhausted (${policy.max}) — fallback=${fallback.id}: ${error}`,
       });
       if (task) {
+        try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
         guildEventBus.emit({ type: "task_cancelled", taskId });
         rollupParentRequirement(groupId, task);
       }
@@ -292,6 +309,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
     result: { summary: `Failed: ${error}` },
   });
   if (task) {
+    try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
     guildEventBus.emit({ type: "task_failed", taskId, agentId, error });
     cascadeFailureToDependents(groupId, taskId, `依赖任务失败（${task.title}）`);
     rollupParentRequirement(groupId, task);
@@ -302,6 +320,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
 export function cancelTask(groupId: string, taskId: string): GuildTask | null {
   const task = updateTask(groupId, taskId, { status: "cancelled", completedAt: new Date().toISOString() });
   if (task) {
+    try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
     guildEventBus.emit({ type: "task_cancelled", taskId });
     cascadeFailureToDependents(groupId, taskId, `依赖任务已取消（${task.title}）`);
     rollupParentRequirement(groupId, task);

@@ -39,6 +39,7 @@ const SECTION_ORDER = [
   "Goal",
   "Scope",
   "Plan",
+  "Deliverables",
   "Decisions Log",
   "Handoffs",
   "Open Questions",
@@ -60,6 +61,7 @@ export interface Workspace {
   goal: string;
   scope: string;
   plan: string;
+  deliverables: string;
   decisions: string;
   handoffs: string;
   openQuestions: string;
@@ -90,6 +92,9 @@ function renderWorkspace(ws: Workspace): string {
     "",
     `## Plan`,
     ws.plan.trim(),
+    "",
+    `## Deliverables`,
+    ws.deliverables.trim(),
     "",
     `## Decisions Log`,
     ws.decisions.trim(),
@@ -137,6 +142,7 @@ function parseWorkspace(raw: string): Workspace {
     Goal: "",
     Scope: "",
     Plan: "",
+    Deliverables: "",
     "Decisions Log": "",
     Handoffs: "",
     "Open Questions": "",
@@ -164,6 +170,7 @@ function parseWorkspace(raw: string): Workspace {
     goal: sections.Goal.trim(),
     scope: sections.Scope.trim(),
     plan: sections.Plan.trim(),
+    deliverables: sections.Deliverables.trim(),
     decisions: sections["Decisions Log"].trim(),
     handoffs: sections.Handoffs.trim(),
     openQuestions: sections["Open Questions"].trim(),
@@ -186,6 +193,7 @@ export function createWorkspace(
     goal,
     scope: "_Scope to be defined by lead._",
     plan: "_Plan pending._",
+    deliverables: "_No declared deliverables._",
     decisions: "_No decisions yet._",
     handoffs: "_No handoffs yet._",
     openQuestions: "_No open questions._",
@@ -249,6 +257,17 @@ export function updateScopeSection(
   const ws = readWorkspace(groupId, parentTaskId);
   if (!ws) return;
   ws.scope = scopeMarkdown.trim() || "_Scope to be defined by lead._";
+  writeWorkspace(groupId, parentTaskId, ws);
+}
+
+export function updateDeliverablesSection(
+  groupId: string,
+  parentTaskId: string,
+  deliverablesMarkdown: string,
+): void {
+  const ws = readWorkspace(groupId, parentTaskId);
+  if (!ws) return;
+  ws.deliverables = deliverablesMarkdown.trim() || "_No declared deliverables._";
   writeWorkspace(groupId, parentTaskId, ws);
 }
 

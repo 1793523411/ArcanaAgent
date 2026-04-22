@@ -115,6 +115,28 @@ export interface TaskHandoffArtifact {
   description?: string;
 }
 
+/** Runtime state of a declared output — tracked as the pipeline runs. */
+export type DeclaredOutputStatus = "pending" | "produced" | "missing";
+
+/**
+ * Structured artifact declaration threaded from `PipelineStepSpec.outputs` /
+ * `PipelineTemplate.outputs` onto the task itself. Gives the scheduler +
+ * UI a contract: this task is expected to produce these named deliverables,
+ * and we can verify against the actual handoff after completion.
+ */
+export interface TaskDeclaredOutput {
+  ref: string;
+  label?: string;
+  kind: "file" | "url" | "data" | "commit";
+  description?: string;
+  /** Surfaced as a top-level deliverable of the pipeline (not just intermediate). */
+  isFinal?: boolean;
+  /** Runtime status — updated when the producing task completes + hands off. */
+  status?: DeclaredOutputStatus;
+  /** Who/when produced this. Only set when status === "produced". */
+  producedBy?: { taskId: string; agentId: string; at: string };
+}
+
 export interface TaskHandoffMemory {
   type: "knowledge" | "preference";
   title: string;
@@ -215,6 +237,11 @@ export interface GuildTask {
   retryAt?: string;
   /** Populated when the task was resolved via skip/fallback/branch-miss. */
   skippedReason?: string;
+  /** Artifact contracts declared by the pipeline template. On pipeline parents
+   *  this aggregates template-level + step-level `isFinal` outputs; on subtasks
+   *  this mirrors the step's own declared outputs. Reconciled against handoff
+   *  artifacts when the producing task completes. */
+  declaredOutputs?: TaskDeclaredOutput[];
   createdBy: string;
   createdAt: string;
   startedAt?: string;
@@ -396,6 +423,7 @@ export interface CreateTaskParams {
   pipelineId?: string;
   pipelineInputs?: Record<string, string>;
   retryPolicy?: TaskRetryPolicy;
+  declaredOutputs?: TaskDeclaredOutput[];
   /** Initial status — defaults to "open". Use "blocked" to create a task that
    *  the scheduler won't pick up until its status is later flipped to "open"
    *  (e.g. planner 2-pass: create all children then wire deps atomically). */

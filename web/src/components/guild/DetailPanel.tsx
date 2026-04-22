@@ -4,6 +4,7 @@ import AgentOutputStream from "./AgentOutputStream";
 import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentMemoryPanel from "./AgentMemoryPanel";
+import DeliverablesPanel from "./DeliverablesPanel";
 import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections } from "../../api/guild";
 
 const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
@@ -17,6 +18,8 @@ interface Props {
   /** Ids of in_progress tasks that haven't emitted an SSE event recently. */
   staleTaskIds?: Set<string>;
   onClose: () => void;
+  /** Collapse the entire panel (hide from layout). Shown as a second header button. */
+  onCollapse?: () => void;
   onEditAgent?: (id: string) => void;
   onDeleteAgent?: (id: string) => Promise<void> | void;
   onReleaseAgent?: (id: string) => Promise<void> | void;
@@ -64,7 +67,7 @@ const ASSET_TYPE_ICON: Record<string, string> = {
   prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
@@ -114,9 +117,32 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
 
   if (!selectedAgent && !selectedTask) {
     return (
-      <div className="flex flex-col h-full items-center justify-center" style={{ color: "var(--color-text-muted)" }}>
-        <div className="text-2xl mb-2">👆</div>
-        <div className="text-sm">选择 Agent 或任务查看详情</div>
+      <div className="flex flex-col h-full">
+        {onCollapse && (
+          <div className="flex justify-end px-2 py-2 border-b" style={{ borderColor: "var(--color-border)" }}>
+            <button
+              onClick={onCollapse}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+              style={{ color: "var(--color-text-muted)" }}
+              title="收起面板"
+            >
+              ▶
+            </button>
+          </div>
+        )}
+        <div className="flex-1 flex flex-col items-center justify-center" style={{ color: "var(--color-text-muted)" }}>
+          <div className="text-2xl mb-2">👆</div>
+          <div className="text-sm">选择 Agent 或任务查看详情</div>
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="text-xs mt-3 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
+              style={{ color: "var(--color-accent)" }}
+            >
+              收起面板 ▶
+            </button>
+          )}
+        </div>
       </div>
     );
   }
@@ -127,13 +153,26 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
         <span className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
           {selectedAgent ? "Agent 详情" : "任务详情"}
         </span>
-        <button
-          onClick={onClose}
-          className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
-          style={{ color: "var(--color-text-muted)" }}
-        >
-          ✕
-        </button>
+        <div className="flex items-center gap-1">
+          {onCollapse && (
+            <button
+              onClick={onCollapse}
+              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+              style={{ color: "var(--color-text-muted)" }}
+              title="收起面板"
+            >
+              ▶
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+            style={{ color: "var(--color-text-muted)" }}
+            title="清除选择"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -600,12 +639,23 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               </div>
             )}
 
-            {/* Subtask DAG for requirement tasks */}
-            {selectedTask.kind === "requirement" && tasks && tasks.some((t) => t.parentTaskId === selectedTask.id) && (
+            {selectedTask.declaredOutputs && selectedTask.declaredOutputs.length > 0 && (
+              <DeliverablesPanel
+                outputs={selectedTask.declaredOutputs}
+                title={selectedTask.kind === "pipeline" ? "最终交付产物" : "步骤产出"}
+                dense={selectedTask.kind !== "pipeline"}
+              />
+            )}
+
+            {/* DAG execution graph — only shown when the selected task is the
+                pipeline/requirement parent itself. Subtask detail is a zoom-in
+                view (description / handoff / log) where the bigger graph would
+                be noise; users click the parent to orient if needed. */}
+            {(selectedTask.kind === "pipeline" || selectedTask.kind === "requirement") && tasks && tasks.some((t) => t.parentTaskId === selectedTask.id) && (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
-                    子任务依赖图
+                    {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
                   </div>
                   <button
                     className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
@@ -615,6 +665,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     全屏查看
                   </button>
                 </div>
+                <DAGStatusLegend />
                 <div
                   className="rounded-lg"
                   style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
@@ -911,7 +962,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
             )}
 
             {/* Expanded DAG modal */}
-            {expandedDAG && selectedTask.kind === "requirement" && tasks && (
+            {expandedDAG && (selectedTask.kind === "pipeline" || selectedTask.kind === "requirement") && tasks && (
               <div className="fixed inset-0 z-[70] flex items-center justify-center">
                 <div className="absolute inset-0 bg-black/50" onClick={() => setExpandedDAG(false)} />
                 <div
@@ -920,7 +971,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 >
                   <div className="flex items-center justify-between px-5 py-3 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
                     <h3 className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
-                      {selectedTask.title} — 子任务依赖图
+                      {selectedTask.title} — {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
                     </h3>
                     <button
                       onClick={() => setExpandedDAG(false)}
@@ -929,6 +980,9 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     >
                       ✕
                     </button>
+                  </div>
+                  <div className="px-5 pt-3 shrink-0">
+                    <DAGStatusLegend />
                   </div>
                   <div className="flex-1 overflow-hidden">
                     <Suspense fallback={<div className="text-xs text-center py-4" style={{ color: "var(--color-text-muted)" }}>加载中…</div>}>
@@ -1009,6 +1063,40 @@ function RejectionHint({ task, agents }: { task: GuildTask; agents: GuildAgent[]
       >
         {clearing ? "清空中…" : "清空拒绝名单"}
       </button>
+    </div>
+  );
+}
+
+/** Compact color legend above the DAG — keeps the status palette self-describing. */
+const DAG_LEGEND_ITEMS: Array<{ color: string; label: string; pulse?: boolean }> = [
+  { color: "#9ca3af", label: "待处理" },
+  { color: "#f59e0b", label: "竞标中" },
+  { color: "#3b82f6", label: "进行中", pulse: true },
+  { color: "#10B981", label: "已完成" },
+  { color: "#EF4444", label: "失败" },
+  { color: "#d97706", label: "阻塞" },
+  { color: "#6b7280", label: "取消" },
+];
+
+function DAGStatusLegend() {
+  return (
+    <div
+      className="flex flex-wrap items-center gap-x-3 gap-y-1 mb-1.5 px-2 py-1 rounded text-[10px]"
+      style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
+    >
+      {DAG_LEGEND_ITEMS.map((item) => (
+        <span key={item.label} className="inline-flex items-center gap-1">
+          <span
+            className="w-2 h-2 rounded-full"
+            style={{
+              background: item.color,
+              boxShadow: item.pulse ? `0 0 4px ${item.color}` : "none",
+              animation: item.pulse ? "dag-pulse 1.5s ease-in-out infinite" : "none",
+            }}
+          />
+          {item.label}
+        </span>
+      ))}
     </div>
   );
 }

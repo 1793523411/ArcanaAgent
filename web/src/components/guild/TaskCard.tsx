@@ -114,6 +114,27 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
           </div>
         )}
 
+        {task.declaredOutputs && task.declaredOutputs.length > 0 && (() => {
+          const total = task.declaredOutputs.length;
+          const produced = task.declaredOutputs.filter((o) => o.status === "produced").length;
+          const missing = task.declaredOutputs.filter((o) => o.status === "missing").length;
+          const color = missing > 0 ? "#ef4444" : produced === total ? "#10b981" : "#f59e0b";
+          const icon = missing > 0 ? "❌" : produced === total ? "✅" : "🎯";
+          return (
+            <div
+              className="text-[10px] mt-0.5 flex items-center gap-1"
+              style={{ color }}
+              title={`${produced}/${total} 产物已完成${missing > 0 ? `，${missing} 个缺失` : ""}`}
+            >
+              <span>{icon}</span>
+              <span>
+                {produced}/{total} 产物
+                {missing > 0 && <span> · {missing} 缺失</span>}
+              </span>
+            </div>
+          );
+        })()}
+
         {assignedAgent && (
           <div className="flex items-center gap-1 mt-1.5">
             <span className="text-xs">{assignedAgent.icon}</span>

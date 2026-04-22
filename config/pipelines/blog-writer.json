@@ -15,6 +15,14 @@
       "default": "资深工程师"
     }
   ],
+  "outputs": [
+    {
+      "ref": "final.md",
+      "kind": "file",
+      "label": "博客终稿",
+      "description": "面向「${audience}」的最终发布稿"
+    }
+  ],
   "steps": [
     {
       "title": "调研主题",
@@ -23,6 +31,7 @@
       "priority": "medium",
       "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 research.md，非空。",
+      "outputs": [{ "ref": "research.md", "kind": "file", "label": "调研材料" }],
       "dependsOn": []
     },
     {
@@ -31,6 +40,7 @@
       "priority": "medium",
       "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 outline.md，非空。",
+      "outputs": [{ "ref": "outline.md", "kind": "file", "label": "文章大纲" }],
       "dependsOn": [0]
     },
     {
@@ -39,6 +49,7 @@
       "priority": "medium",
       "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 draft-principles.md。",
+      "outputs": [{ "ref": "draft-principles.md", "kind": "file", "label": "原理草稿" }],
       "dependsOn": [1]
     },
     {
@@ -47,6 +58,7 @@
       "priority": "medium",
       "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 draft-examples.md。",
+      "outputs": [{ "ref": "draft-examples.md", "kind": "file", "label": "代码示例草稿" }],
       "dependsOn": [1]
     },
     {
@@ -55,6 +67,7 @@
       "priority": "medium",
       "retry": { "max": 2, "backoffMs": 5000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 draft-pitfalls.md。",
+      "outputs": [{ "ref": "draft-pitfalls.md", "kind": "file", "label": "陷阱与反模式草稿" }],
       "dependsOn": [0, 1]
     },
     {
@@ -63,6 +76,7 @@
       "priority": "high",
       "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 draft-full.md，非空。",
+      "outputs": [{ "ref": "draft-full.md", "kind": "file", "label": "合并草稿" }],
       "dependsOn": [2, 3, 4]
     },
     {
@@ -71,6 +85,7 @@
       "priority": "high",
       "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
       "acceptanceCriteria": "共享目录存在 review.md。",
+      "outputs": [{ "ref": "review.md", "kind": "file", "label": "评审意见" }],
       "dependsOn": [5]
     },
     {
@@ -79,6 +94,15 @@
       "priority": "high",
       "retry": { "max": 2, "backoffMs": 10000, "onExhausted": "fail" },
       "acceptanceCriteria": "final.md 存在且非空；字数 2000-3500；含至少 3 个可运行代码示例；至少 4 个陷阱；评审里标记的事实疑点已处理或明确标注。",
+      "outputs": [
+        {
+          "ref": "final.md",
+          "kind": "file",
+          "isFinal": true,
+          "label": "博客终稿",
+          "description": "面向「${audience}」的最终发布稿"
+        }
+      ],
       "dependsOn": [5, 6]
     }
   ]

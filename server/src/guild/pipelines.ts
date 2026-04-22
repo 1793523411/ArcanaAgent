@@ -1,12 +1,20 @@
 import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
-import { join, resolve } from "path";
-import type { GuildTask, CreateTaskParams, TaskPriority, TaskRetryPolicy } from "./types.js";
+import { join, resolve, basename } from "path";
+import type {
+  GuildTask,
+  CreateTaskParams,
+  TaskPriority,
+  TaskRetryPolicy,
+  TaskDeclaredOutput,
+  TaskHandoffArtifact,
+} from "./types.js";
 import { evaluate, validateExpression, type Expression } from "./expression.js";
 import { createTask, updateTask, getSubtasks } from "./taskBoard.js";
 import {
   createWorkspace,
   updatePlanSection,
   updateScopeSection,
+  updateDeliverablesSection,
   appendDecision,
   setWorkspaceStatus,
 } from "./workspace.js";
@@ -40,6 +48,24 @@ export interface PipelineRetryPolicy {
 
 export type PipelineStepKind = "task" | "branch" | "foreach";
 
+export type PipelineArtifactKind = "file" | "url" | "data" | "commit";
+
+/**
+ * Named deliverable produced by a step (or declared at template level as
+ * the pipeline's overall output). Supports `${var}` substitution in every
+ * string field so authors can parameterize filenames (e.g. `${slug}.md`).
+ */
+export interface PipelineArtifactSpec {
+  ref: string;
+  label?: string;
+  kind?: PipelineArtifactKind;
+  description?: string;
+  /** Elevates this artifact to the pipeline's "final deliverable" list —
+   *  surfaced prominently in the workspace Deliverables table and on the
+   *  pipeline parent's `declaredOutputs`. */
+  isFinal?: boolean;
+}
+
 export interface PipelineStepSpec {
   /** Defaults to "task". Branch steps declare when/then/else and produce no task themselves. */
   kind?: PipelineStepKind;
@@ -51,6 +77,8 @@ export interface PipelineStepSpec {
   priority?: TaskPriority;
   acceptanceCriteria?: string;
   retry?: PipelineRetryPolicy;
+  /** Structured deliverables this step is expected to produce. */
+  outputs?: PipelineArtifactSpec[];
   /** Branch-only: predicate evaluated against inputs at expansion time. */
   when?: Expression;
   /** Branch-only: steps expanded when `when` is true. */
@@ -73,6 +101,8 @@ export interface PipelineTemplate {
   description?: string;
   inputs?: PipelineInputSpec[];
   steps: PipelineStepSpec[];
+  /** Pipeline-level final deliverables. Automatically treated as `isFinal: true`. */
+  outputs?: PipelineArtifactSpec[];
 }
 
 export interface ExpandPipelineOutcome {
@@ -152,10 +182,32 @@ export function validatePipeline(tpl: PipelineTemplate): PipelineValidationError
       errs.push({ path: `inputs[${i}].name`, message: "input name 必须是合法标识符" });
     }
   }
+  const ARTIFACT_KINDS: PipelineArtifactKind[] = ["file", "url", "data", "commit"];
+  const validateArtifacts = (
+    arts: PipelineArtifactSpec[] | undefined,
+    pathPrefix: string,
+  ): void => {
+    if (!arts) return;
+    for (const [j, a] of arts.entries()) {
+      const base = `${pathPrefix}[${j}]`;
+      if (!a.ref || typeof a.ref !== "string" || a.ref.trim() === "") {
+        errs.push({ path: `${base}.ref`, message: "ref 不能为空" });
+      }
+      if (a.kind && !ARTIFACT_KINDS.includes(a.kind)) {
+        errs.push({
+          path: `${base}.kind`,
+          message: `kind 必须是 ${ARTIFACT_KINDS.join("/")}`,
+        });
+      }
+    }
+  };
+  validateArtifacts(tpl.outputs, "outputs");
+
   const validateSteps = (steps: PipelineStepSpec[], pathPrefix: string): void => {
     for (const [i, step] of steps.entries()) {
       const kind: PipelineStepKind = step.kind ?? "task";
       const base = `${pathPrefix}[${i}]`;
+      validateArtifacts(step.outputs, `${base}.outputs`);
       if (kind === "task") {
         if (!step.title || step.title.trim() === "") {
           errs.push({ path: `${base}.title`, message: "title 不能为空" });
@@ -229,11 +281,21 @@ export function validatePipeline(tpl: PipelineTemplate): PipelineValidationError
       if (!scope.has(m[1])) undeclared.add(m[1]);
     }
   };
+  const walkArtifactStrings = (arts: PipelineArtifactSpec[] | undefined, scope: Set<string>) => {
+    if (!arts) return;
+    for (const a of arts) {
+      interpolate(a.ref, scope);
+      interpolate(a.label, scope);
+      interpolate(a.description, scope);
+    }
+  };
+  walkArtifactStrings(tpl.outputs, inputNames);
   const walkStrings = (steps: PipelineStepSpec[], scope: Set<string>): void => {
     for (const step of steps) {
       interpolate(step.title, scope);
       interpolate(step.description, scope);
       interpolate(step.acceptanceCriteria, scope);
+      walkArtifactStrings(step.outputs, scope);
       if (step.retry?.fallback) {
         interpolate(step.retry.fallback.title, scope);
         interpolate(step.retry.fallback.description, scope);
@@ -408,6 +470,14 @@ function substituteStepVar(step: PipelineStepSpec, varName: string, value: strin
     description: substituteVars(step.description, { [varName]: value }),
     acceptanceCriteria: sub(step.acceptanceCriteria),
   };
+  if (step.outputs) {
+    out.outputs = step.outputs.map((a) => ({
+      ...a,
+      ref: substituteVars(a.ref, { [varName]: value }),
+      label: sub(a.label),
+      description: sub(a.description),
+    }));
+  }
   if (step.then) out.then = step.then.map((s) => substituteStepVar(s, varName, value));
   if (step.else) out.else = step.else.map((s) => substituteStepVar(s, varName, value));
   if (step.body) out.body = step.body.map((s) => substituteStepVar(s, varName, value));
@@ -419,6 +489,193 @@ function substituteStepVar(step: PipelineStepSpec, varName: string, value: strin
     };
   }
   return out;
+}
+
+// ─── Output materialization & reconciliation ──────────────────
+
+/** Substitute ${var} across every string field of an artifact spec. */
+function materializeArtifact(
+  a: PipelineArtifactSpec,
+  inputs: Record<string, string>,
+  forceFinal = false,
+): TaskDeclaredOutput {
+  return {
+    ref: substituteVars(a.ref, inputs),
+    label: a.label ? substituteVars(a.label, inputs) : undefined,
+    kind: a.kind ?? "file",
+    description: a.description ? substituteVars(a.description, inputs) : undefined,
+    isFinal: forceFinal || a.isFinal === true,
+    status: "pending",
+  };
+}
+
+/**
+ * Normalize refs for matching. Files are compared by basename so handoffs that
+ * use `./outline.md` or `shared/outline.md` still reconcile against a bare
+ * `outline.md` declaration. Other kinds match by exact-string equality.
+ */
+function normalizeRef(ref: string, kind: TaskDeclaredOutput["kind"]): string {
+  if (kind !== "file") return ref.trim();
+  return basename(ref.trim());
+}
+
+function artifactsMatch(
+  declared: TaskDeclaredOutput,
+  art: TaskHandoffArtifact,
+): boolean {
+  // commit / url / file align with handoff kinds; "data" has no handoff
+  // counterpart so we match by ref only (keeps the door open for agents to
+  // declare data artifacts via "note"/"file").
+  if (declared.kind === "data") {
+    return normalizeRef(declared.ref, "data") === normalizeRef(art.ref, "file");
+  }
+  if (declared.kind !== art.kind) return false;
+  return normalizeRef(declared.ref, declared.kind) === normalizeRef(art.ref, declared.kind);
+}
+
+/**
+ * Update a task's declaredOutputs based on its handoff.
+ * - If the task produced a matching artifact, mark "produced" (+ producedBy).
+ * - If the task is in a terminal-failure state (failed/cancelled) and the
+ *   output was still "pending", mark "missing".
+ * - Otherwise leave as-is.
+ *
+ * Pure: returns a new array; caller persists via updateTask.
+ */
+export function reconcileDeclaredOutputs(
+  task: Pick<GuildTask, "id" | "status" | "assignedAgentId" | "result" | "declaredOutputs" | "completedAt">,
+): TaskDeclaredOutput[] | undefined {
+  if (!task.declaredOutputs || task.declaredOutputs.length === 0) return task.declaredOutputs;
+  const handoff = task.result?.handoff;
+  const arts = handoff?.artifacts ?? [];
+  const at = task.completedAt ?? new Date().toISOString();
+  const agentId = task.assignedAgentId ?? handoff?.fromAgentId ?? "unknown";
+  const terminalFail = task.status === "failed" || task.status === "cancelled";
+  const terminalOk = task.status === "completed";
+  return task.declaredOutputs.map((d) => {
+    if (d.status === "produced") return d; // already settled
+    const match = arts.find((a) => artifactsMatch(d, a));
+    if (match) {
+      return {
+        ...d,
+        status: "produced",
+        producedBy: { taskId: task.id, agentId, at },
+      };
+    }
+    if (terminalOk || terminalFail) {
+      // Task finished but didn't declare this artifact → missing.
+      return { ...d, status: "missing" };
+    }
+    return d;
+  });
+}
+
+/**
+ * Roll up child `declaredOutputs` into a parent pipeline's `declaredOutputs`.
+ * Matches by ref+kind; a final output on the parent is marked "produced" as
+ * soon as any child produces it. Outputs that only exist on the parent (no
+ * matching child) keep their existing status.
+ */
+export function aggregateParentOutputs(
+  parentOutputs: TaskDeclaredOutput[] | undefined,
+  children: GuildTask[],
+): TaskDeclaredOutput[] | undefined {
+  if (!parentOutputs || parentOutputs.length === 0) return parentOutputs;
+  const produced = new Map<string, TaskDeclaredOutput>();
+  for (const c of children) {
+    for (const d of c.declaredOutputs ?? []) {
+      if (d.status !== "produced") continue;
+      produced.set(`${d.kind}::${normalizeRef(d.ref, d.kind)}`, d);
+    }
+  }
+  const allChildrenTerminal =
+    children.length > 0 &&
+    children.every(
+      (c) => c.status === "completed" || c.status === "failed" || c.status === "cancelled",
+    );
+  return parentOutputs.map((p) => {
+    if (p.status === "produced") return p;
+    const key = `${p.kind}::${normalizeRef(p.ref, p.kind)}`;
+    const hit = produced.get(key);
+    if (hit) {
+      return { ...p, status: "produced", producedBy: hit.producedBy };
+    }
+    if (allChildrenTerminal) return { ...p, status: "missing" };
+    return p;
+  });
+}
+
+/** Render a deliverables markdown table for the Workspace section. */
+export function renderDeliverablesTable(outputs: TaskDeclaredOutput[] | undefined): string {
+  if (!outputs || outputs.length === 0) return "_No declared deliverables._";
+  const icon = (s?: DeclaredOutputStatus): string =>
+    s === "produced" ? "✅" : s === "missing" ? "❌" : "⏳";
+  const rows = outputs.map((o) => {
+    const star = o.isFinal ? "⭐" : "";
+    const label = o.label ? ` — ${o.label}` : "";
+    const producedBy = o.producedBy
+      ? `\`${o.producedBy.taskId}\` @ ${o.producedBy.agentId}`
+      : "—";
+    const desc = (o.description ?? "").replace(/\|/g, "\\|").slice(0, 80);
+    return `| ${star} \`${o.ref}\` | ${o.kind} | ${icon(o.status)} ${o.status ?? "pending"} | ${producedBy} | ${desc}${label} |`;
+  });
+  return [
+    "| | Artifact | Kind | Status | Produced by | Notes |",
+    "|-|----------|------|--------|-------------|-------|",
+    ...rows,
+  ].join("\n");
+}
+
+// DeclaredOutputStatus type is exposed via types.ts — re-export for consumers.
+import type { DeclaredOutputStatus } from "./types.js";
+import { getTask } from "./taskBoard.js";
+export type { DeclaredOutputStatus };
+
+/**
+ * Called after a task reaches a terminal state. Updates that task's own
+ * `declaredOutputs` based on its handoff artifacts, then — if the task is a
+ * child of a pipeline — recomputes the parent's aggregated deliverables and
+ * re-renders the workspace Deliverables section.
+ *
+ * Safe no-op for tasks without declaredOutputs or outside a pipeline.
+ */
+export function syncPipelineOutputsAfterCompletion(
+  groupId: string,
+  taskId: string,
+): void {
+  const task = getTask(groupId, taskId);
+  if (!task) return;
+  // Reconcile this task's own declaredOutputs against its handoff.
+  const reconciled = reconcileDeclaredOutputs(task);
+  if (reconciled && reconciled !== task.declaredOutputs) {
+    updateTask(groupId, taskId, { declaredOutputs: reconciled });
+  }
+  // Propagate to pipeline parent, if any.
+  const parentId = task.parentTaskId;
+  if (!parentId) return;
+  const parent = getTask(groupId, parentId);
+  if (!parent || parent.kind !== "pipeline") return;
+  const siblings = getSubtasks(groupId, parentId);
+  const parentOutputs = aggregateParentOutputs(parent.declaredOutputs, siblings);
+  if (parentOutputs && parentOutputs !== parent.declaredOutputs) {
+    updateTask(groupId, parentId, { declaredOutputs: parentOutputs });
+  }
+  // Always re-render the workspace table so "produced" icons refresh even
+  // when aggregate identity didn't change (e.g. same set of outputs, same
+  // statuses) — cheap, keeps UI in sync.
+  try {
+    updateDeliverablesSection(
+      groupId,
+      parentId,
+      renderDeliverablesTable(parentOutputs),
+    );
+  } catch (e) {
+    serverLogger.warn("[pipelines] failed to refresh deliverables section", {
+      groupId,
+      parentId,
+      error: String(e),
+    });
+  }
 }
 
 /**
@@ -527,7 +784,11 @@ function renderPlanTable(subtasks: GuildTask[]): string {
   return [header, divider, ...rows].join("\n");
 }
 
-function renderScopeMd(template: PipelineTemplate, inputs: Record<string, string>): string {
+function renderScopeMd(
+  template: PipelineTemplate,
+  inputs: Record<string, string>,
+  parentOutputs?: TaskDeclaredOutput[],
+): string {
   const lines: string[] = [];
   lines.push(`- **Template**: \`${template.id}\` — ${template.name}`);
   if (template.description) lines.push(`- **Description**: ${template.description}`);
@@ -535,6 +796,14 @@ function renderScopeMd(template: PipelineTemplate, inputs: Record<string, string
   if (inputKeys.length > 0) {
     lines.push(`- **Inputs**:`);
     for (const k of inputKeys) lines.push(`  - \`${k}\`: ${inputs[k]}`);
+  }
+  const finals = (parentOutputs ?? []).filter((o) => o.isFinal);
+  if (finals.length > 0) {
+    lines.push(`- **🎯 Final deliverables**:`);
+    for (const o of finals) {
+      const label = o.label ? ` — ${o.label}` : "";
+      lines.push(`  - \`${o.ref}\` (${o.kind})${label}`);
+    }
   }
   return lines.join("\n");
 }
@@ -596,11 +865,21 @@ export function expandPipeline(
 
   const created: GuildTask[] = [];
   const idByFlatIndex = new Map<number, string>();
+  const parentFinalOutputs: TaskDeclaredOutput[] = [];
+  const finalSeen = new Set<string>(); // de-dupe on kind::normRef
   flat.forEach((fs, i) => {
     const step = fs.step;
     const depIds = fs.deps
       .map((idx) => idByFlatIndex.get(idx))
       .filter((x): x is string => !!x);
+    const stepOutputs = (step.outputs ?? []).map((a) => materializeArtifact(a, inputs));
+    for (const o of stepOutputs) {
+      if (!o.isFinal) continue;
+      const key = `${o.kind}::${normalizeRef(o.ref, o.kind)}`;
+      if (finalSeen.has(key)) continue;
+      finalSeen.add(key);
+      parentFinalOutputs.push({ ...o });
+    }
     const params: CreateTaskParams = {
       title: substituteVars(step.title, inputs),
       description: substituteVars(step.description, inputs),
@@ -616,11 +895,26 @@ export function expandPipeline(
       dependsOn: depIds,
       createdBy: `pipeline:${template.id}`,
       retryPolicy: step.retry ? materializeRetryPolicy(step.retry, inputs) : undefined,
+      declaredOutputs: stepOutputs.length > 0 ? stepOutputs : undefined,
     };
     const sub = createTask(groupId, params);
     created.push(sub);
     idByFlatIndex.set(i, sub.id);
   });
+
+  // Template-level outputs are always final. Merge them in front so they
+  // anchor the deliverables table, and de-dupe against step-level finals.
+  const templateFinalOutputs = (template.outputs ?? []).map((a) =>
+    materializeArtifact(a, inputs, true),
+  );
+  const parentDeclared: TaskDeclaredOutput[] = [];
+  const declaredSeen = new Set<string>();
+  for (const o of [...templateFinalOutputs, ...parentFinalOutputs]) {
+    const key = `${o.kind}::${normalizeRef(o.ref, o.kind)}`;
+    if (declaredSeen.has(key)) continue;
+    declaredSeen.add(key);
+    parentDeclared.push(o);
+  }
 
   const subtaskIds = created.map((t) => t.id);
   // Move the pipeline parent into in_progress so the UI renders it in the
@@ -631,10 +925,12 @@ export function expandPipeline(
     status: "in_progress",
     startedAt: new Date().toISOString(),
     subtaskIds,
+    declaredOutputs: parentDeclared.length > 0 ? parentDeclared : undefined,
   });
 
   updatePlanSection(groupId, parent.id, renderPlanTable(created));
-  updateScopeSection(groupId, parent.id, renderScopeMd(template, inputs));
+  updateScopeSection(groupId, parent.id, renderScopeMd(template, inputs, parentDeclared));
+  updateDeliverablesSection(groupId, parent.id, renderDeliverablesTable(parentDeclared));
   appendDecision(
     groupId,
     parent.id,

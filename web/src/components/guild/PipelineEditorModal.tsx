@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PipelineTemplate, PipelineStepSpec, PipelineInputSpec, PipelineRetryPolicy, PipelineStepKind } from "../../types/guild";
+import type { PipelineTemplate, PipelineStepSpec, PipelineInputSpec, PipelineRetryPolicy, PipelineStepKind, PipelineArtifactSpec, PipelineArtifactKind } from "../../types/guild";
 import {
   listPipelines,
   createPipeline,
@@ -442,6 +442,14 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
                 </div>
               ))}
 
+              <OutputsEditor
+                outputs={draft.outputs}
+                onChange={(next) => setDraft({ ...draft, outputs: next })}
+                forceFinal
+                title="最终交付产物"
+                hint="模板级产物自动视为 isFinal — pipeline 完成时会对账"
+              />
+
               <SectionHeader
                 title="Steps"
                 hint="dependsOn 填前面 step 的下标（0 起）"
@@ -788,6 +796,12 @@ function StepCard({
               onChange={(e) => onChange({ acceptanceCriteria: e.target.value })}
             />
           </Field>
+          <OutputsEditor
+            outputs={step.outputs}
+            onChange={(next) => onChange({ outputs: next })}
+            title="产物声明（可选）"
+            hint="此步骤期望产出的文件/URL/数据；勾选「终稿」让它 bubble 到 pipeline 最终产物"
+          />
           <RetrySubEditor step={step} onChange={onChange} />
         </>
       )}
@@ -1152,4 +1166,129 @@ function moveStep(draft: Draft, set: (d: Draft) => void, i: number, delta: -1 | 
   [steps[i], steps[j]] = [steps[j], steps[i]];
   // moving can break dependsOn — let validation on save catch it
   set({ ...draft, steps });
+}
+
+// ─── Outputs editor ───────────────────────────────────────────
+
+const ARTIFACT_KINDS: PipelineArtifactKind[] = ["file", "url", "data", "commit"];
+
+function OutputsEditor({
+  outputs,
+  onChange,
+  /** When true, the outputs are pipeline-level — always final, no isFinal checkbox. */
+  forceFinal,
+  title = "产物 Outputs",
+  hint,
+}: {
+  outputs: PipelineArtifactSpec[] | undefined;
+  onChange: (next: PipelineArtifactSpec[] | undefined) => void;
+  forceFinal?: boolean;
+  title?: string;
+  hint?: string;
+}) {
+  const list = outputs ?? [];
+  const patch = (i: number, p: Partial<PipelineArtifactSpec>) => {
+    const next = list.map((o, j) => (j === i ? { ...o, ...p } : o));
+    onChange(next);
+  };
+  const add = () => {
+    onChange([...list, { ref: "", kind: "file" as PipelineArtifactKind }]);
+  };
+  const remove = (i: number) => {
+    const next = list.filter((_, j) => j !== i);
+    onChange(next.length === 0 ? undefined : next);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <div className="flex flex-col">
+          <span className="text-xs font-medium" style={{ color: "var(--color-text)" }}>
+            🎯 {title}
+          </span>
+          {hint && (
+            <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>{hint}</span>
+          )}
+        </div>
+        <button
+          className="text-xs px-2 py-0.5 rounded"
+          style={{ border: "1px solid var(--color-border)", color: "var(--color-text)" }}
+          onClick={add}
+        >+ 添加</button>
+      </div>
+      {list.length === 0 && (
+        <div className="text-xs italic px-3 py-2 rounded" style={{ color: "var(--color-text-muted)", background: "var(--color-bg)", border: "1px dashed var(--color-border)" }}>
+          暂未声明产物
+        </div>
+      )}
+      {list.map((o, i) => (
+        <div
+          key={i}
+          className="flex flex-col gap-2 p-3 rounded-lg"
+          style={{ border: "1px solid var(--color-border)", background: "var(--color-bg)" }}
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded" style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}>
+              Output [{i}]
+            </span>
+            <div className="flex items-center gap-2">
+              {!forceFinal && (
+                <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--color-text-muted)" }}>
+                  <input
+                    type="checkbox"
+                    checked={!!o.isFinal}
+                    onChange={(e) => patch(i, { isFinal: e.target.checked })}
+                  />
+                  ⭐ 终稿
+                </label>
+              )}
+              <button
+                className="w-6 h-6 rounded flex items-center justify-center text-xs"
+                title="删除此产物"
+                style={{ border: "1px solid #fca5a5", color: "#dc2626" }}
+                onClick={() => remove(i)}
+              >✕</button>
+            </div>
+          </div>
+          <div className="grid grid-cols-[1.4fr_0.6fr_1fr] gap-2">
+            <Field label="ref" hint="文件名/URL，支持 ${var}">
+              <input
+                className={inputCls}
+                placeholder="e.g. final.md"
+                value={o.ref}
+                onChange={(e) => patch(i, { ref: e.target.value })}
+              />
+            </Field>
+            <Field label="kind">
+              <select
+                className={inputCls}
+                value={o.kind ?? "file"}
+                onChange={(e) => patch(i, { kind: e.target.value as PipelineArtifactKind })}
+              >
+                {ARTIFACT_KINDS.map((k) => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="label" hint="UI 显示名（可选）">
+              <input
+                className={inputCls}
+                placeholder="e.g. 博客终稿"
+                value={o.label ?? ""}
+                onChange={(e) => patch(i, { label: e.target.value })}
+              />
+            </Field>
+          </div>
+          <Field label="description" hint="描述（可选）">
+            <input
+              className={inputCls}
+              placeholder="e.g. 发布使用的完整博客"
+              value={o.description ?? ""}
+              onChange={(e) => patch(i, { description: e.target.value })}
+            />
+          </Field>
+        </div>
+      ))}
+    </div>
+  );
 }

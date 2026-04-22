@@ -38,6 +38,17 @@ export type PipelineStepKind = "task" | "branch" | "foreach";
 
 export type Expression = Record<string, unknown>;
 
+export type PipelineArtifactKind = "file" | "url" | "data" | "commit";
+
+export interface PipelineArtifactSpec {
+  ref: string;
+  label?: string;
+  kind?: PipelineArtifactKind;
+  description?: string;
+  /** Elevates this artifact to the pipeline's final deliverable list. */
+  isFinal?: boolean;
+}
+
 export interface PipelineStepSpec {
   kind?: PipelineStepKind;
   title: string;
@@ -48,6 +59,7 @@ export interface PipelineStepSpec {
   priority?: TaskPriority;
   acceptanceCriteria?: string;
   retry?: PipelineRetryPolicy;
+  outputs?: PipelineArtifactSpec[];
   // branch
   when?: Expression;
   then?: PipelineStepSpec[];
@@ -65,6 +77,20 @@ export interface PipelineTemplate {
   description?: string;
   inputs?: PipelineInputSpec[];
   steps: PipelineStepSpec[];
+  /** Pipeline-level final deliverables. Automatically treated as isFinal=true. */
+  outputs?: PipelineArtifactSpec[];
+}
+
+export type DeclaredOutputStatus = "pending" | "produced" | "missing";
+
+export interface TaskDeclaredOutput {
+  ref: string;
+  label?: string;
+  kind: PipelineArtifactKind;
+  description?: string;
+  isFinal?: boolean;
+  status?: DeclaredOutputStatus;
+  producedBy?: { taskId: string; agentId: string; at: string };
 }
 
 export interface AgentAsset {
@@ -212,6 +238,10 @@ export interface GuildTask {
   handoff?: TaskHandoff;
   /** Agents that rejected this task; auto-bidding skips them. */
   _rejectedBy?: string[];
+  /** Pipeline-declared artifact contracts with live status tracking. */
+  declaredOutputs?: TaskDeclaredOutput[];
+  /** For kind==="pipeline" parents: id of the expanded template. */
+  pipelineId?: string;
   createdBy: string;
   createdAt: string;
   startedAt?: string;
