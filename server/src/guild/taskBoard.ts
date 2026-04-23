@@ -7,6 +7,8 @@ import { atomicWriteFileSync } from "./atomicFs.js";
 // getSubtasks from inside functions, and this import is used only inside
 // completeTask. Both sides' top-level bindings are ready before any call.
 import { syncPipelineOutputsAfterCompletion } from "./pipelines.js";
+import { getGroup, getGroupSharedDir } from "./guildManager.js";
+import { runAcceptanceAssertions, formatFailures } from "./verification.js";
 
 export interface ExecutionLogEntry {
   type: "text" | "reasoning" | "tool_call" | "tool_result" | "plan" | "harness";
@@ -74,6 +76,7 @@ export function createTask(groupId: string, params: CreateTaskParams): GuildTask
     suggestedSkills: params.suggestedSkills,
     suggestedAgentId: params.suggestedAgentId,
     acceptanceCriteria: params.acceptanceCriteria,
+    acceptanceAssertions: params.acceptanceAssertions,
     workspaceRef: params.workspaceRef,
     pipelineId: params.pipelineId,
     pipelineInputs: params.pipelineInputs,
@@ -154,6 +157,35 @@ export function assignTask(
 export function completeTask(groupId: string, taskId: string, agentId: string, result: TaskResult): GuildTask | null {
   const existing = getTask(groupId, taskId);
   if (existing && isTerminalStatus(existing.status)) return existing;
+
+  // Harness-level verification: if the task declares machine-runnable
+  // acceptanceAssertions, run them BEFORE accepting completion. Failed
+  // assertions transition the task to "failed" with the specific failure
+  // listed — the agent's self-report that it finished doesn't override the
+  // harness's deterministic check.
+  if (existing?.acceptanceAssertions && existing.acceptanceAssertions.length > 0) {
+    const cwd = resolveTaskWorkingDir(groupId, taskId);
+    const verdict = runAcceptanceAssertions(existing.acceptanceAssertions, cwd);
+    if (!verdict.ok) {
+      const reason = formatFailures(verdict.failures);
+      const failedResult: TaskResult = {
+        ...result,
+        summary: result.summary ? `${result.summary}\n\n${reason}` : reason,
+        agentNotes: result.agentNotes,
+      };
+      const failed = updateTask(groupId, taskId, {
+        status: "failed",
+        completedAt: new Date().toISOString(),
+        result: failedResult,
+      });
+      if (failed) {
+        guildEventBus.emit({ type: "task_failed", taskId, agentId, error: reason });
+        rollupParentRequirement(groupId, failed);
+      }
+      return failed;
+    }
+  }
+
   const now = new Date().toISOString();
   const task = updateTask(groupId, taskId, {
     status: "completed",
@@ -174,6 +206,16 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
     rollupParentRequirement(groupId, task);
   }
   return task;
+}
+
+/** Resolve the working directory where acceptance assertions should run.
+ *  Mirrors agentExecutor's artifact strategy logic — collaborative mode uses
+ *  the group-shared dir; isolated mode uses a per-task subfolder of it. */
+function resolveTaskWorkingDir(groupId: string, taskId: string): string {
+  const group = getGroup(groupId);
+  const shared = getGroupSharedDir(groupId);
+  if (group?.artifactStrategy === "collaborative") return shared;
+  return join(shared, taskId);
 }
 
 /**

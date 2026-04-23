@@ -201,6 +201,19 @@ export interface TaskRetryPolicy {
   fallback?: TaskRetryFallback;
 }
 
+/** Machine-runnable acceptance assertions — verified by the harness at
+ *  completion time, *in addition* to the human-readable acceptanceCriteria
+ *  prompt text. A task that fails its assertions is rejected from the
+ *  completed state even if the agent claims done.
+ *
+ *  - file_exists: the ref must exist as a regular file under the task's cwd.
+ *  - file_contains: the ref must exist AND its text contents must contain
+ *    the given substring (or match the given regex if `regex: true`).
+ */
+export type AcceptanceAssertion =
+  | { type: "file_exists"; ref: string; description?: string }
+  | { type: "file_contains"; ref: string; pattern: string; regex?: boolean; description?: string };
+
 export interface GuildTask {
   id: string;
   groupId: string;
@@ -220,7 +233,11 @@ export interface GuildTask {
   subtaskIds?: string[];
   suggestedSkills?: string[];
   suggestedAgentId?: string;
+  /** Human-readable guidance surfaced to the agent in its prompt. */
   acceptanceCriteria?: string;
+  /** Machine-runnable assertions the harness enforces on completion —
+   *  orthogonal to acceptanceCriteria (which is prose for the agent). */
+  acceptanceAssertions?: AcceptanceAssertion[];
   /** Agents that rejected this task — excluded from future bidding. */
   _rejectedBy?: string[];
   /** Path of the workspace markdown this task lives under. */
@@ -421,6 +438,7 @@ export interface CreateTaskParams {
   suggestedSkills?: string[];
   suggestedAgentId?: string;
   acceptanceCriteria?: string;
+  acceptanceAssertions?: AcceptanceAssertion[];
   workspaceRef?: string;
   pipelineId?: string;
   pipelineInputs?: Record<string, string>;

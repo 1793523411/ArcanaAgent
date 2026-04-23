@@ -6,12 +6,16 @@ import { createGroup } from "./guildManager.js";
 import {
   createTask,
   updateTask,
+  completeTask,
   getSubtasks,
   areDepsReady,
   getUnplannedRequirements,
   detectDependencyCycle,
   findOutputConflicts,
 } from "./taskBoard.js";
+import { getGroupSharedDir } from "./guildManager.js";
+import { mkdirSync, writeFileSync } from "fs";
+import { join as joinPath } from "path";
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
 
@@ -219,5 +223,68 @@ describe("findOutputConflicts", () => {
       declaredOutputs: [{ ref: "b.md", kind: "file" }],
     });
     expect(findOutputConflicts(g.id, b)).toEqual([]);
+  });
+});
+
+describe("completeTask with acceptanceAssertions", () => {
+  beforeEach(() => cleanGuildDir());
+  afterEach(() => cleanGuildDir());
+
+  it("completes normally when the task has no assertions", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t = createTask(g.id, { title: "plain", description: "" });
+    const res = completeTask(g.id, t.id, "agent_1", { summary: "done" });
+    expect(res?.status).toBe("completed");
+  });
+
+  it("transitions to failed when a file_exists assertion fails", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t = createTask(g.id, {
+      title: "deliver",
+      description: "",
+      acceptanceAssertions: [{ type: "file_exists", ref: "missing.md" }],
+    });
+    const res = completeTask(g.id, t.id, "agent_1", { summary: "agent says done" });
+    expect(res?.status).toBe("failed");
+    expect(res?.result?.summary).toMatch(/验收未通过/);
+    expect(res?.result?.summary).toMatch(/missing\.md/);
+  });
+
+  it("transitions to completed when the assertion passes", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t = createTask(g.id, {
+      title: "deliver",
+      description: "",
+      acceptanceAssertions: [{ type: "file_exists", ref: "ok.md" }],
+    });
+    // Seed the file in the isolated-mode per-task directory.
+    const sharedDir = getGroupSharedDir(g.id);
+    const taskDir = joinPath(sharedDir, t.id);
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(joinPath(taskDir, "ok.md"), "content");
+
+    const res = completeTask(g.id, t.id, "agent_1", { summary: "done" });
+    expect(res?.status).toBe("completed");
+  });
+
+  it("file_contains failure is surfaced with the specific assertion reason", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t = createTask(g.id, {
+      title: "deliver",
+      description: "",
+      acceptanceAssertions: [
+        { type: "file_exists", ref: "final.md" },
+        { type: "file_contains", ref: "final.md", pattern: "## 结论" },
+      ],
+    });
+    // File exists but doesn't contain the required section.
+    const sharedDir = getGroupSharedDir(g.id);
+    const taskDir = joinPath(sharedDir, t.id);
+    mkdirSync(taskDir, { recursive: true });
+    writeFileSync(joinPath(taskDir, "final.md"), "just prose, no structure");
+
+    const res = completeTask(g.id, t.id, "agent_1", { summary: "done" });
+    expect(res?.status).toBe("failed");
+    expect(res?.result?.summary).toMatch(/未包含/);
   });
 });
