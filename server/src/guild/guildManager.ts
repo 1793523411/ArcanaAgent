@@ -305,6 +305,33 @@ export function createAgent(params: CreateAgentParams): GuildAgent {
   return agent;
 }
 
+/** Build the CreateAgentParams for a fork operation — copy source fields,
+ *  apply overrides, strip per-asset ids so createAgent re-mints fresh ones.
+ *  Shared between the REST fork endpoint and the AI-designer plan applier so
+ *  the field-copy and default-fallback logic stays in lockstep. */
+export function buildForkParams(
+  source: GuildAgent,
+  overrides: Partial<CreateAgentParams> = {},
+): CreateAgentParams {
+  return {
+    name: overrides.name ?? `${source.name} (派生)`,
+    description: overrides.description ?? source.description,
+    icon: overrides.icon ?? source.icon,
+    color: overrides.color ?? source.color,
+    systemPrompt: overrides.systemPrompt ?? source.systemPrompt,
+    allowedTools: overrides.allowedTools ?? source.allowedTools,
+    modelId: overrides.modelId ?? source.modelId,
+    assets: overrides.assets ?? source.assets.map((a) => ({
+      type: a.type,
+      name: a.name,
+      uri: a.uri,
+      description: a.description,
+      metadata: a.metadata,
+      tags: a.tags,
+    })),
+  };
+}
+
 export function getAgent(id: string): GuildAgent | null {
   return readJSON<GuildAgent>(agentProfilePath(id));
 }

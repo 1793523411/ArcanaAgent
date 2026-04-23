@@ -8,6 +8,7 @@ import {
   addGroupAsset, removeGroupAsset, updateGroupAsset, getGroupAssetPool, setGroupLead,
   getAggregatedGroupAssets,
   getAgentWorkspaceDir, getAgentMemoryDir, getGroupSharedDir,
+  buildForkParams,
 } from "./guildManager.js";
 import { scanDirectory, safeReadFile } from "./fileBrowser.js";
 import { readManifest } from "./manifestManager.js";
@@ -69,32 +70,6 @@ function acquireApplyLock(key: string, res: Response): null | (() => void) {
   }
   applyInFlight.add(key);
   return () => applyInFlight.delete(key);
-}
-
-/** Build CreateAgentParams for a fork. Used by both the API fork endpoint
- *  and the AI-Designer plan applier — the field-copy and default-fallback
- *  logic must stay in lockstep between those two paths. */
-function buildForkParams(
-  source: GuildAgent,
-  overrides: Partial<CreateAgentParams> = {},
-): CreateAgentParams {
-  return {
-    name: overrides.name ?? `${source.name} (派生)`,
-    description: overrides.description ?? source.description,
-    icon: overrides.icon ?? source.icon,
-    color: overrides.color ?? source.color,
-    systemPrompt: overrides.systemPrompt ?? source.systemPrompt,
-    allowedTools: overrides.allowedTools ?? source.allowedTools,
-    modelId: overrides.modelId ?? source.modelId,
-    assets: overrides.assets ?? source.assets.map((a) => ({
-      type: a.type,
-      name: a.name,
-      uri: a.uri,
-      description: a.description,
-      metadata: a.metadata,
-      tags: a.tags,
-    })),
-  };
 }
 
 // ─── Guild ──────────────────────────────────────────────────────
