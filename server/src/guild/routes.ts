@@ -53,8 +53,8 @@ function getStringQuery(req: Request, name: string): string {
  *  only a bland message to the client. Prevents LLM SDK errors — which can
  *  embed endpoints, auth header context, or file paths in their `.message`
  *  — from bleeding through to the browser. */
-function sendServerError(res: Response, e: unknown, context: string): void {
-  serverLogger.error(`[guild] ${context} failed`, { error: String(e) });
+function sendServerError(res: Response, e: unknown, context?: string): void {
+  serverLogger.error(`[guild] ${context ?? "request"} failed`, { error: String(e) });
   if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
 }
 
@@ -103,7 +103,7 @@ export function getGuildInfo(_req: Request, res: Response): void {
   try {
     res.json(getGuild());
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -112,7 +112,7 @@ export function putGuildInfo(req: Request, res: Response): void {
     const guild = updateGuild(req.body);
     res.json(guild);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -122,7 +122,7 @@ export function getGroups(_req: Request, res: Response): void {
   try {
     res.json(listGroups());
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -136,7 +136,7 @@ export function postGroup(req: Request, res: Response): void {
     const group = createGroup({ name, description, sharedContext, artifactStrategy, leadAgentId, assets });
     res.status(201).json(group);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -146,7 +146,7 @@ export function getGroupById(req: Request, res: Response): void {
     if (!group) { res.status(404).json({ error: "Group not found" }); return; }
     res.json(group);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -156,7 +156,7 @@ export function putGroupById(req: Request, res: Response): void {
     if (!group) { res.status(404).json({ error: "Group not found" }); return; }
     res.json(group);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -166,7 +166,7 @@ export function deleteGroupById(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Group not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -180,7 +180,7 @@ export function postGroupAgent(req: Request, res: Response): void {
     if (!ok) { res.status(400).json({ error: "Failed to assign agent" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -190,7 +190,7 @@ export function deleteGroupAgent(req: Request, res: Response): void {
     if (!ok) { res.status(400).json({ error: "Failed to remove agent" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -200,7 +200,7 @@ export function getAgents(_req: Request, res: Response): void {
   try {
     res.json(listAgents());
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -214,7 +214,7 @@ export function postAgent(req: Request, res: Response): void {
     const agent = createAgent(req.body);
     res.status(201).json(agent);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -224,7 +224,7 @@ export function getAgentById(req: Request, res: Response): void {
     if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
     res.json(agent);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -234,7 +234,7 @@ export function putAgentById(req: Request, res: Response): void {
     if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
     res.json(agent);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -244,7 +244,7 @@ export function deleteAgentById(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Agent not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -253,7 +253,7 @@ export function getAgentMemories(req: Request, res: Response): void {
     const memories = getMemories(p(req.params.id));
     res.json(memories);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -263,7 +263,7 @@ export function getAgentStats(req: Request, res: Response): void {
     if (!agent) { res.status(404).json({ error: "Agent not found" }); return; }
     res.json(agent.stats);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -273,7 +273,7 @@ export function postAgentAsset(req: Request, res: Response): void {
     if (!asset) { res.status(404).json({ error: "Agent not found" }); return; }
     res.status(201).json(asset);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -283,7 +283,7 @@ export function deleteAgentAsset(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Asset not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -293,7 +293,7 @@ export function updateAgentAsset(req: Request, res: Response): void {
     if (!result) { res.status(404).json({ error: "Asset not found" }); return; }
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -303,7 +303,7 @@ export function updateGroupAssetRoute(req: Request, res: Response): void {
     if (!result) { res.status(404).json({ error: "Asset not found" }); return; }
     res.json(result);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -314,7 +314,7 @@ export function getGroupTaskList(req: Request, res: Response): void {
     const status = req.query.status ? String(req.query.status).split(",") as import("./types.js").TaskStatus[] : undefined;
     res.json(getGroupTasks(p(req.params.groupId), status));
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -345,7 +345,7 @@ export function postGroupTask(req: Request, res: Response): void {
 
     res.status(201).json(task);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -613,7 +613,7 @@ export function getPipelineList(_req: Request, res: Response): void {
   try {
     res.json(listPipelines());
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -623,7 +623,7 @@ export function getPipelineById(req: Request, res: Response): void {
     if (!tpl) { res.status(404).json({ error: "Pipeline not found" }); return; }
     res.json(tpl);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -636,7 +636,7 @@ export function postPipeline(req: Request, res: Response): void {
     if (!out.ok) { res.status(400).json({ error: out.reason, errors: out.errors }); return; }
     res.status(201).json(out.template);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -647,7 +647,7 @@ export function putPipeline(req: Request, res: Response): void {
     if (!out.ok) { res.status(400).json({ error: out.reason, errors: out.errors }); return; }
     res.json(out.template);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -657,7 +657,7 @@ export function deletePipelineById(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Pipeline not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -698,7 +698,7 @@ export function postGroupTaskFromPipeline(req: Request, res: Response): void {
     const refreshed = getTask(groupId, parent.id);
     res.status(201).json({ task: refreshed ?? parent, subtaskIds: outcome.subtaskIds });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -723,7 +723,7 @@ export function putTask(req: Request, res: Response): void {
     if (!task) { res.status(404).json({ error: "Task not found" }); return; }
     res.json(task);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -749,7 +749,7 @@ export function deleteTask(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Task not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -767,7 +767,7 @@ export function postClearTaskRejections(req: Request, res: Response): void {
     guildEventBus.emit({ type: "task_updated", task });
     res.json(task);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -791,7 +791,7 @@ export function postAssignTask(req: Request, res: Response): void {
 
     res.json(task);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -846,7 +846,7 @@ export async function postAutoBid(req: Request, res: Response): Promise<void> {
 
     res.json({ assigned: true, bid: winner });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -860,7 +860,7 @@ export function getTaskExecutionLog(req: Request, res: Response): void {
     if (!log) { res.json({ taskId, agentId: "", events: [], status: "completed", startedAt: "" }); return; }
     res.json(log);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -917,7 +917,7 @@ export function postReleaseAgent(req: Request, res: Response): void {
 
     res.json({ success: true, releasedTaskId });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -932,7 +932,7 @@ export function getGroupAssetList(req: Request, res: Response): void {
       aggregated: getAggregatedGroupAssets(groupId),
     });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -943,7 +943,7 @@ export function postGroupAsset(req: Request, res: Response): void {
     if (!asset) { res.status(404).json({ error: "Group not found" }); return; }
     res.status(201).json(asset);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -953,7 +953,7 @@ export function deleteGroupAssetById(req: Request, res: Response): void {
     if (!ok) { res.status(404).json({ error: "Asset not found" }); return; }
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -965,7 +965,7 @@ export function putGroupLead(req: Request, res: Response): void {
     if (!group) { res.status(404).json({ error: "Group not found" }); return; }
     res.json(group);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -986,7 +986,7 @@ export function getTaskWorkspace(req: Request, res: Response): void {
     if (raw === null) { res.status(404).json({ error: "Workspace not found" }); return; }
     res.type("text/markdown").send(raw);
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -1000,7 +1000,7 @@ export function deleteGroupSchedulerLog(req: Request, res: Response): void {
     clearSchedulerLog(groupId);
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -1070,7 +1070,7 @@ export function getGuildArtifactFile(req: Request, res: Response): void {
     const content = readFileSync(absolute, "utf-8");
     res.json({ content, size: stat.size, ext });
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 
@@ -1127,7 +1127,7 @@ export function getGroupSharedManifest(req: Request, res: Response): void {
     const dir = getGroupSharedDir(p(req.params.id));
     res.json(readManifest(dir));
   } catch (e) {
-    res.status(500).json({ error: String(e) });
+    sendServerError(res, e);
   }
 }
 

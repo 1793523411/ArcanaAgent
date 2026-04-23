@@ -4,6 +4,7 @@ import { generateGuildAgent } from "../../api/guild";
 import { getModels, type ModelInfo } from "../../api";
 import Select from "./Select";
 import { ASSET_TYPE_META, ASSET_TYPES } from "../../constants/guild";
+import { friendlyError } from "../../lib/guildErrors";
 
 type CreatePayload = Omit<GuildAgent, "id" | "status" | "currentTaskId" | "createdAt" | "updatedAt" | "stats">;
 
@@ -95,7 +96,7 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
       });
       onClose();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setSaving(false);
     }

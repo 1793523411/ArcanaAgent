@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { ArtifactStrategy, GuildAgent } from "../../types/guild";
 import AIGroupDesignerModal from "./AIGroupDesignerModal";
+import { friendlyError } from "../../lib/guildErrors";
 
 interface Props {
   /** Presence switches the modal into edit mode. */
@@ -43,7 +44,7 @@ export default function CreateGroupModal({ initial, agents, onAIDone, onConfirm,
       await onConfirm({ name: name.trim(), description: description.trim(), artifactStrategy });
       onClose();
     } catch (e) {
-      setError(String(e));
+      setError(friendlyError(e));
     } finally {
       setSaving(false);
     }

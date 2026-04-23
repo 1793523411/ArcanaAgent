@@ -2,19 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { GroupPlan, AgentPlanItem } from "../../api/guild";
 import { generateGroupPlan, applyGroupPlan } from "../../api/guild";
-
-/** Turn raw exceptions into something the user can act on. LLM calls can fail
- *  in several distinct ways (network, timeout, non-JSON body, server 5xx) —
- *  collapsing them all to `String(e)` leaks stack traces the user can't parse. */
-function friendlyError(e: unknown): string {
-  const msg = String(e);
-  if (msg.includes("AbortError") || msg.includes("aborted")) return "已取消生成";
-  if (msg.includes("Failed to fetch") || msg.includes("NetworkError")) return "网络连接失败，请检查后重试";
-  if (msg.includes("SyntaxError") || msg.includes("JSON")) return "AI 返回了无效响应，请重试（或简化描述）";
-  if (msg.includes("499") || msg.includes("已取消") || msg.includes("timeout")) return "生成超时，请简化描述后重试";
-  if (msg.includes("500")) return "服务端错误，请稍后重试";
-  return msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
-}
+import { friendlyError } from "../../lib/guildErrors";
 
 interface Props {
   agents: GuildAgent[];
