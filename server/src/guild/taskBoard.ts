@@ -477,6 +477,26 @@ export function areDepsReady(groupId: string, task: GuildTask): boolean {
   return true;
 }
 
+/** Find other open-or-in-progress tasks in the same group whose declaredOutputs
+ *  share a ref with `candidate`. Used by the bidding layer (in collaborative
+ *  artifact mode) to prevent two agents from racing on the same shared file —
+ *  the `manifest` only records conflicts *after* the fact, which is too late.
+ *
+ *  Strategy-agnostic by design: the caller decides whether to honor the
+ *  conflict. Isolated-mode tasks each have their own directory so overlapping
+ *  refs there are independent files and should not serialize. */
+export function findOutputConflicts(groupId: string, candidate: GuildTask): GuildTask[] {
+  if (!candidate.declaredOutputs || candidate.declaredOutputs.length === 0) return [];
+  const candidateRefs = new Set(candidate.declaredOutputs.map((o) => o.ref));
+  const tasks = loadTasks(groupId);
+  return tasks.filter((t) => {
+    if (t.id === candidate.id) return false;
+    if (t.status !== "open" && t.status !== "in_progress") return false;
+    if (!t.declaredOutputs || t.declaredOutputs.length === 0) return false;
+    return t.declaredOutputs.some((o) => candidateRefs.has(o.ref));
+  });
+}
+
 /**
  * Scan a group for requirement tasks whose subtasks are all in terminal state
  * but the parent itself was never rolled up (e.g. data created before the

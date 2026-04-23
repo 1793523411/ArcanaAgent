@@ -1,7 +1,7 @@
 import type { GuildAgent, GuildTask, TaskBid, BiddingConfig, ScoreBreakdown } from "./types.js";
-import { getGroupAgents, getAggregatedGroupAssets } from "./guildManager.js";
+import { getGroup, getGroupAgents, getAggregatedGroupAssets } from "./guildManager.js";
 import { searchRelevant } from "./memoryManager.js";
-import { assignTask, getTask, updateTask, areDepsReady } from "./taskBoard.js";
+import { assignTask, getTask, updateTask, areDepsReady, findOutputConflicts } from "./taskBoard.js";
 import { guildEventBus } from "./eventBus.js";
 import { splitTokens } from "../lib/tokenizer.js";
 import { getCachedSemanticScore } from "./embeddingScorer.js";
@@ -210,6 +210,14 @@ export function evaluateTask(
   if (task.retryAt && Date.parse(task.retryAt) > Date.now()) return null;
   // Subtasks with unmet deps are not biddable yet.
   if (!areDepsReady(task.groupId, task)) return null;
+  // Collaborative-mode artifact lock — if another in-progress task declares
+  // the same output ref, serialize by waiting. Isolated mode writes to a
+  // per-task directory, so overlapping refs there aren't real conflicts.
+  const group = getGroup(task.groupId);
+  if (group?.artifactStrategy === "collaborative") {
+    const conflicts = findOutputConflicts(task.groupId, task);
+    if (conflicts.some((c) => c.status === "in_progress")) return null;
+  }
   // Skip if agent is busy
   if (agent.status === "working" || agent.currentTaskId) return null;
   if (agent.status === "offline") return null;

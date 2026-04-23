@@ -3,7 +3,7 @@ import { rmSync } from "fs";
 import { cleanGuildDir } from "../test-setup.js";
 import { join } from "path";
 import { createGroup, createAgent, assignAgentToGroup } from "./guildManager.js";
-import { createTask, getTask } from "./taskBoard.js";
+import { createTask, getTask, updateTask } from "./taskBoard.js";
 import { autoBid, calculateConfidence, evaluateTask, setBiddingConfig } from "./bidding.js";
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
@@ -247,6 +247,79 @@ describe("guild bidding", () => {
     // All candidate breakdowns must still be persisted on the task for the UI.
     expect(saved?.bids?.length ?? 0).toBeGreaterThanOrEqual(2);
     expect(saved?.bids?.every((b) => b.via === "below_threshold")).toBe(true);
+  });
+
+  it("collaborative mode blocks bids when another task in-progress declares the same output", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.1, // very low — agent would easily clear otherwise
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0.5,
+    });
+    const group = createGroup({
+      name: "Writers",
+      description: "collaborative",
+      artifactStrategy: "collaborative",
+    });
+    const writer = createAgent({
+      name: "Writer",
+      description: "",
+      systemPrompt: "writes docs",
+    });
+    (writer.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    assignAgentToGroup(writer.id, group.id);
+
+    // A holder task is in_progress, has declared final.md as its output.
+    const holder = createTask(group.id, {
+      title: "Draft",
+      description: "write the draft",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    updateTask(group.id, holder.id, { status: "in_progress" });
+
+    // A second task ALSO declares final.md. It must not be biddable until
+    // the holder finishes — otherwise both agents would race on the same file.
+    const waiter = createTask(group.id, {
+      title: "Revise",
+      description: "revise the draft",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    expect(evaluateTask(writer, waiter)).toBeNull();
+  });
+
+  it("isolated mode DOES bid across same-ref declarations (each task has its own dir)", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.05, // very low — this test only checks the gate, not scoring
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0.8,
+    });
+    const group = createGroup({
+      name: "Isolated",
+      description: "per-task dirs",
+      artifactStrategy: "isolated",
+    });
+    // Prompt shares words with the task so the skill dim is nonzero.
+    const writer = createAgent({ name: "Writer", description: "", systemPrompt: "writes drafts and reviews work" });
+    (writer.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    (writer.stats as { successRate: number }).successRate = 1;
+    assignAgentToGroup(writer.id, group.id);
+
+    const holder = createTask(group.id, {
+      title: "Draft",
+      description: "write a draft document",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    updateTask(group.id, holder.id, { status: "in_progress" });
+    const waiter = createTask(group.id, {
+      title: "Review",
+      description: "review draft work",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    // In isolated mode, each task writes to its own directory — the "same"
+    // ref means two independent files, so the conflict gate doesn't block.
+    // (If the gate were active, this assertion would fail with null.)
+    expect(evaluateTask(writer, waiter)).not.toBeNull();
   });
 
   it("calculateConfidence never bunches veteran agents at 1.0", () => {

@@ -10,6 +10,7 @@ import {
   areDepsReady,
   getUnplannedRequirements,
   detectDependencyCycle,
+  findOutputConflicts,
 } from "./taskBoard.js";
 
 const TEST_DATA_DIR = process.env.DATA_DIR!;
@@ -122,5 +123,101 @@ describe("taskBoard subtasks & deps", () => {
     updateTask(group.id, req.id, { subtaskIds: ["some_child"] });
     unplanned = getUnplannedRequirements(group.id);
     expect(unplanned).toHaveLength(0);
+  });
+});
+
+describe("findOutputConflicts", () => {
+  beforeEach(() => cleanGuildDir());
+  afterEach(() => cleanGuildDir());
+
+  it("returns empty when candidate has no declared outputs", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const a = createTask(g.id, { title: "A", description: "" });
+    const b = createTask(g.id, {
+      title: "B",
+      description: "",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    expect(findOutputConflicts(g.id, a)).toEqual([]);
+    // Sibling B has its own outputs but A has none; still no conflicts for A.
+    expect(b.declaredOutputs).toHaveLength(1);
+  });
+
+  it("returns overlapping in-progress tasks", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const holder = createTask(g.id, {
+      title: "Holder",
+      description: "",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    updateTask(g.id, holder.id, { status: "in_progress" });
+
+    const waiter = createTask(g.id, {
+      title: "Waiter",
+      description: "",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    const conflicts = findOutputConflicts(g.id, waiter);
+    expect(conflicts.map((c) => c.id)).toEqual([holder.id]);
+  });
+
+  it("returns overlapping open tasks", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t1 = createTask(g.id, {
+      title: "T1",
+      description: "",
+      declaredOutputs: [{ ref: "report.md", kind: "file" }],
+    });
+    const t2 = createTask(g.id, {
+      title: "T2",
+      description: "",
+      declaredOutputs: [{ ref: "report.md", kind: "file" }],
+    });
+    expect(findOutputConflicts(g.id, t2).map((c) => c.id)).toEqual([t1.id]);
+  });
+
+  it("excludes completed, failed, and cancelled tasks", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const done = createTask(g.id, {
+      title: "Done",
+      description: "",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    updateTask(g.id, done.id, { status: "completed" });
+    const waiter = createTask(g.id, {
+      title: "Waiter",
+      description: "",
+      declaredOutputs: [{ ref: "final.md", kind: "file" }],
+    });
+    expect(findOutputConflicts(g.id, waiter)).toEqual([]);
+  });
+
+  it("excludes the candidate itself even if its own ref matches", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const t = createTask(g.id, {
+      title: "T",
+      description: "",
+      declaredOutputs: [{ ref: "x.md", kind: "file" }],
+    });
+    updateTask(g.id, t.id, { status: "in_progress" });
+    // Refresh from store so the candidate reflects the new status.
+    const refreshed = { ...t, status: "in_progress" as const };
+    expect(findOutputConflicts(g.id, refreshed)).toEqual([]);
+  });
+
+  it("no conflict when declared refs don't overlap", () => {
+    const g = createGroup({ name: "G", description: "d" });
+    const a = createTask(g.id, {
+      title: "A",
+      description: "",
+      declaredOutputs: [{ ref: "a.md", kind: "file" }],
+    });
+    updateTask(g.id, a.id, { status: "in_progress" });
+    const b = createTask(g.id, {
+      title: "B",
+      description: "",
+      declaredOutputs: [{ ref: "b.md", kind: "file" }],
+    });
+    expect(findOutputConflicts(g.id, b)).toEqual([]);
   });
 });
