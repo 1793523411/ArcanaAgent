@@ -219,7 +219,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   className="text-xs px-3 py-1.5 rounded-lg"
                   style={{ background: "#a855f722", color: "#9333ea", opacity: forkBusy ? 0.5 : 1 }}
                   disabled={forkBusy}
-                  title="复制一份独立的 Agent，含相同资产与 prompt — 方便基于它改造"
+                  title="复制一份独立的 Agent，含相同资产与 prompt — 方便基于它改造（但不继承记忆与历史胜率）"
                   onClick={async () => {
                     if (forkBusy) return;
                     setForkBusy(true);

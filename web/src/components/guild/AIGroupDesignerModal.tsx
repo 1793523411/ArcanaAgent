@@ -552,6 +552,12 @@ function AgentPlanCard({
 
           {item.action === "fork" && (
             <>
+              <div
+                className="text-[10px] rounded px-2 py-1"
+                style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}
+              >
+                ⓘ 派生会复制源 agent 的 systemPrompt 和资产作为起点，但不继承其记忆与历史胜率（相当于新员工读过前辈的笔记）
+              </div>
               <label className="block text-[10px]" style={{ color: "var(--color-text-muted)" }}>基于哪个 Agent 派生</label>
               <select
                 className="w-full px-2 py-1.5 rounded text-xs"
