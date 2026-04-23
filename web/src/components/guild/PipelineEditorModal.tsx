@@ -8,6 +8,7 @@ import {
 } from "../../api/guild";
 import PipelineCanvas from "./PipelineCanvas";
 import ConfirmDialog from "./ConfirmDialog";
+import AIPipelineDesignerModal from "./AIPipelineDesignerModal";
 
 interface Props {
   open: boolean;
@@ -30,6 +31,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
   const [copied, setCopied] = useState<"ok" | "err" | null>(null);
   const [canvasSelected, setCanvasSelected] = useState<number | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
+  const [aiOpen, setAiOpen] = useState(false);
 
   const refresh = async () => {
     try {
@@ -148,8 +150,23 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
           className="w-56 flex flex-col border-r"
           style={{ borderColor: "var(--color-border)", background: "var(--color-bg)" }}
         >
-          <div className="px-3 py-2 text-sm font-medium flex items-center justify-between" style={{ color: "var(--color-text)" }}>
-            <span>模板</span>
+          {/* AI generator slot — visually set apart so it doesn't read as a
+              sibling of "+ 新建" (which it was mistakenly doing in a way that
+              invited miss-clicks). */}
+          <button
+            className="mx-2 mt-2 mb-1 px-2 py-2 rounded-lg text-xs flex items-center justify-between"
+            style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}
+            onClick={() => setAiOpen(true)}
+            title="用 AI 描述一句话，自动生成模板 + 配套 Agent"
+          >
+            <span className="flex flex-col items-start leading-tight">
+              <span className="flex items-center gap-1 font-semibold">✨ 用 AI 生成模板</span>
+              <span className="text-[10px]" style={{ opacity: 0.75 }}>一句话生成流水线</span>
+            </span>
+            <span aria-hidden="true">→</span>
+          </button>
+          <div className="px-3 py-2 text-sm font-medium flex items-center justify-between gap-1 border-t" style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}>
+            <span>手工模板</span>
             <button
               className="text-xs px-2 py-0.5 rounded"
               style={{ background: "var(--color-accent)", color: "white" }}
@@ -525,6 +542,19 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
         variant="danger"
         loading={saving}
       />
+      {aiOpen && (
+        <AIPipelineDesignerModal
+          onDone={async (templateId) => {
+            setAiOpen(false);
+            await refresh();
+            const match = list.find((t) => t.id === templateId)
+              ?? (await listPipelines()).find((t) => t.id === templateId);
+            if (match) openExisting(match);
+            onChange?.();
+          }}
+          onClose={() => setAiOpen(false)}
+        />
+      )}
     </div>
   );
 }

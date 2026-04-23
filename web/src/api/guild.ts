@@ -36,6 +36,104 @@ export async function generateGuildAgent(description: string): Promise<{
   return r.json();
 }
 
+// ─── AI Designer: plan shapes ─────────────────────────
+
+export interface AgentSpec {
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  systemPrompt: string;
+  allowedTools: string[];
+  assets?: Array<{ type: AssetType; name: string; uri: string; description?: string }>;
+}
+
+export type AgentPlanItem =
+  | { action: "reuse"; agentId: string; reason?: string }
+  | { action: "create"; spec: AgentSpec; reason?: string }
+  | { action: "fork"; sourceAgentId: string; overrides: Partial<AgentSpec>; reason?: string };
+
+export interface GroupPlan {
+  group: {
+    name: string;
+    description: string;
+    sharedContext?: string;
+    artifactStrategy?: "isolated" | "collaborative";
+  };
+  agents: AgentPlanItem[];
+  leadIndex?: number;
+  reasoning?: string;
+}
+
+export interface PipelinePlan {
+  template: PipelineTemplate;
+  agents: (AgentPlanItem & { planKey: string })[];
+  reasoning?: string;
+}
+
+export async function generateGroupPlan(description: string, signal?: AbortSignal): Promise<GroupPlan> {
+  const r = await fetch(`${BASE}/guild/groups/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+    signal,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function applyGroupPlan(plan: GroupPlan): Promise<{
+  group: Group;
+  agentIds: string[];
+  createdAgentIds: string[];
+}> {
+  const r = await fetch(`${BASE}/guild/groups/apply-plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(plan),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function generatePipelinePlan(description: string, signal?: AbortSignal): Promise<PipelinePlan> {
+  const r = await fetch(`${BASE}/guild/pipelines/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ description }),
+    signal,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function applyPipelinePlan(plan: PipelinePlan): Promise<{
+  template: PipelineTemplate;
+  createdAgentIds: string[];
+  agentMap: Record<string, string>;
+}> {
+  const r = await fetch(`${BASE}/guild/pipelines/apply-plan`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(plan),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function forkGuildAgent(
+  agentId: string,
+  overrides?: Partial<AgentSpec>,
+): Promise<GuildAgent> {
+  const r = await fetch(`${BASE}/guild/agents/${agentId}/fork`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(overrides ?? {}),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 // ─── Guild ─────────────────────────────────────────────
 
 export async function getGuild(): Promise<Guild> {

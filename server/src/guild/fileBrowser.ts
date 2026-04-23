@@ -78,13 +78,14 @@ export interface SafeReadResult {
 export function safeReadFile(rootDir: string, filePath: string): SafeReadResult | null {
   const absRoot = resolve(rootDir);
   const absFile = resolve(rootDir, filePath);
-  // Path traversal protection (textual check first, then symlink-aware)
-  if (!absFile.startsWith(absRoot)) return null;
+  // Path traversal protection — require a trailing separator so that e.g.
+  // rootDir "/data/agents/agt_abc" doesn't accept "/data/agents/agt_abcdef/…".
+  if (!absFile.startsWith(absRoot + "/") && absFile !== absRoot) return null;
   if (!existsSync(absFile)) return null;
   // Follow symlinks and re-check to prevent symlink-based traversal
   const realRoot = realpathSync(absRoot);
   const realFile = realpathSync(absFile);
-  if (!realFile.startsWith(realRoot)) return null;
+  if (!realFile.startsWith(realRoot + "/") && realFile !== realRoot) return null;
 
   try {
     const st = statSync(absFile);

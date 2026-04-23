@@ -1,15 +1,22 @@
 import { useEffect, useState } from "react";
-import type { ArtifactStrategy } from "../../types/guild";
+import type { ArtifactStrategy, GuildAgent } from "../../types/guild";
+import AIGroupDesignerModal from "./AIGroupDesignerModal";
 
 interface Props {
   /** Presence switches the modal into edit mode. */
   initial?: { name: string; description: string; artifactStrategy?: ArtifactStrategy };
+  /** Available existing agents — required for AI mode. */
+  agents?: GuildAgent[];
+  /** Called when AI mode finishes and creates a group. Parent should reload & focus it. */
+  onAIDone?: (groupId: string) => void;
   onConfirm: (data: { name: string; description: string; artifactStrategy?: ArtifactStrategy }) => Promise<void>;
   onClose: () => void;
 }
 
-export default function CreateGroupModal({ initial, onConfirm, onClose }: Props) {
+export default function CreateGroupModal({ initial, agents, onAIDone, onConfirm, onClose }: Props) {
   const isEdit = !!initial;
+  const aiAvailable = !isEdit && !!onAIDone;
+  const [aiMode, setAiMode] = useState(false);
   const initialStrategy: ArtifactStrategy = initial?.artifactStrategy ?? "isolated";
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
@@ -42,6 +49,16 @@ export default function CreateGroupModal({ initial, onConfirm, onClose }: Props)
     }
   };
 
+  if (aiMode && aiAvailable) {
+    return (
+      <AIGroupDesignerModal
+        agents={agents ?? []}
+        onDone={(gid) => { onAIDone!(gid); onClose(); }}
+        onClose={() => setAiMode(false)}
+      />
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} />
@@ -59,6 +76,22 @@ export default function CreateGroupModal({ initial, onConfirm, onClose }: Props)
             ✕
           </button>
         </div>
+
+        {aiAvailable && (
+          <button
+            type="button"
+            className="w-full mb-3 px-3 py-2 rounded-lg text-xs flex items-center justify-between"
+            style={{ background: "var(--color-accent-alpha)", border: "1px solid var(--color-accent)", color: "var(--color-accent)" }}
+            onClick={() => setAiMode(true)}
+          >
+            <span className="flex items-center gap-1.5">
+              <span>✨</span>
+              <span className="font-semibold">用 AI 建组</span>
+              <span style={{ opacity: 0.7 }}>— 连同需要的 Agent 一起搞定</span>
+            </span>
+            <span>→</span>
+          </button>
+        )}
 
         <div className="space-y-3">
           <div>

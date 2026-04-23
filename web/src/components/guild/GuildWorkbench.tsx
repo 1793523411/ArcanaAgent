@@ -509,6 +509,12 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                 onEditAgent={(id) => setEditingAgent(id)}
                 onDeleteAgent={handleDeleteAgent}
                 onReleaseAgent={handleReleaseAgent}
+                onAgentForked={async (newId) => {
+                  await guild.loadAll();
+                  setSelectedDetail({ type: "agent", id: newId });
+                  setEditingAgent(newId);
+                  showToast("已派生新 Agent，打开编辑", "success");
+                }}
                 onViewLog={async (taskId) => {
                   await stream.loadTaskLog(taskId);
                   setViewingLogTaskId(taskId);
@@ -550,6 +556,14 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       {/* Modals */}
       {showCreateGroup && (
         <CreateGroupModal
+          agents={mergedAgents}
+          onAIDone={async (groupId) => {
+            // Reload REST snapshot so the newly-created group + agents show up,
+            // then focus the new group.
+            await guild.loadAll();
+            guild.setSelectedGroupId(groupId);
+            showToast("AI 已创建小组与成员", "success");
+          }}
           onConfirm={handleCreateGroup}
           onClose={() => setShowCreateGroup(false)}
         />

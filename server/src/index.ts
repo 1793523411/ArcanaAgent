@@ -83,6 +83,9 @@ import {
   getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
   getPipelineList, getPipelineById, postGroupTaskFromPipeline,
   postPipeline, putPipeline, deletePipelineById,
+  postGenerateGroupPlan, postApplyGroupPlan,
+  postGeneratePipelinePlan, postApplyPipelinePlan,
+  postForkAgent,
   postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
   postReleaseAgent, postClearTaskRejections,
   getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead, updateAgentAsset, updateGroupAssetRoute,
@@ -202,6 +205,11 @@ app.get("/api/guild/pipelines/:id", getPipelineById);
 app.post("/api/guild/pipelines", postPipeline);
 app.put("/api/guild/pipelines/:id", putPipeline);
 app.delete("/api/guild/pipelines/:id", deletePipelineById);
+// AI designers: propose a plan (pure JSON), then apply it in a second call.
+app.post("/api/guild/groups/generate", postGenerateGroupPlan);
+app.post("/api/guild/groups/apply-plan", postApplyGroupPlan);
+app.post("/api/guild/pipelines/generate", postGeneratePipelinePlan);
+app.post("/api/guild/pipelines/apply-plan", postApplyPipelinePlan);
 app.post("/api/guild/groups/:groupId/assign", postAssignTask);
 app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
 app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);
@@ -221,6 +229,7 @@ app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
 app.patch("/api/guild/agents/:id/assets/:assetId", updateAgentAsset);
 app.patch("/api/guild/groups/:id/assets/:assetId", updateGroupAssetRoute);
 app.post("/api/guild/agents/:agentId/release", postReleaseAgent);
+app.post("/api/guild/agents/:id/fork", postForkAgent);
 app.get("/api/guild/groups/:id/assets", getGroupAssetList);
 app.post("/api/guild/groups/:id/assets", postGroupAsset);
 app.delete("/api/guild/groups/:id/assets/:assetId", deleteGroupAssetById);

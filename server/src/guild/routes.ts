@@ -26,11 +26,75 @@ import type { GuildEvent } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
 import { clearSchedulerLog, getSchedulerLog } from "./schedulerLogStore.js";
 import { listPipelines, getPipeline, expandPipeline, savePipeline, deletePipeline, validatePipeline, validateInputs, withDefaults } from "./pipelines.js";
+import {
+  generateGroupPlan,
+  generatePipelinePlan,
+  type GroupPlan,
+  type PipelinePlan,
+  type AgentPlanItem,
+} from "./aiDesigner.js";
+import type { GuildAgent, CreateAgentParams } from "./types.js";
 
 /** Safely extract a single string from Express 5 params (string | string[]) */
 function p(val: string | string[] | undefined): string {
   if (Array.isArray(val)) return val[0] ?? "";
   return val ?? "";
+}
+
+/** Safely extract a single string query param. Blind `req.query.x as string`
+ *  lies at runtime — Express 5 unchecks `?x[]=a&x[]=b` into an array and
+ *  crashes downstream `resolve()` / `URL` calls. */
+function getStringQuery(req: Request, name: string): string {
+  const v = req.query[name];
+  return typeof v === "string" ? v : "";
+}
+
+/** Generic 500 response that logs the full error server-side but returns
+ *  only a bland message to the client. Prevents LLM SDK errors — which can
+ *  embed endpoints, auth header context, or file paths in their `.message`
+ *  — from bleeding through to the browser. */
+function sendServerError(res: Response, e: unknown, context: string): void {
+  serverLogger.error(`[guild] ${context} failed`, { error: String(e) });
+  if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+}
+
+/** Serialize apply-plan calls per endpoint so a double-click (or accidental
+ *  retry) doesn't create duplicate agents/groups. Local-only tool; a simple
+ *  in-memory flag is sufficient. Returns a release fn, or null when busy. */
+const applyInFlight = new Set<string>();
+function acquireApplyLock(key: string, res: Response): null | (() => void) {
+  if (applyInFlight.has(key)) {
+    res.status(429).json({ error: "上一次提交仍在处理中，请稍候再试" });
+    return null;
+  }
+  applyInFlight.add(key);
+  return () => applyInFlight.delete(key);
+}
+
+/** Build CreateAgentParams for a fork. Used by both the API fork endpoint
+ *  and the AI-Designer plan applier — the field-copy and default-fallback
+ *  logic must stay in lockstep between those two paths. */
+function buildForkParams(
+  source: GuildAgent,
+  overrides: Partial<CreateAgentParams> = {},
+): CreateAgentParams {
+  return {
+    name: overrides.name ?? `${source.name} (派生)`,
+    description: overrides.description ?? source.description,
+    icon: overrides.icon ?? source.icon,
+    color: overrides.color ?? source.color,
+    systemPrompt: overrides.systemPrompt ?? source.systemPrompt,
+    allowedTools: overrides.allowedTools ?? source.allowedTools,
+    modelId: overrides.modelId ?? source.modelId,
+    assets: overrides.assets ?? source.assets.map((a) => ({
+      type: a.type,
+      name: a.name,
+      uri: a.uri,
+      description: a.description,
+      metadata: a.metadata,
+      tags: a.tags,
+    })),
+  };
 }
 
 // ─── Guild ──────────────────────────────────────────────────────
@@ -282,6 +346,264 @@ export function postGroupTask(req: Request, res: Response): void {
     res.status(201).json(task);
   } catch (e) {
     res.status(500).json({ error: String(e) });
+  }
+}
+
+// ─── AI Designer ────────────────────────────────────────────────
+
+/** Resolve a plan item into CreateAgentParams (spec) or an existing agent id. */
+function resolvePlanItemToAgentParams(item: AgentPlanItem): {
+  reuseId?: string;
+  createParams?: CreateAgentParams;
+} {
+  if (item.action === "reuse") {
+    return { reuseId: item.agentId };
+  }
+  if (item.action === "create") {
+    return {
+      createParams: {
+        name: item.spec.name,
+        description: item.spec.description ?? "",
+        icon: item.spec.icon ?? "🤖",
+        color: item.spec.color ?? "#3B82F6",
+        systemPrompt: item.spec.systemPrompt ?? "",
+        allowedTools: item.spec.allowedTools ?? ["*"],
+        assets: item.spec.assets,
+      },
+    };
+  }
+  // fork — merge source agent + overrides (shared with postForkAgent via
+  // buildForkParams so field defaults stay in lockstep).
+  const source = getAgent(item.sourceAgentId);
+  if (!source) throw new Error(`fork source not found: ${item.sourceAgentId}`);
+  return { createParams: buildForkParams(source, item.overrides ?? {}) };
+}
+
+/** LLM plan-generation requests can take 30-60s. Hook client disconnect and a
+ *  hard timeout into an AbortController so we don't waste LLM quota on orphaned
+ *  calls or hang indefinitely on a stuck upstream. */
+const LLM_GENERATE_TIMEOUT_MS = 90_000;
+
+function abortOnClose(req: Request): { signal: AbortSignal; cleanup: () => void; ctrl: AbortController } {
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), LLM_GENERATE_TIMEOUT_MS);
+  const onClose = () => ctrl.abort();
+  req.on("close", onClose);
+  return {
+    signal: ctrl.signal,
+    ctrl,
+    cleanup: () => {
+      clearTimeout(timeout);
+      req.off("close", onClose);
+    },
+  };
+}
+
+export async function postGenerateGroupPlan(req: Request, res: Response): Promise<void> {
+  const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
+  if (!description) { res.status(400).json({ error: "description is required" }); return; }
+  const { signal, ctrl, cleanup } = abortOnClose(req);
+  try {
+    const plan = await generateGroupPlan(description, signal);
+    res.json(plan);
+  } catch (e) {
+    if (ctrl.signal.aborted) {
+      if (!res.headersSent) res.status(499).json({ error: "已取消或超时" });
+    } else {
+      sendServerError(res, e, "generate group plan");
+    }
+  } finally {
+    cleanup();
+  }
+}
+
+export async function postApplyGroupPlan(req: Request, res: Response): Promise<void> {
+  const plan = req.body as GroupPlan | undefined;
+  if (!plan?.group?.name?.trim() || !Array.isArray(plan.agents)) {
+    res.status(400).json({ error: "Invalid plan shape" });
+    return;
+  }
+  const release = acquireApplyLock("group", res);
+  if (!release) return;
+  const resolvedAgentIds: string[] = [];
+  const reuseAgentIds = new Set<string>(); // distinct so rollback can special-case reuse vs created
+  const createdAgents: GuildAgent[] = [];
+  const assignedReuseAgentIds: string[] = []; // reuse agents that were actually re-pointed to this group
+  let createdGroupId: string | null = null;
+  try {
+    // 1. Materialize agents (create/fork) or collect reuse ids
+    for (const item of plan.agents) {
+      const resolved = resolvePlanItemToAgentParams(item);
+      if (resolved.reuseId) {
+        resolvedAgentIds.push(resolved.reuseId);
+        reuseAgentIds.add(resolved.reuseId);
+      } else if (resolved.createParams) {
+        const agent = createAgent(resolved.createParams);
+        resolvedAgentIds.push(agent.id);
+        createdAgents.push(agent);
+      }
+    }
+    // Guard: never create a group with no members. Client should never see this
+    // if the preview's "create" button is correctly disabled; this catches the
+    // edge case where every plan item got filtered out (deleted reuse targets, etc).
+    if (resolvedAgentIds.length === 0) {
+      res.status(400).json({ error: "Plan resolves to zero agents — cannot create empty group" });
+      return;
+    }
+    // 2. Create group
+    const leadAgentId =
+      typeof plan.leadIndex === "number" && plan.leadIndex >= 0 && plan.leadIndex < resolvedAgentIds.length
+        ? resolvedAgentIds[plan.leadIndex]
+        : undefined;
+    const group = createGroup({
+      name: plan.group.name.trim(),
+      description: plan.group.description ?? "",
+      sharedContext: plan.group.sharedContext,
+      artifactStrategy: plan.group.artifactStrategy,
+      leadAgentId,
+    });
+    createdGroupId = group.id;
+    // 3. Assign agents to group. Track the reuse ids that actually landed in
+    //    this group so rollback can restore them to their prior state.
+    for (const aid of resolvedAgentIds) {
+      if (assignAgentToGroup(aid, group.id) && reuseAgentIds.has(aid)) {
+        assignedReuseAgentIds.push(aid);
+      }
+    }
+    res.status(201).json({
+      group,
+      agentIds: resolvedAgentIds,
+      createdAgentIds: createdAgents.map((a) => a.id),
+    });
+  } catch (e) {
+    // Rollback — order matters:
+    // (1) Detach any reuse agents from the new group so `removeAgentFromGroup`
+    //     can restore them to the pool or to another existing group. If we
+    //     skip this and go straight to deleteGroup, deleteGroup's own cleanup
+    //     still runs but it mutates agent state in a direction the caller
+    //     doesn't expect (it may reassign primary groupId to an unrelated
+    //     leftover group).
+    if (createdGroupId) {
+      for (const aid of assignedReuseAgentIds) {
+        try { removeAgentFromGroup(aid, createdGroupId); } catch { /* swallow */ }
+      }
+      // (2) Delete the now-emptied (or only-created-agents) group shell.
+      try { deleteGroup(createdGroupId); } catch { /* swallow */ }
+    }
+    // (3) Delete any agents we minted — they are orphan writes since the
+    //     group they belonged to is gone.
+    for (const a of createdAgents) {
+      try { deleteAgent(a.id); } catch { /* swallow */ }
+    }
+    sendServerError(res, e, "apply group plan");
+  } finally {
+    release();
+  }
+}
+
+export async function postGeneratePipelinePlan(req: Request, res: Response): Promise<void> {
+  const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
+  if (!description) { res.status(400).json({ error: "description is required" }); return; }
+  const { signal, ctrl, cleanup } = abortOnClose(req);
+  try {
+    const plan = await generatePipelinePlan(description, signal);
+    res.json(plan);
+  } catch (e) {
+    if (ctrl.signal.aborted) {
+      if (!res.headersSent) res.status(499).json({ error: "已取消或超时" });
+    } else {
+      sendServerError(res, e, "generate pipeline plan");
+    }
+  } finally {
+    cleanup();
+  }
+}
+
+export async function postApplyPipelinePlan(req: Request, res: Response): Promise<void> {
+  const plan = req.body as PipelinePlan | undefined;
+  if (!plan?.template?.id || !Array.isArray(plan.agents)) {
+    res.status(400).json({ error: "Invalid plan shape" });
+    return;
+  }
+  // Validate the template shape UPFRONT before materializing any agents.
+  // validatePipeline checks structural concerns (id format, step titles,
+  // dependsOn, retry, expressions, ${var} scope) — none depend on
+  // suggestedAgentId value, so we can validate with "plan:KX" strings
+  // still in place. This avoids leaking agents when the LLM produces an
+  // invalid template.
+  const preValErrs = validatePipeline(plan.template);
+  if (preValErrs.length > 0) {
+    res.status(400).json({ error: "validation failed", errors: preValErrs });
+    return;
+  }
+
+  const release = acquireApplyLock("pipeline", res);
+  if (!release) return;
+  const keyToId: Record<string, string> = {};
+  const createdAgents: GuildAgent[] = [];
+  try {
+    // 1. Materialize agents + map planKey → real agentId
+    for (const item of plan.agents) {
+      const resolved = resolvePlanItemToAgentParams(item);
+      if (resolved.reuseId) {
+        keyToId[item.planKey] = resolved.reuseId;
+      } else if (resolved.createParams) {
+        const agent = createAgent(resolved.createParams);
+        keyToId[item.planKey] = agent.id;
+        createdAgents.push(agent);
+      }
+    }
+    // 2. Rewrite suggestedAgentId "plan:KX" → real agent id (walks every
+    //    nested-step channel: then/else/body/join/retry.fallback).
+    const tpl = JSON.parse(JSON.stringify(plan.template));
+    const rewriteSteps = (steps: unknown): void => {
+      if (!Array.isArray(steps)) return;
+      for (const step of steps as Record<string, unknown>[]) {
+        const sid = step.suggestedAgentId;
+        if (typeof sid === "string" && sid.startsWith("plan:")) {
+          const key = sid.slice(5);
+          step.suggestedAgentId = keyToId[key] ?? undefined;
+        }
+        rewriteSteps(step.then);
+        rewriteSteps(step.else);
+        rewriteSteps(step.body);
+        if (step.join) rewriteSteps([step.join]);
+        const retry = step.retry as Record<string, unknown> | undefined;
+        if (retry?.fallback) rewriteSteps([retry.fallback]);
+      }
+    };
+    rewriteSteps(tpl.steps);
+    // 3. Save (validatePipeline is re-run inside savePipeline — belt & suspenders)
+    const out = savePipeline(tpl, { allowOverwrite: true });
+    if (!out.ok) {
+      throw new Error(out.reason ?? "Failed to save pipeline");
+    }
+    res.status(201).json({
+      template: out.template,
+      createdAgentIds: createdAgents.map((a) => a.id),
+      agentMap: keyToId,
+    });
+  } catch (e) {
+    // Rollback: any agent we minted during resolution is now orphaned.
+    for (const a of createdAgents) {
+      try { deleteAgent(a.id); } catch { /* swallow */ }
+    }
+    sendServerError(res, e, "apply pipeline plan");
+  } finally {
+    release();
+  }
+}
+
+export function postForkAgent(req: Request, res: Response): void {
+  try {
+    const sourceId = p(req.params.id);
+    const source = getAgent(sourceId);
+    if (!source) { res.status(404).json({ error: "Source agent not found" }); return; }
+    const overrides = (req.body ?? {}) as Partial<CreateAgentParams>;
+    const forked = createAgent(buildForkParams(source, overrides));
+    res.status(201).json(forked);
+  } catch (e) {
+    sendServerError(res, e, "fork agent");
   }
 }
 
@@ -762,7 +1084,7 @@ export function getAgentWorkspaceTree(req: Request, res: Response): void {
 
 // Read file from agent workspace
 export function getAgentWorkspaceFile(req: Request, res: Response): void {
-  const filePath = req.query.path as string;
+  const filePath = getStringQuery(req, "path");
   if (!filePath) { res.status(400).json({ error: "path required" }); return; }
   const result = safeReadFile(getAgentWorkspaceDir(p(req.params.id)), filePath);
   if (!result) { res.status(404).json({ error: "File not found" }); return; }
@@ -777,7 +1099,7 @@ export function getAgentMemoryTree(req: Request, res: Response): void {
 
 // Read file from agent memory
 export function getAgentMemoryFile(req: Request, res: Response): void {
-  const filePath = req.query.path as string;
+  const filePath = getStringQuery(req, "path");
   if (!filePath) { res.status(400).json({ error: "path required" }); return; }
   const result = safeReadFile(getAgentMemoryDir(p(req.params.id)), filePath);
   if (!result) { res.status(404).json({ error: "File not found" }); return; }
@@ -792,7 +1114,7 @@ export function getGroupSharedTree(req: Request, res: Response): void {
 
 // Read file from group shared
 export function getGroupSharedFile(req: Request, res: Response): void {
-  const filePath = req.query.path as string;
+  const filePath = getStringQuery(req, "path");
   if (!filePath) { res.status(400).json({ error: "path required" }); return; }
   const result = safeReadFile(getGroupSharedDir(p(req.params.id)), filePath);
   if (!result) { res.status(404).json({ error: "File not found" }); return; }
