@@ -35,6 +35,10 @@ describe("guild bidding", () => {
       systemPrompt: "general assistant",
       assets: [{ type: "document", name: "guide", uri: "doc", description: "fix layout hooks" }],
     });
+    // Skip newbie grace (which would halve the threshold) so this test
+    // isolates the priority-driven threshold movement we actually want to
+    // measure.
+    (agent.stats as { tasksCompleted: number }).tasksCompleted = 10;
     const group = createGroup({ name: "FE", description: "frontend group" });
     assignAgentToGroup(agent.id, group.id);
 
@@ -120,6 +124,105 @@ describe("guild bidding", () => {
     expect(backendBid).not.toBeNull();
     expect(backendBid!.confidence).toBeGreaterThan(frontendBid?.confidence ?? 0);
     expect(backendBid!.scoreBreakdown?.ownerBonus).toBeGreaterThan(0);
+  });
+
+  it("newbie agents (tasksCompleted < 3) get a halved threshold", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.5,
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0.5,
+    });
+
+    const newbie = createAgent({
+      name: "Fresh Grad",
+      description: "just joined",
+      systemPrompt: "general assistant",
+    });
+    const veteran = createAgent({
+      name: "Veteran",
+      description: "long tenure",
+      systemPrompt: "general assistant",
+    });
+    (veteran.stats as { tasksCompleted: number }).tasksCompleted = 5;
+
+    const group = createGroup({ name: "G", description: "g" });
+    assignAgentToGroup(newbie.id, group.id);
+    assignAgentToGroup(veteran.id, group.id);
+
+    const task = createTask(group.id, {
+      title: "ambient chore",
+      description: "do some generic cleanup",
+      priority: "medium",
+    });
+
+    // Pull breakdowns via includeBelowThreshold so we can inspect `threshold`
+    // regardless of whether the score happened to clear — the test is about
+    // the *threshold* moving, not whether a specific artificial score passed.
+    const newbieBid = evaluateTask(newbie, task, { includeBelowThreshold: true });
+    const veteranBid = evaluateTask(veteran, task, { includeBelowThreshold: true });
+    expect(newbieBid!.scoreBreakdown!.threshold).toBeCloseTo(0.25, 5); // 0.5 * 0.5
+    expect(veteranBid!.scoreBreakdown!.threshold).toBeCloseTo(0.5, 5);
+  });
+
+  it("startBidding returns below-threshold candidates with via=below_threshold", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.95, // impossibly high — nobody will clear
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0,
+    });
+
+    const veteran = createAgent({
+      name: "Vet",
+      description: "vet",
+      systemPrompt: "general",
+    });
+    (veteran.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    const group = createGroup({ name: "G", description: "g" });
+    assignAgentToGroup(veteran.id, group.id);
+
+    const task = createTask(group.id, {
+      title: "task",
+      description: "do work",
+      priority: "medium",
+    });
+
+    const bid = evaluateTask(veteran, task, { includeBelowThreshold: true });
+    expect(bid).not.toBeNull();
+    expect(bid!.via).toBe("below_threshold");
+    expect(bid!.scoreBreakdown).toBeDefined();
+  });
+
+  it("autoBid persists below-threshold candidates so the UI can explain why", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.95, // nobody will clear
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0,
+    });
+
+    // Two veteran agents — neither should clear the absurd threshold.
+    const a = createAgent({ name: "A", description: "", systemPrompt: "generic" });
+    const b = createAgent({ name: "B", description: "", systemPrompt: "generic" });
+    (a.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    (b.stats as { tasksCompleted: number }).tasksCompleted = 10;
+    const group = createGroup({ name: "G", description: "g" });
+    assignAgentToGroup(a.id, group.id);
+    assignAgentToGroup(b.id, group.id);
+
+    const task = createTask(group.id, {
+      title: "task",
+      description: "generic work",
+      priority: "medium",
+    });
+
+    autoBid(group.id, task);
+    const saved = getTask(group.id, task.id);
+    // With 2 idle agents and nobody clearing, fallback doesn't kick in — stalled.
+    // All candidate breakdowns must still be persisted on the task for the UI.
+    expect(saved?.bids?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(saved?.bids?.every((b) => b.via === "below_threshold")).toBe(true);
   });
 
   it("calculateConfidence never bunches veteran agents at 1.0", () => {

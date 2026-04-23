@@ -167,8 +167,10 @@ export interface TaskBid {
   biddedAt: string;
   /** Detailed per-dimension score breakdown for UI/debug. */
   scoreBreakdown?: ScoreBreakdown;
-  /** "bidding" = won via normal path, "fallback" = round-robin idle rescue. */
-  via?: "bidding" | "fallback";
+  /** "bidding" = won via normal path, "fallback" = round-robin idle rescue,
+   *  "below_threshold" = evaluated candidate that didn't clear the bar (kept
+   *  around so the UI can explain *why* an agent wasn't chosen). */
+  via?: "bidding" | "fallback" | "below_threshold";
 }
 
 export interface TaskResult {

@@ -5,7 +5,7 @@ import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentMemoryPanel from "./AgentMemoryPanel";
 import DeliverablesPanel from "./DeliverablesPanel";
-import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections } from "../../api/guild";
+import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections, forkGuildAgent } from "../../api/guild";
 
 const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
 
@@ -23,6 +23,8 @@ interface Props {
   onEditAgent?: (id: string) => void;
   onDeleteAgent?: (id: string) => Promise<void> | void;
   onReleaseAgent?: (id: string) => Promise<void> | void;
+  /** Called after a new fork has been created; parent should refresh its agent list. */
+  onAgentForked?: (newAgentId: string) => void;
   onViewLog?: (taskId: string) => void;
   onSelectTask?: (id: string) => void;
   onOpenWorkspace?: (agentId: string) => void;
@@ -67,7 +69,7 @@ const ASSET_TYPE_ICON: Record<string, string> = {
   prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
 };
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onAgentForked, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
@@ -75,6 +77,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [releaseBusy, setReleaseBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
+  const [forkBusy, setForkBusy] = useState(false);
   const [showMemory, setShowMemory] = useState(false);
   const [workspaceMd, setWorkspaceMd] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -208,6 +211,26 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   onClick={() => onEditAgent(selectedAgent.id)}
                 >
                   编辑 Agent
+                </button>
+              )}
+              {onAgentForked && (
+                <button
+                  className="text-xs px-3 py-1.5 rounded-lg"
+                  style={{ background: "#a855f722", color: "#9333ea", opacity: forkBusy ? 0.5 : 1 }}
+                  disabled={forkBusy}
+                  title="复制一份独立的 Agent，含相同资产与 prompt — 方便基于它改造"
+                  onClick={async () => {
+                    if (forkBusy) return;
+                    setForkBusy(true);
+                    try {
+                      const forked = await forkGuildAgent(selectedAgent.id);
+                      onAgentForked(forked.id);
+                    } finally {
+                      setForkBusy(false);
+                    }
+                  }}
+                >
+                  {forkBusy ? "派生中…" : "🌿 派生"}
                 </button>
               )}
               {onReleaseAgent && selectedAgent.status === "working" && (
@@ -731,25 +754,59 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
             })()}
 
             {/* Bids */}
-            {selectedTask.bids && selectedTask.bids.length > 0 && (
+            {selectedTask.bids && selectedTask.bids.length > 0 && (() => {
+              // Sort: winner first, then other real bidders (higher conf first),
+              // then below-threshold candidates last so the "why was X not picked"
+              // story reads top-down.
+              const winnerId = selectedTask.assignedAgentId;
+              const sorted = [...selectedTask.bids].sort((a, b) => {
+                if (a.agentId === winnerId) return -1;
+                if (b.agentId === winnerId) return 1;
+                const aBelow = a.via === "below_threshold";
+                const bBelow = b.via === "below_threshold";
+                if (aBelow !== bBelow) return aBelow ? 1 : -1;
+                return b.confidence - a.confidence;
+              });
+              const belowCount = sorted.filter((b) => b.via === "below_threshold").length;
+              return (
               <div>
-                <div className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>投标（{selectedTask.bids.length}）</div>
+                <div className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
+                  投标（{selectedTask.bids.length}
+                  {belowCount > 0 && (
+                    <span style={{ color: "var(--color-text-muted)" }}>
+                      {" · "}{belowCount} 未达门槛
+                    </span>
+                  )}
+                  ）
+                </div>
                 <div className="space-y-1.5">
-                  {selectedTask.bids.map((bid) => {
+                  {sorted.map((bid) => {
                     const agent = agents.find((a) => a.id === bid.agentId);
                     const expanded = expandedBid === bid.agentId;
                     const sb = bid.scoreBreakdown;
+                    const isBelow = bid.via === "below_threshold";
+                    const isWinner = bid.agentId === winnerId;
                     return (
                       <div
                         key={bid.agentId}
                         className="rounded-lg px-3 py-2 text-xs space-y-1"
-                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                        style={{
+                          background: "var(--color-bg)",
+                          border: `1px solid ${isWinner ? "var(--color-accent)" : "var(--color-border)"}`,
+                          opacity: isBelow ? 0.65 : 1,
+                        }}
                       >
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium truncate" style={{ color: agent?.color ?? "var(--color-text)" }}>
                             {agent ? `${agent.icon} ${agent.name}` : bid.agentId}
                           </span>
                           <div className="flex items-center gap-1.5 shrink-0">
+                            {isWinner && (
+                              <span
+                                className="text-[9px] px-1 py-0.5 rounded"
+                                style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                              >胜出</span>
+                            )}
                             {bid.via === "fallback" && (
                               <span
                                 className="text-[9px] px-1 py-0.5 rounded"
@@ -759,7 +816,18 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                                 兜底
                               </span>
                             )}
-                            <span style={{ color: "var(--color-accent)" }}>置信度 {Math.round(bid.confidence * 100)}%</span>
+                            {isBelow && sb && (
+                              <span
+                                className="text-[9px] px-1 py-0.5 rounded"
+                                style={{ background: "#fee2e2", color: "#991b1b" }}
+                                title={`该 Agent 的最终得分 ${sb.final.toFixed(3)} 低于竞标门槛 ${sb.threshold.toFixed(3)}`}
+                              >
+                                未达门槛
+                              </span>
+                            )}
+                            <span style={{ color: isBelow ? "var(--color-text-muted)" : "var(--color-accent)" }}>
+                              置信度 {Math.round(bid.confidence * 100)}%
+                            </span>
                           </div>
                         </div>
                         <div style={{ color: "var(--color-text-muted)" }}>{bid.reasoning}</div>
@@ -809,7 +877,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   })}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* Result */}
             {selectedTask.result && (

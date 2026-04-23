@@ -186,8 +186,24 @@ export function calculateConfidence(agent: GuildAgent, task: GuildTask): number 
   return calculateConfidenceBreakdown(agent, task, task.groupId).final;
 }
 
-/** Single agent evaluates a task and produces a bid */
-export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null {
+/** Newbie grace — new agents (< this many completed tasks) get a halved
+ *  threshold so they have a chance to prove themselves. Without this, asset /
+ *  memory / embedding scores all start near zero and the agent never gets
+ *  picked, which turns the "cold start" problem into a permanent exclusion. */
+const NEWBIE_TASK_COUNT = 3;
+const NEWBIE_THRESHOLD_MULTIPLIER = 0.5;
+
+/** Single agent evaluates a task and produces a bid.
+ *
+ *  `opts.includeBelowThreshold` — when true, returns a bid for candidates
+ *  that would normally be filtered out by threshold. The caller distinguishes
+ *  winners from also-rans via the returned bid's `via` field. Used by the UI
+ *  path so users can see *why* a given agent wasn't selected. */
+export function evaluateTask(
+  agent: GuildAgent,
+  task: GuildTask,
+  opts?: { includeBelowThreshold?: boolean },
+): TaskBid | null {
   // Requirement-kind tasks are routed to the planner, never bid on.
   if (biddingConfig.skipParentRequirement && (task.kind === "requirement" || task.kind === "pipeline")) return null;
   // Retry backoff gate — task is technically open but must wait.
@@ -209,9 +225,14 @@ export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null
       : task.priority === "low"
         ? 0.05
         : 0;
-  const threshold = Math.max(0.1, Math.min(0.95, biddingConfig.minConfidenceThreshold + thresholdDelta));
+  let threshold = Math.max(0.1, Math.min(0.95, biddingConfig.minConfidenceThreshold + thresholdDelta));
+  // Newbie grace period — halve the bar until the agent has a track record.
+  if (agent.stats.tasksCompleted < NEWBIE_TASK_COUNT) {
+    threshold = threshold * NEWBIE_THRESHOLD_MULTIPLIER;
+  }
   breakdown.threshold = threshold;
-  if (confidence < threshold) return null;
+  const belowThreshold = confidence < threshold;
+  if (belowThreshold && !opts?.includeBelowThreshold) return null;
 
   const relevantMemories = searchRelevant(agent.id, `${task.title} ${task.description}`, 3);
   const relevantAssets = agent.assets
@@ -241,7 +262,7 @@ export function evaluateTask(agent: GuildAgent, task: GuildTask): TaskBid | null
     relevantMemories: relevantMemories.map((m) => m.id),
     biddedAt: new Date().toISOString(),
     scoreBreakdown: breakdown,
-    via: "bidding",
+    via: belowThreshold ? "below_threshold" : "bidding",
   };
 }
 
@@ -266,17 +287,21 @@ function buildReasoning(
   return `confidence: ${confidence.toFixed(2)} — ${parts.join("，")}`;
 }
 
-/** Select the winning bid from a list of bids */
+/** Select the winning bid from a list of bids. Explicitly ignores candidates
+ *  that were kept around for transparency (via = below_threshold) so the
+ *  winner is always a genuine passer. */
 export function selectWinner(bids: TaskBid[]): TaskBid | null {
-  if (bids.length === 0) return null;
-  // Sort by confidence descending
-  const sorted = [...bids].sort((a, b) => b.confidence - a.confidence);
+  const eligible = bids.filter((b) => b.via !== "below_threshold");
+  if (eligible.length === 0) return null;
+  const sorted = [...eligible].sort((a, b) => b.confidence - a.confidence);
   return sorted[0];
 }
 
 /** Run the full bidding process for a task within a group.
- *  Pure in-memory: collects bids and emits the start event but does NOT persist
- *  the intermediate "bidding" status — `autoBid` writes the final state in one go. */
+ *  Returns ALL evaluated candidates — both winners and those that didn't
+ *  clear the threshold (tagged via="below_threshold"). The UI uses the
+ *  rejected ones to explain *why* no one was picked / why a specific agent
+ *  wasn't chosen; autoBid passes them along to `task.bids` so they persist. */
 export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
   const agents = getGroupAgents(groupId);
   const rejected = new Set(task._rejectedBy ?? []);
@@ -292,7 +317,9 @@ export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
 
   const bids: TaskBid[] = [];
   for (const agent of eligibleAgents) {
-    const bid = evaluateTask(agent, task);
+    // includeBelowThreshold=true so the returned list covers every candidate;
+    // selectWinner filters down to those actually qualifying.
+    const bid = evaluateTask(agent, task, { includeBelowThreshold: true });
     if (bid) bids.push(bid);
   }
   return bids;
