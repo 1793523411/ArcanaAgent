@@ -194,6 +194,30 @@ describe("guild bidding", () => {
     expect(bid!.scoreBreakdown).toBeDefined();
   });
 
+  it("autoBid caps persisted below-threshold candidates (prevents unbounded growth)", () => {
+    setBiddingConfig({
+      minConfidenceThreshold: 0.95, // nobody clears
+      assetBonusWeight: 0,
+      ownerBonusWeight: 0,
+      successRatePrior: 0,
+    });
+    const group = createGroup({ name: "G", description: "g" });
+    // Create 15 below-threshold candidates — should cap at 10 after autoBid.
+    for (let i = 0; i < 15; i++) {
+      const agent = createAgent({ name: `A${i}`, description: "", systemPrompt: "generic" });
+      (agent.stats as { tasksCompleted: number }).tasksCompleted = 10;
+      assignAgentToGroup(agent.id, group.id);
+    }
+    const task = createTask(group.id, {
+      title: "task",
+      description: "generic",
+      priority: "medium",
+    });
+    autoBid(group.id, task);
+    const saved = getTask(group.id, task.id);
+    expect(saved?.bids?.length ?? 0).toBeLessThanOrEqual(10);
+  });
+
   it("autoBid persists below-threshold candidates so the UI can explain why", () => {
     setBiddingConfig({
       minConfidenceThreshold: 0.95, // nobody will clear

@@ -325,6 +325,39 @@ export function startBidding(groupId: string, task: GuildTask): TaskBid[] {
   return bids;
 }
 
+/** Keep task.bids bounded. All qualifying bids (bidding/fallback) are kept;
+ *  below_threshold candidates are pruned to the top N by confidence. Prevents
+ *  unbounded growth when a big group repeatedly stalls or retries. */
+const MAX_BELOW_THRESHOLD_BIDS = 10;
+function capBids(bids: TaskBid[]): TaskBid[] {
+  const qualifying: TaskBid[] = [];
+  const below: TaskBid[] = [];
+  for (const b of bids) (b.via === "below_threshold" ? below : qualifying).push(b);
+  below.sort((a, b) => b.confidence - a.confidence);
+  return [...qualifying, ...below.slice(0, MAX_BELOW_THRESHOLD_BIDS)];
+}
+
+/** Identify the weakest contribution dimension in a bid's breakdown so the
+ *  stalled-dispatch message can hint at *why* the agent didn't clear the
+ *  threshold. Picks among whichever scoring path was active. */
+function findBottleneck(bid: TaskBid): string | null {
+  const sb = bid.scoreBreakdown;
+  if (!sb) return null;
+  const candidates: Array<{ name: string; contribution: number }> = [];
+  if (sb.llmScore != null) {
+    candidates.push({ name: "LLM 评分", contribution: (sb.llmScore / 10) * 0.55 });
+  } else if (sb.embedding != null) {
+    candidates.push({ name: "语义匹配", contribution: sb.embedding * 0.55 });
+  } else {
+    candidates.push({ name: "资产匹配", contribution: sb.asset * 0.35 });
+    candidates.push({ name: "技能匹配", contribution: sb.skill * 0.20 });
+  }
+  candidates.push({ name: "记忆匹配", contribution: sb.memory * 0.30 });
+  candidates.push({ name: "历史胜率", contribution: sb.success * 0.15 });
+  candidates.sort((a, b) => a.contribution - b.contribution);
+  return candidates[0]?.name ?? null;
+}
+
 // ─── Cross-group dedup lock ────────────────────────────────────
 // Prevents concurrent autoBid calls for the same task across different
 // groups (e.g. an agent shared between groups triggering two schedulers).
@@ -370,7 +403,7 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
   const winner = selectWinner(bids);
 
   if (winner) {
-    assignTask(groupId, fresh.id, winner.agentId, winner, bids);
+    assignTask(groupId, fresh.id, winner.agentId, winner, capBids(bids));
     return winner;
   }
 
@@ -383,7 +416,7 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
   const idleAgents = agents.filter((a) => a.status === "idle" && !a.currentTaskId && !rejectedSet.has(a.id));
 
   if (idleAgents.length === 0) {
-    if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
+    if (bids.length > 0) updateTask(groupId, fresh.id, { bids: capBids(bids) });
     return null;
   }
 
@@ -408,12 +441,23 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
       biddedAt: new Date().toISOString(),
       via: "fallback",
     };
-    assignTask(groupId, fresh.id, picked.id, fallbackBid, [...bids, fallbackBid]);
+    assignTask(groupId, fresh.id, picked.id, fallbackBid, capBids([...bids, fallbackBid]));
     return fallbackBid;
   }
 
   // Multiple idle agents, none scored well — emit stalled for manual assignment.
-  if (bids.length > 0) updateTask(groupId, fresh.id, { bids });
+  if (bids.length > 0) updateTask(groupId, fresh.id, { bids: capBids(bids) });
+  // Pick the top candidate to surface as "close but no cigar" in the log, so
+  // the user can see which dimension held them back.
+  const topCandidate = bids
+    .slice()
+    .sort((a, b) => b.confidence - a.confidence)[0];
+  const bottleneck = topCandidate ? findBottleneck(topCandidate) : null;
+  const topScore = topCandidate ? topCandidate.confidence.toFixed(2) : "0";
+  const thresholdText = topCandidate?.scoreBreakdown
+    ? `，门槛 ${topCandidate.scoreBreakdown.threshold.toFixed(2)}`
+    : "";
+  const bottleneckText = bottleneck ? `，瓶颈：${bottleneck}` : "";
   guildEventBus.emit({
     type: "scheduler_dispatch_stalled",
     groupId,
@@ -426,7 +470,7 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
       groupId,
       taskId: fresh.id,
       taskTitle: fresh.title,
-      message: `任务「${fresh.title}」无 Agent 达到竞标门槛（最高分：${bids.length > 0 ? Math.max(...bids.map((b) => b.confidence)).toFixed(2) : "0"}，空闲 ${idleAgents.length} 人），等待手动指派`,
+      message: `任务「${fresh.title}」无 Agent 达到竞标门槛（最高分 ${topScore}${thresholdText}${bottleneckText}，空闲 ${idleAgents.length} 人），等待手动指派`,
     },
   });
   return null;
