@@ -76,6 +76,9 @@ export interface PipelineStepSpec {
   dependsOn?: number[];
   priority?: TaskPriority;
   acceptanceCriteria?: string;
+  /** Machine-runnable assertions the harness enforces after the step's agent
+   *  claims completion. ref/pattern support ${var} interpolation at expand. */
+  acceptanceAssertions?: import("./types.js").AcceptanceAssertion[];
   retry?: PipelineRetryPolicy;
   /** Structured deliverables this step is expected to produce. */
   outputs?: PipelineArtifactSpec[];
@@ -428,6 +431,27 @@ function materializeRetryPolicy(
   };
 }
 
+/** Interpolate ${var} in assertion ref + pattern so templates can reference
+ *  user inputs (e.g. `ref: "${filename}.md"`). Preserves discriminant/flags
+ *  without touching fields that shouldn't interpolate (type, regex). */
+function materializeAssertions(
+  assertions: import("./types.js").AcceptanceAssertion[],
+  inputs: Record<string, string>,
+): import("./types.js").AcceptanceAssertion[] {
+  return assertions.map((a) => {
+    if (a.type === "file_exists") {
+      return { type: "file_exists", ref: substituteVars(a.ref, inputs), description: a.description };
+    }
+    return {
+      type: "file_contains",
+      ref: substituteVars(a.ref, inputs),
+      pattern: substituteVars(a.pattern, inputs),
+      regex: a.regex,
+      description: a.description,
+    };
+  });
+}
+
 // ─── Expansion ────────────────────────────────────────────────
 
 interface FlatStep {
@@ -477,6 +501,23 @@ function substituteStepVar(step: PipelineStepSpec, varName: string, value: strin
       label: sub(a.label),
       description: sub(a.description),
     }));
+  }
+  // Iteration var also bleeds into assertion ref/pattern so foreach bodies
+  // can assert per-item files (e.g. `ref: "${item}.md"`). Top-level user
+  // inputs get re-interpolated later by materializeAssertions at expand time.
+  if (step.acceptanceAssertions) {
+    out.acceptanceAssertions = step.acceptanceAssertions.map((a) => {
+      if (a.type === "file_exists") {
+        return { type: "file_exists", ref: substituteVars(a.ref, { [varName]: value }), description: a.description };
+      }
+      return {
+        type: "file_contains",
+        ref: substituteVars(a.ref, { [varName]: value }),
+        pattern: substituteVars(a.pattern, { [varName]: value }),
+        regex: a.regex,
+        description: a.description,
+      };
+    });
   }
   if (step.then) out.then = step.then.map((s) => substituteStepVar(s, varName, value));
   if (step.else) out.else = step.else.map((s) => substituteStepVar(s, varName, value));
@@ -890,6 +931,9 @@ export function expandPipeline(
       suggestedAgentId: step.suggestedAgentId,
       acceptanceCriteria: step.acceptanceCriteria
         ? substituteVars(step.acceptanceCriteria, inputs)
+        : undefined,
+      acceptanceAssertions: step.acceptanceAssertions
+        ? materializeAssertions(step.acceptanceAssertions, inputs)
         : undefined,
       workspaceRef,
       dependsOn: depIds,

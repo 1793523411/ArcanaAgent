@@ -439,4 +439,65 @@ describe("normalizePipelinePlan", () => {
     const plan = normalizePipelinePlan(raw);
     expect(plan.agents[0].planKey).toBe("writer");
   });
+
+  it("preserves valid acceptanceAssertions and drops malformed ones", () => {
+    const raw = {
+      template: {
+        id: "p",
+        name: "p",
+        steps: [
+          {
+            kind: "task",
+            title: "x",
+            description: "",
+            acceptanceAssertions: [
+              { type: "file_exists", ref: "ok.md" },
+              { type: "file_contains", ref: "ok.md", pattern: "header", regex: true },
+              { type: "file_exists" }, // malformed: no ref — dropped
+              { type: "unknown_kind", ref: "ok.md" }, // malformed: bad type — dropped
+              { type: "file_contains", ref: "ok.md" }, // malformed: no pattern — dropped
+              "not even an object", // malformed — dropped
+            ],
+          },
+        ],
+      },
+      agents: [],
+    };
+    const plan = normalizePipelinePlan(raw);
+    const step = plan.template.steps[0] as {
+      acceptanceAssertions?: Array<Record<string, unknown>>;
+    };
+    expect(step.acceptanceAssertions).toBeDefined();
+    expect(step.acceptanceAssertions).toHaveLength(2);
+    expect(step.acceptanceAssertions?.[0]).toMatchObject({ type: "file_exists", ref: "ok.md" });
+    expect(step.acceptanceAssertions?.[1]).toMatchObject({
+      type: "file_contains",
+      ref: "ok.md",
+      pattern: "header",
+      regex: true,
+    });
+  });
+
+  it("skips acceptanceAssertions altogether when all entries are malformed", () => {
+    const raw = {
+      template: {
+        id: "p",
+        name: "p",
+        steps: [
+          {
+            kind: "task",
+            title: "x",
+            description: "",
+            acceptanceAssertions: [{ ref: "no-type" }, 123, null],
+          },
+        ],
+      },
+      agents: [],
+    };
+    const plan = normalizePipelinePlan(raw);
+    const step = plan.template.steps[0] as {
+      acceptanceAssertions?: Array<Record<string, unknown>>;
+    };
+    expect(step.acceptanceAssertions).toBeUndefined();
+  });
 });

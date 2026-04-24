@@ -641,4 +641,45 @@ describe("pipelines", () => {
     expect(first.subtaskIds).toEqual(second.subtaskIds);
     expect(getSubtasks(group.id, parent.id).length).toBe(2);
   });
+
+  it("expandPipeline propagates acceptanceAssertions with ${var} interpolated", () => {
+    // Template whose step declares machine-checkable assertions referencing an input.
+    const tplWithAssertions: PipelineTemplate = {
+      id: "asserted",
+      name: "Asserted",
+      inputs: [{ name: "filename", required: true }],
+      steps: [
+        {
+          title: "Write ${filename}",
+          description: "produce the file",
+          dependsOn: [],
+          acceptanceAssertions: [
+            { type: "file_exists", ref: "${filename}.md" },
+            { type: "file_contains", ref: "${filename}.md", pattern: "## ${filename} 结论" },
+          ],
+        },
+      ],
+    };
+    writeFileSync(join(PIPELINES_DIR, "asserted.json"), JSON.stringify(tplWithAssertions));
+
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "run asserted",
+      description: "",
+      kind: "pipeline",
+      pipelineId: "asserted",
+    });
+    const outcome = expandPipeline(group.id, parent, tplWithAssertions, { filename: "report" });
+    expect(outcome.ok).toBe(true);
+
+    const [sub] = getSubtasks(group.id, parent.id);
+    expect(sub.acceptanceAssertions).toBeDefined();
+    expect(sub.acceptanceAssertions).toHaveLength(2);
+    expect(sub.acceptanceAssertions?.[0]).toMatchObject({ type: "file_exists", ref: "report.md" });
+    expect(sub.acceptanceAssertions?.[1]).toMatchObject({
+      type: "file_contains",
+      ref: "report.md",
+      pattern: "## report 结论",
+    });
+  });
 });

@@ -411,7 +411,11 @@ Pipeline 模板的 schema（精简版）：
       "description": "给 agent 的任务描述（详细，可用 \${var}）",
       "suggestedSkills": ["..."],     // 提示需要的技能
       "suggestedAgentId": "plan:K0",  // 引用下方 agents[i].planKey
-      "acceptanceCriteria": "完成标准(可选)",
+      "acceptanceCriteria": "完成标准(可选, 供 agent 阅读)",
+      "acceptanceAssertions": [        // 可选, 供 harness 机器校验
+        { "type": "file_exists", "ref": "result.md" },
+        { "type": "file_contains", "ref": "result.md", "pattern": "## 结论" }
+      ],
       "dependsOn": [0, 1],            // 依赖前面 step 的下标
       "outputs": [
         { "ref": "result.md", "kind": "file", "label": "产物名", "isFinal": true }
@@ -443,7 +447,9 @@ Agents plan — 每个 agent 有个 planKey（K0 / K1 / K2...），steps 的 sug
 - 每个 agent 只分配给能发挥其专长的 step；同一个 agent 可用于多个 step
 - inputs 是用户在创建任务时要填的变量（url / topic / filename 等）
 - outputs 至少在有"最终产物"的 step 或模板级声明 1 条
-- 步骤数 3-10 为宜，避免过度拆分或一步做太多`;
+- 步骤数 3-10 为宜，避免过度拆分或一步做太多
+- 对有明确交付物的关键步骤，加 acceptanceAssertions（file_exists / file_contains），
+  harness 会在 agent 声称完成后机器校验；这样即使 agent 只"口头说"完成，也不会放行`;
 
 export async function generatePipelinePlan(
   description: string,
@@ -565,6 +571,31 @@ function normalizeStep(
   }
   if (typeof s.suggestedAgentId === "string") step.suggestedAgentId = s.suggestedAgentId;
   if (typeof s.acceptanceCriteria === "string") step.acceptanceCriteria = s.acceptanceCriteria;
+  // Structured assertions: whitelist shape, drop any malformed entry.
+  if (Array.isArray(s.acceptanceAssertions)) {
+    const cleaned: unknown[] = [];
+    for (const raw of s.acceptanceAssertions) {
+      if (!raw || typeof raw !== "object") continue;
+      const a = raw as Record<string, unknown>;
+      const desc = typeof a.description === "string" ? a.description : undefined;
+      if (a.type === "file_exists" && typeof a.ref === "string" && a.ref.trim()) {
+        cleaned.push({ type: "file_exists", ref: a.ref, description: desc });
+      } else if (
+        a.type === "file_contains" &&
+        typeof a.ref === "string" && a.ref.trim() &&
+        typeof a.pattern === "string"
+      ) {
+        cleaned.push({
+          type: "file_contains",
+          ref: a.ref,
+          pattern: a.pattern,
+          regex: a.regex === true,
+          description: desc,
+        });
+      }
+    }
+    if (cleaned.length > 0) step.acceptanceAssertions = cleaned;
+  }
   if (s.priority === "low" || s.priority === "medium" || s.priority === "high" || s.priority === "urgent") {
     step.priority = s.priority;
   }
