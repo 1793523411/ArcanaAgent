@@ -58,6 +58,7 @@ export interface PipelineStepSpec {
   dependsOn?: number[];
   priority?: TaskPriority;
   acceptanceCriteria?: string;
+  acceptanceAssertions?: AcceptanceAssertion[];
   retry?: PipelineRetryPolicy;
   outputs?: PipelineArtifactSpec[];
   // branch
