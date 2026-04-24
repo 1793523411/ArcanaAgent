@@ -642,6 +642,48 @@ describe("pipelines", () => {
     expect(getSubtasks(group.id, parent.id).length).toBe(2);
   });
 
+  it("pipeline rollup treats assertion-failure as a failed subtask", async () => {
+    // Template with a single subtask whose acceptanceAssertions reference a
+    // file the agent won't actually produce. completeTask should detect the
+    // violation, flip the subtask to failed, and the pipeline parent should
+    // then roll up to failed too (not completed).
+    const tplAssertFail: PipelineTemplate = {
+      id: "assert-fail",
+      name: "Assert Fail",
+      inputs: [],
+      steps: [
+        {
+          title: "Produce nothing",
+          description: "deliberately leaves no output",
+          dependsOn: [],
+          acceptanceAssertions: [{ type: "file_exists", ref: "required.md" }],
+        },
+      ],
+    };
+    writeFileSync(join(PIPELINES_DIR, "assert-fail.json"), JSON.stringify(tplAssertFail));
+
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "run assert-fail",
+      description: "",
+      kind: "pipeline",
+      pipelineId: "assert-fail",
+    });
+    const outcome = expandPipeline(group.id, parent, tplAssertFail, {});
+    expect(outcome.ok).toBe(true);
+
+    const [sub] = getSubtasks(group.id, parent.id);
+    // Agent "finishes" but no file exists — assertion gate fails completion.
+    const { completeTask } = await import("./taskBoard.js");
+    const afterComplete = completeTask(group.id, sub.id, "agent_x", { summary: "claimed done" });
+    expect(afterComplete?.status).toBe("failed");
+    expect(afterComplete?.result?.summary).toMatch(/验收未通过/);
+
+    // Parent rollup: 1 subtask, 1 failed → parent flips to failed too.
+    const refreshedParent = getTask(group.id, parent.id);
+    expect(refreshedParent?.status).toBe("failed");
+  });
+
   it("expandPipeline propagates acceptanceAssertions with ${var} interpolated", () => {
     // Template whose step declares machine-checkable assertions referencing an input.
     const tplWithAssertions: PipelineTemplate = {
