@@ -7,7 +7,7 @@ import { executeAgentTask } from "./agentExecutor.js";
 import { reconcileGroupWorkingAgents, reconcileGroupOrphanTasks } from "./agentReconcile.js";
 import { serverLogger } from "../lib/logger.js";
 import { appendSchedulerDispatched, appendSchedulerStalled } from "./schedulerLogStore.js";
-import { planRequirement } from "./planner.js";
+import { decompose } from "./decomposition.js";
 import { areDepsReady } from "./taskBoard.js";
 import { warmBiddingEmbeddingsBatch, clearTaskEmbeddingCache, isEmbeddingAvailable, preloadEmbeddingModel } from "./embeddingScorer.js";
 import { warmLlmScores, clearTaskLlmCache } from "./llmScorer.js";
@@ -174,23 +174,36 @@ export class GuildAutonomousScheduler {
       });
       if (sorted.length === 0) return;
 
-      // 1) Route requirement-kind tasks to the planner (skip anything already decomposed).
-      const requirementsToPlan = sorted.filter(
-        (t) => t.kind === "requirement" && (!t.subtaskIds || t.subtaskIds.length === 0),
+      // 1) Route parent tasks (requirement / pipeline) through the unified
+      //    decomposition entrypoint. Adhoc / leaf tasks are skipped by the
+      //    facade's "manual" branch without calling an LLM or template.
+      //    We only kick pipelines that haven't already been expanded — route
+      //    creation usually expands them at POST time, but the idempotent
+      //    check here is a safety net for any path that created the task
+      //    without expanding.
+      const parentsToDecompose = sorted.filter(
+        (t) =>
+          (t.kind === "requirement" || t.kind === "pipeline") &&
+          (!t.subtaskIds || t.subtaskIds.length === 0),
       );
-      for (const req of requirementsToPlan) {
+      for (const parent of parentsToDecompose) {
         if (!this.started) break;
         try {
-          const outcome = await planRequirement(groupId, req);
+          const outcome = await decompose(groupId, parent);
           if (!outcome.ok) {
-            serverLogger.warn("[guild] planner failed, task left for bidding fallback", {
+            serverLogger.warn("[guild] decomposition failed, task left for bidding fallback", {
               groupId,
-              taskId: req.id,
+              taskId: parent.id,
+              strategy: outcome.strategy,
               reason: outcome.reason,
             });
           }
         } catch (e) {
-          serverLogger.error("[guild] planner threw", { groupId, taskId: req.id, error: String(e) });
+          serverLogger.error("[guild] decomposition threw", {
+            groupId,
+            taskId: parent.id,
+            error: String(e),
+          });
         }
       }
 
