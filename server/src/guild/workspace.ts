@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
 import { join, resolve, relative } from "path";
-import type { TaskHandoff } from "./types.js";
+import type { GuildTask, TaskHandoff } from "./types.js";
 import { atomicWriteFileSync } from "./atomicFs.js";
 
 /**
@@ -247,6 +247,24 @@ export function updatePlanSection(
   if (!ws) return;
   ws.plan = planMarkdown.trim() || "_Plan pending._";
   writeWorkspace(groupId, parentTaskId, ws);
+}
+
+/** Render a markdown table of subtasks for the workspace Plan section.
+ *  Shared between the Requirement path (planner.ts) and the Pipeline path
+ *  (pipelines.ts) — prior to extraction both had their own copy and would
+ *  drift over time. */
+export function renderPlanTable(subtasks: GuildTask[]): string {
+  if (subtasks.length === 0) return "_No subtasks._";
+  const header = "| ID | Title | Owner | Depends | Status | Acceptance |";
+  const divider = "|----|-------|-------|---------|--------|------------|";
+  const esc = (s: string) => s.replace(/\|/g, "\\|");
+  const rows = subtasks.map((t) => {
+    const owner = t.suggestedAgentId ?? t.assignedAgentId ?? "—";
+    const deps = (t.dependsOn ?? []).join(", ") || "—";
+    const acc = esc((t.acceptanceCriteria ?? "—").slice(0, 80));
+    return `| \`${t.id}\` | ${esc(t.title)} | ${owner} | ${esc(deps)} | ${t.status} | ${acc} |`;
+  });
+  return [header, divider, ...rows].join("\n");
 }
 
 export function updateScopeSection(

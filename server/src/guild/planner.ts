@@ -10,6 +10,7 @@ import {
   setWorkspaceStatus,
   setOpenQuestions,
   getWorkspaceRef,
+  renderPlanTable,
 } from "./workspace.js";
 import { getModelAdapter } from "../llm/adapter.js";
 import { loadUserConfig } from "../config/userConfig.js";
@@ -196,25 +197,6 @@ async function callPlanner(modelId: string | undefined, system: string, user: st
       .join("");
   }
   return String(content);
-}
-
-// ─── Plan rendering ───────────────────────────────────────────
-
-function renderPlanTable(subtasks: GuildTask[]): string {
-  if (subtasks.length === 0) return "_No subtasks._";
-  const header = "| ID | Title | Owner | Depends | Status | Acceptance |";
-  const divider = "|----|-------|-------|---------|--------|------------|";
-  const rows = subtasks.map((t) => {
-    const owner = t.suggestedAgentId ?? t.assignedAgentId ?? "—";
-    const deps = (t.dependsOn ?? []).join(", ") || "—";
-    const acc = (t.acceptanceCriteria ?? "—").replace(/\|/g, "\\|").slice(0, 80);
-    return `| \`${t.id}\` | ${escapePipe(t.title)} | ${owner} | ${escapePipe(deps)} | ${t.status} | ${acc} |`;
-  });
-  return [header, divider, ...rows].join("\n");
-}
-
-function escapePipe(s: string): string {
-  return s.replace(/\|/g, "\\|");
 }
 
 function renderScopeMd(result: PlannerResult): string {

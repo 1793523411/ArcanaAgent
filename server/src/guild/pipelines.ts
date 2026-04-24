@@ -17,6 +17,7 @@ import {
   updateDeliverablesSection,
   appendDecision,
   setWorkspaceStatus,
+  renderPlanTable,
 } from "./workspace.js";
 import { getGroup } from "./guildManager.js";
 import { guildEventBus } from "./eventBus.js";
@@ -809,20 +810,6 @@ function flattenSteps(
     }
   });
   return out;
-}
-
-function renderPlanTable(subtasks: GuildTask[]): string {
-  if (subtasks.length === 0) return "_No subtasks._";
-  const header = "| ID | Title | Owner | Depends | Status | Acceptance |";
-  const divider = "|----|-------|-------|---------|--------|------------|";
-  const rows = subtasks.map((t) => {
-    const owner = t.suggestedAgentId ?? t.assignedAgentId ?? "—";
-    const deps = (t.dependsOn ?? []).join(", ") || "—";
-    const acc = (t.acceptanceCriteria ?? "—").replace(/\|/g, "\\|").slice(0, 80);
-    const title = t.title.replace(/\|/g, "\\|");
-    return `| \`${t.id}\` | ${title} | ${owner} | ${deps.replace(/\|/g, "\\|")} | ${t.status} | ${acc} |`;
-  });
-  return [header, divider, ...rows].join("\n");
 }
 
 function renderScopeMd(
