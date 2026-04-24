@@ -11,14 +11,12 @@ import type {
 import { evaluate, validateExpression, type Expression } from "./expression.js";
 import { createTask, updateTask, getSubtasks } from "./taskBoard.js";
 import {
-  createWorkspace,
-  updatePlanSection,
   updateScopeSection,
   updateDeliverablesSection,
   appendDecision,
   setWorkspaceStatus,
-  renderPlanTable,
 } from "./workspace.js";
+import { ensureParentWorkspace, finalizeParentDecomposition } from "./parentLifecycle.js";
 import { getGroup } from "./guildManager.js";
 import { guildEventBus } from "./eventBus.js";
 import { serverLogger } from "../lib/logger.js";
@@ -874,15 +872,9 @@ export function expandPipeline(
     parent_priority: parent.priority,
   };
 
-  // Workspace up-front so the plan table has somewhere to live.
-  const workspaceRef = createWorkspace(
-    groupId,
-    parent.id,
-    parent.title,
-    parent.description,
-    group.leadAgentId ?? "pipeline",
-  );
-  updateTask(groupId, parent.id, { workspaceRef });
+  // Workspace up-front so the plan table has somewhere to live. Shared with
+  // the Requirement path via parentLifecycle.ensureParentWorkspace.
+  const workspaceRef = ensureParentWorkspace(groupId, parent, "pipeline");
 
   const decisions: BranchDecision[] = [];
   const flat = flattenSteps(template.steps, inputs, decisions);
@@ -947,19 +939,14 @@ export function expandPipeline(
     parentDeclared.push(o);
   }
 
+  // Stamp parent in_progress + subtaskIds + render Plan table — shared with
+  // the Requirement path via parentLifecycle.finalizeParentDecomposition.
+  // `declaredOutputs` is pipeline-specific and rides on the `extras` channel
+  // so the helper doesn't have to know about it.
   const subtaskIds = created.map((t) => t.id);
-  // Move the pipeline parent into in_progress so the UI renders it in the
-  // same column as its running children. Leaving it in "open" caused the
-  // parent group header to orphan in 待处理 while subtasks showed as a
-  // ghost-req group in 进行中 — users read that as "一个独立于需求之外的任务".
-  updateTask(groupId, parent.id, {
-    status: "in_progress",
-    startedAt: new Date().toISOString(),
-    subtaskIds,
+  finalizeParentDecomposition(groupId, parent, created, {
     declaredOutputs: parentDeclared.length > 0 ? parentDeclared : undefined,
   });
-
-  updatePlanSection(groupId, parent.id, renderPlanTable(created));
   updateScopeSection(groupId, parent.id, renderScopeMd(template, inputs, parentDeclared));
   updateDeliverablesSection(groupId, parent.id, renderDeliverablesTable(parentDeclared));
   appendDecision(

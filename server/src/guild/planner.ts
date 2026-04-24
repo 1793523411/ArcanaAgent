@@ -3,15 +3,13 @@ import type { GuildTask, GuildAgent, AgentAsset, CreateTaskParams, Group } from 
 import { getGroup, getGroupAgents, getAggregatedGroupAssets, getAgent } from "./guildManager.js";
 import { createTask, updateTask, getSubtasks, getTask, initExecutionLog, appendExecutionLog, finalizeExecutionLog } from "./taskBoard.js";
 import {
-  createWorkspace,
-  updatePlanSection,
   updateScopeSection,
   appendDecision,
   setWorkspaceStatus,
   setOpenQuestions,
   getWorkspaceRef,
-  renderPlanTable,
 } from "./workspace.js";
+import { ensureParentWorkspace, finalizeParentDecomposition } from "./parentLifecycle.js";
 import { getModelAdapter } from "../llm/adapter.js";
 import { loadUserConfig } from "../config/userConfig.js";
 import { serverLogger } from "../lib/logger.js";
@@ -244,15 +242,9 @@ export async function planRequirement(
   const user = buildPlannerUserPrompt(requirement);
 
   // Ensure a workspace exists up-front so the lead's work is visible even if
-  // the LLM call fails mid-flight.
-  const workspaceRef = createWorkspace(
-    groupId,
-    requirement.id,
-    requirement.title,
-    requirement.description,
-    group.leadAgentId ?? "lead",
-  );
-  updateTask(groupId, requirement.id, { workspaceRef });
+  // the LLM call fails mid-flight. Shared with the Pipeline path via
+  // parentLifecycle.ensureParentWorkspace.
+  const workspaceRef = ensureParentWorkspace(groupId, requirement, "lead");
 
   // Surface planner work in the live execution panel. We re-use the agent
   // event channel so the existing log UI can render it without changes —
@@ -435,15 +427,13 @@ export async function planRequirement(
   // biddable task. Mark it in_progress so the UI renders the group header
   // in the same column as its running subtasks. Bidding/scheduling skip
   // kind === "requirement" regardless of status.
+  // Stamp parent in_progress + subtaskIds + render Plan table — shared with
+  // the Pipeline path via parentLifecycle.finalizeParentDecomposition.
   const subtaskIds = createdSubtasks.map((t) => t.id);
-  updateTask(groupId, requirement.id, {
-    status: "in_progress",
-    startedAt: new Date().toISOString(),
-    subtaskIds,
-  });
+  finalizeParentDecomposition(groupId, requirement, createdSubtasks);
 
-  // Workspace: write plan + scope + open questions
-  updatePlanSection(groupId, requirement.id, renderPlanTable(createdSubtasks));
+  // Workspace: scope + open questions are requirement-specific (pipelines
+  // render their own Deliverables section instead).
   updateScopeSection(groupId, requirement.id, renderScopeMd(parsed));
   if (parsed.openQuestions && parsed.openQuestions.length > 0) {
     setOpenQuestions(groupId, requirement.id, parsed.openQuestions);
