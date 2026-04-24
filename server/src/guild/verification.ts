@@ -35,6 +35,31 @@ export interface VerificationFailure {
  *  assert against huge files; a cap keeps verification fast and bounds RAM. */
 const MAX_READ_BYTES = 2 * 1024 * 1024;
 
+/** Regex-mode hardening caps. Pattern strings reach us from two lightly-trusted
+ *  sources — LLM-generated pipelines and manually-authored task templates —
+ *  so a malicious `(a+)+` against a large file could block the event loop
+ *  (ReDoS). Since Node's built-in `RegExp` has no timeout, we rely on:
+ *    1. hard pattern-length cap
+ *    2. a conservative static ReDoS sniff (nested quantifiers, backrefs)
+ *    3. content slice cap applied ONLY to the regex path (substring match
+ *       doesn't backtrack so the full file is fine there). */
+const MAX_REGEX_PATTERN_LEN = 500;
+const MAX_REGEX_CONTENT_BYTES = 512 * 1024; // 512KB window for regex.test
+
+/** Conservative ReDoS static check. Catches the common backtracking shapes —
+ *  nested quantifiers like `(a+)+` / `(.+)*` and backreferences — without
+ *  parsing the full regex grammar. Not exhaustive; see `MAX_REGEX_CONTENT_BYTES`
+ *  and `MAX_REGEX_PATTERN_LEN` as the defense-in-depth layers. */
+function isLikelyReDoSPattern(pattern: string): boolean {
+  if (pattern.length > MAX_REGEX_PATTERN_LEN) return true;
+  // Any group that (a) contains a quantifier inside and (b) is itself
+  // quantified — covers (a+)+, (.+)*, (a*)+, ([^)]+)+ etc.
+  if (/\([^)]*[+*?][^)]*\)[+*?{]/.test(pattern)) return true;
+  // Backreferences amplify ambiguity and combine with quantifiers badly.
+  if (/\\[1-9]/.test(pattern)) return true;
+  return false;
+}
+
 /** Run the full list of assertions against `cwd`. Returns ok=true iff every
  *  assertion passed; otherwise `failures` contains one entry per failing
  *  assertion (including the assertion itself so the UI can link back). */
@@ -78,13 +103,21 @@ function checkOne(assertion: AcceptanceAssertion, absRoot: string): string | nul
   }
   const pattern = assertion.pattern;
   if (assertion.regex) {
+    if (isLikelyReDoSPattern(pattern)) {
+      return `正则被拒绝（可能引发 ReDoS 或超长）：/${truncate(pattern, 60)}/`;
+    }
     let re: RegExp;
     try {
       re = new RegExp(pattern);
     } catch (e) {
       return `无效正则表达式：/${pattern}/ (${String(e)})`;
     }
-    if (!re.test(content)) return `内容未命中正则 /${pattern}/：${assertion.ref}`;
+    // Slice the content for regex-mode only — substring match is linear
+    // so the full file is fine above; here we bound backtracking cost.
+    const target = content.length > MAX_REGEX_CONTENT_BYTES
+      ? content.slice(0, MAX_REGEX_CONTENT_BYTES)
+      : content;
+    if (!re.test(target)) return `内容未命中正则 /${pattern}/：${assertion.ref}`;
     return null;
   }
   if (!content.includes(pattern)) {

@@ -94,6 +94,53 @@ describe("runAcceptanceAssertions", () => {
     expect(v.failures[0].reason).toMatch(/无效正则/);
   });
 
+  it("rejects nested-quantifier ReDoS patterns without executing them", () => {
+    // Classic catastrophic-backtracking shape — if executed against the
+    // adversarial input below, `.test` would hang the event loop. The static
+    // guard must refuse to compile/run the pattern at all.
+    writeFileSync(join(CWD, "x.txt"), "a".repeat(40) + "b");
+    const start = Date.now();
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "(a+)+$", regex: true }],
+      CWD,
+    );
+    const elapsed = Date.now() - start;
+    expect(v.ok).toBe(false);
+    expect(v.failures[0].reason).toMatch(/ReDoS|拒绝/);
+    // Sanity: the rejection is static, so it should be near-instant regardless
+    // of input length. 500ms is a generous ceiling.
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("rejects backreference patterns (ambiguity × quantifier risk)", () => {
+    writeFileSync(join(CWD, "x.txt"), "abab");
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "(a)\\1+", regex: true }],
+      CWD,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.failures[0].reason).toMatch(/ReDoS|拒绝/);
+  });
+
+  it("rejects overly long regex patterns", () => {
+    writeFileSync(join(CWD, "x.txt"), "content");
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "a".repeat(600), regex: true }],
+      CWD,
+    );
+    expect(v.ok).toBe(false);
+    expect(v.failures[0].reason).toMatch(/ReDoS|拒绝/);
+  });
+
+  it("still accepts well-formed regex patterns", () => {
+    writeFileSync(join(CWD, "results.json"), '{"price": 42}');
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "results.json", pattern: '"price"\\s*:\\s*\\d+', regex: true }],
+      CWD,
+    );
+    expect(v.ok).toBe(true);
+  });
+
   it("aggregates multiple failures — one entry per assertion", () => {
     writeFileSync(join(CWD, "one.md"), "hello");
     const v = runAcceptanceAssertions(

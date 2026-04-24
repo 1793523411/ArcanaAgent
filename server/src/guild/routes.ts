@@ -59,9 +59,12 @@ function sendServerError(res: Response, e: unknown, context?: string): void {
   if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
 }
 
-/** Serialize apply-plan calls per endpoint so a double-click (or accidental
- *  retry) doesn't create duplicate agents/groups. Local-only tool; a simple
- *  in-memory flag is sufficient. Returns a release fn, or null when busy. */
+/** Serialize apply-plan calls per plan so a double-click (or accidental
+ *  retry) on the SAME plan doesn't create duplicate agents/groups — while
+ *  unrelated concurrent applies (different users, different plans) still
+ *  proceed in parallel. Local-only tool; a simple in-memory flag is
+ *  sufficient for the current single-process deployment. Returns a release
+ *  fn, or null when the same plan key is already in flight. */
 const applyInFlight = new Set<string>();
 function acquireApplyLock(key: string, res: Response): null | (() => void) {
   if (applyInFlight.has(key)) {
@@ -314,7 +317,24 @@ export function postGroupTask(req: Request, res: Response): void {
         return;
       }
     }
-    const task = createTask(groupId, req.body);
+    // Whitelist fields the client may supply. Pipeline-scoped fields
+    // (pipelineId/Inputs/parentTaskId/initialStatus/workspaceRef/declaredOutputs)
+    // are server-managed and reached only through the from-pipeline endpoint;
+    // accepting them here would let a caller smuggle in tasks that bypass
+    // the scheduler (e.g. initialStatus="blocked") or hijack parent trees.
+    const kind = req.body.kind === "requirement" ? "requirement" : undefined;
+    const task = createTask(groupId, {
+      title,
+      description,
+      priority: req.body.priority,
+      dependsOn: Array.isArray(req.body.dependsOn) ? req.body.dependsOn : undefined,
+      kind,
+      suggestedSkills: Array.isArray(req.body.suggestedSkills) ? req.body.suggestedSkills : undefined,
+      suggestedAgentId: typeof req.body.suggestedAgentId === "string" ? req.body.suggestedAgentId : undefined,
+      acceptanceCriteria: typeof req.body.acceptanceCriteria === "string" ? req.body.acceptanceCriteria : undefined,
+      acceptanceAssertions: Array.isArray(req.body.acceptanceAssertions) ? req.body.acceptanceAssertions : undefined,
+      createdBy: typeof req.body.createdBy === "string" ? req.body.createdBy : undefined,
+    });
     // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
     // to avoid double autoBid / race with in_progress tasks.
 
@@ -398,7 +418,7 @@ export async function postApplyGroupPlan(req: Request, res: Response): Promise<v
     res.status(400).json({ error: "Invalid plan shape" });
     return;
   }
-  const release = acquireApplyLock("group", res);
+  const release = acquireApplyLock(`group:${plan.group.name.trim()}`, res);
   if (!release) return;
   const resolvedAgentIds: string[] = [];
   const reuseAgentIds = new Set<string>(); // distinct so rollback can special-case reuse vs created
@@ -512,7 +532,7 @@ export async function postApplyPipelinePlan(req: Request, res: Response): Promis
     return;
   }
 
-  const release = acquireApplyLock("pipeline", res);
+  const release = acquireApplyLock(`pipeline:${plan.template.id}`, res);
   if (!release) return;
   const keyToId: Record<string, string> = {};
   const createdAgents: GuildAgent[] = [];
@@ -694,7 +714,19 @@ export function putTask(req: Request, res: Response): void {
         return;
       }
     }
-    const task = updateTask(groupId, taskId, req.body);
+    // Whitelist — without this, a client can set arbitrary fields like
+    // status:"completed" (skipping assertion verification), overwrite
+    // `_rejectedBy`, inject retryPolicy, or swap acceptanceAssertions in
+    // place of the real ones. The UI today only PUTs title/description/
+    // priority/status, so the narrow list below is sufficient.
+    const updates: Record<string, unknown> = {};
+    if (typeof req.body.title === "string") updates.title = req.body.title;
+    if (typeof req.body.description === "string") updates.description = req.body.description;
+    if (typeof req.body.priority === "string") updates.priority = req.body.priority;
+    if (typeof req.body.status === "string") updates.status = req.body.status;
+    if (Array.isArray(req.body.dependsOn)) updates.dependsOn = req.body.dependsOn;
+    if (typeof req.body.acceptanceCriteria === "string") updates.acceptanceCriteria = req.body.acceptanceCriteria;
+    const task = updateTask(groupId, taskId, updates);
     if (!task) { res.status(404).json({ error: "Task not found" }); return; }
     res.json(task);
   } catch (e) {
