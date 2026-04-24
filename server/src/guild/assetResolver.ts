@@ -66,6 +66,32 @@ function resolveOne(asset: AgentAsset): ResolvedAssetContext | null {
   }
 }
 
+/** Files a repo almost always has that encode its *conventions* or
+ *  *runtime shape*. Sampled in priority order until the total budget is
+ *  exhausted — giving the agent a genuine chance to understand the repo
+ *  rather than only its README first page. */
+const REPO_KEY_FILES = [
+  "README.md",
+  "readme.md",
+  "README",
+  "README.txt",
+  "CLAUDE.md",        // this project's convention file
+  "AGENTS.md",
+  "CONTRIBUTING.md",
+  "package.json",     // Node — also dependency fingerprint
+  "pyproject.toml",
+  "requirements.txt",
+  "Cargo.toml",       // Rust
+  "go.mod",           // Go
+  "pom.xml",          // Maven
+  "build.gradle",
+  "tsconfig.json",
+  "tsconfig.base.json",
+];
+
+const REPO_PER_FILE_CHARS = 1500;
+const REPO_TOTAL_CHARS = 9000;
+
 function resolveRepo(asset: AgentAsset): ResolvedAssetContext {
   const uri = asset.uri;
   if (!existsSync(uri)) {
@@ -77,21 +103,50 @@ function resolveRepo(asset: AgentAsset): ResolvedAssetContext {
     };
   }
 
-  // Build a shallow directory tree (max 3 levels, max 100 entries)
-  const tree = buildDirTree(uri, 3, 100);
-  const readmePath = findReadme(uri);
-  let readmeSnippet = "";
-  if (readmePath) {
-    const content = readFileSync(readmePath, "utf-8");
-    readmeSnippet = `\n\nREADME:\n${content.slice(0, 500)}${content.length > 500 ? "\n..." : ""}`;
-  }
+  // Deeper tree + wider entry budget than the previous 3/100 limits — a real
+  // repo's "what's in it" picture needs to reach past top-level folders.
+  const tree = buildDirTree(uri, 4, 200);
+  const keyFiles = collectKeyFiles(uri);
 
+  const parts: string[] = [`[repo] ${asset.name}: ${uri}`];
+  if (asset.description) parts.push(asset.description);
+  parts.push("", "Structure:", tree);
+  for (const kf of keyFiles) {
+    parts.push("", `${kf.label}:`, kf.content);
+  }
   return {
     assetId: asset.id,
     type: "repo",
     name: asset.name,
-    contextSnippet: `[repo] ${asset.name}: ${uri}\n${asset.description ?? ""}\n\nStructure:\n${tree}${readmeSnippet}`,
+    contextSnippet: parts.join("\n"),
   };
+}
+
+/** Scan REPO_KEY_FILES in priority order, collecting `{label, content}` up
+ *  to per-file and total budgets. Skips unreadable files silently so a
+ *  permission error on one file doesn't kill the whole resolution. */
+function collectKeyFiles(repoRoot: string): Array<{ label: string; content: string }> {
+  const out: Array<{ label: string; content: string }> = [];
+  let used = 0;
+  const seen = new Set<string>(); // case-insensitive dedup (README.md vs readme.md)
+  for (const name of REPO_KEY_FILES) {
+    if (used >= REPO_TOTAL_CHARS) break;
+    const lower = name.toLowerCase();
+    if (seen.has(lower)) continue;
+    const path = join(repoRoot, name);
+    if (!existsSync(path)) continue;
+    try {
+      const raw = readFileSync(path, "utf-8");
+      const budget = Math.min(REPO_PER_FILE_CHARS, REPO_TOTAL_CHARS - used);
+      const snippet = raw.length > budget ? raw.slice(0, budget) + "\n... (truncated)" : raw;
+      out.push({ label: name, content: snippet });
+      used += snippet.length;
+      seen.add(lower);
+    } catch {
+      // unreadable (perm / binary / EACCES) — skip
+    }
+  }
+  return out;
 }
 
 function resolveDocument(asset: AgentAsset): ResolvedAssetContext {
@@ -275,11 +330,3 @@ function buildDirTree(dir: string, maxDepth: number, maxEntries: number, depth =
   return lines.join("\n");
 }
 
-function findReadme(dir: string): string | null {
-  const names = ["README.md", "readme.md", "README", "README.txt"];
-  for (const name of names) {
-    const p = join(dir, name);
-    if (existsSync(p)) return p;
-  }
-  return null;
-}
