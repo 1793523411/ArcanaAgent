@@ -18,5 +18,14 @@ export function friendlyError(e: unknown): string {
   if (msg.includes("SyntaxError") || msg.includes("JSON")) return "服务器返回无效响应，请重试";
   if (msg.includes("499") || msg.includes("已取消") || msg.includes("timeout")) return "请求超时，请稍后重试";
   if (msg.includes("500")) return "服务端错误，请稍后重试";
-  return msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+  // Preserve server-thrown validation messages (short, no stack marker), but
+  // fall back to a generic message for anything that smells like raw SDK /
+  // fetch internals. The prior behaviour leaked `String(e)` including stack
+  // traces and module paths — the module comment says NEVER do that.
+  if (msg.startsWith("Error: ") && msg.length < 200 && !msg.includes("\n") && !/\bat\s+/.test(msg)) {
+    return msg.slice("Error: ".length);
+  }
+  // Stash the raw error for developer debugging but keep the UI clean.
+  if (typeof console !== "undefined") console.warn("[guildErrors] unclassified error:", e);
+  return "操作失败，请重试";
 }

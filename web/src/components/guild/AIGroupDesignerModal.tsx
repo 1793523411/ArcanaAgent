@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { GroupPlan, AgentPlanItem } from "../../api/guild";
 import { generateGroupPlan, applyGroupPlan } from "../../api/guild";
@@ -11,6 +11,14 @@ interface Props {
 }
 
 type Phase = "prompt" | "loading" | "preview" | "applying";
+
+/** Badge metadata for the three plan-item action types. Hoisted to module
+ *  scope so the object isn't reallocated on every AgentRow render. */
+const ACTION_META: Record<AgentPlanItem["action"], { label: string; color: string; bg: string }> = {
+  reuse: { label: "复用", color: "#059669", bg: "#10b98122" },
+  create: { label: "新建", color: "#2563eb", bg: "#3b82f622" },
+  fork: { label: "派生", color: "#9333ea", bg: "#a855f722" },
+};
 
 /** AI-driven group builder. Flow: prompt → LLM plan → editable preview → apply. */
 /** Assign a stable id to each agent plan item so React keys survive edits & removals. */
@@ -104,15 +112,18 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
     abortRef.current?.abort();
   };
 
-  /** True when the user has edited any field in the preview since AI returned. */
-  const isDirty = (() => {
+  /** True when the user has edited any field in the preview since AI returned.
+   *  Memoised because the deep-equality walk does a full JSON.stringify of the
+   *  plan (agent system prompts included) on every evaluation — without the
+   *  memo, every keystroke re-runs it on render. */
+  const isDirty = useMemo(() => {
     if (!plan || !originalPlanRef.current) return false;
     const stripped: GroupPlan = {
       ...plan,
       agents: plan.agents.map(({ _uid: _u, ...rest }) => rest as AgentPlanItem),
     };
     return JSON.stringify(stripped) !== JSON.stringify(originalPlanRef.current);
-  })();
+  }, [plan]);
 
   const resetToPrompt = () => {
     setPhase("prompt");
@@ -456,11 +467,6 @@ function AgentPlanCard({
 }) {
   const [expanded, setExpanded] = useState(item.action !== "reuse");
 
-  const ACTION_META: Record<AgentPlanItem["action"], { label: string; color: string; bg: string }> = {
-    reuse: { label: "复用", color: "#059669", bg: "#10b98122" },
-    create: { label: "新建", color: "#2563eb", bg: "#3b82f622" },
-    fork: { label: "派生", color: "#9333ea", bg: "#a855f722" },
-  };
   const meta = ACTION_META[item.action];
 
   const source = item.action === "reuse" ? existingAgents.find((a) => a.id === item.agentId)

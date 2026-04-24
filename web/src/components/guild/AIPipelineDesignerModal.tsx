@@ -11,6 +11,14 @@ interface Props {
 
 type Phase = "prompt" | "loading" | "preview" | "applying";
 
+/** Badge metadata for the three plan-item action types. Hoisted to module
+ *  scope so the object isn't reallocated on every AgentRow render. */
+const ACTION_META: Record<AgentPlanItem["action"], { label: string; color: string; bg: string }> = {
+  reuse: { label: "复用", color: "#059669", bg: "#10b98122" },
+  create: { label: "新建", color: "#2563eb", bg: "#3b82f622" },
+  fork: { label: "派生", color: "#9333ea", bg: "#a855f722" },
+};
+
 /** Keyboard of agent plan items — key is planKey ("K0", "K1"...) */
 export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>("prompt");
@@ -353,11 +361,6 @@ function AgentRow({
   existing: GuildAgent[];
   onUpdate: (n: AgentPlanItem & { planKey: string }) => void;
 }) {
-  const ACTION_META: Record<AgentPlanItem["action"], { label: string; color: string; bg: string }> = {
-    reuse: { label: "复用", color: "#059669", bg: "#10b98122" },
-    create: { label: "新建", color: "#2563eb", bg: "#3b82f622" },
-    fork: { label: "派生", color: "#9333ea", bg: "#a855f722" },
-  };
   const meta = ACTION_META[item.action];
   const source = item.action === "reuse" ? existing.find((a) => a.id === item.agentId)
     : item.action === "fork" ? existing.find((a) => a.id === item.sourceAgentId)
