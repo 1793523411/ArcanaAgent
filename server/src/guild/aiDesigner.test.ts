@@ -74,6 +74,14 @@ describe("findBalancedJsonSpans", () => {
     const input = '{"s":"he said \\"}\\""}';
     expect(findBalancedJsonSpans(input)).toEqual([input]);
   });
+
+  it("does not let braces inside single-quoted strings close the span", () => {
+    // LLMs sometimes leak Python-style single-quoted strings. The span must
+    // still be returned as one contiguous unit — JSON.parse will reject it
+    // downstream, but we must not truncate it to a garbage prefix.
+    const input = "{'msg':'has } brace','ok':true}";
+    expect(findBalancedJsonSpans(input)).toEqual([input]);
+  });
 });
 
 // ─── deepSanitize ─────────────────────────────────────────────

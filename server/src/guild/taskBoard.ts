@@ -377,6 +377,13 @@ export function cancelTask(groupId: string, taskId: string): GuildTask | null {
  * parent, recursively cancel the dependents so the parent can finalize.
  */
 function cascadeFailureToDependents(groupId: string, failedTaskId: string, reason: string): void {
+  // Load tasks once and mutate the in-memory snapshot as we go. The previous
+  // implementation reloaded on every BFS iteration — for a pipeline with N
+  // cascading failures that's O(N²) disk reads. Since the only thing we need
+  // to observe from disk is the `status` flip (which we control here), the
+  // local `cancelled` set plus an in-place `t.status` update give the same
+  // correctness without the extra I/O.
+  const tasks = loadTasks(groupId);
   const queue: string[] = [failedTaskId];
   const visited = new Set<string>();     // sources already dequeued
   const cancelled = new Set<string>();   // tasks already cascade-cancelled (avoid duplicates)
@@ -384,10 +391,6 @@ function cascadeFailureToDependents(groupId: string, failedTaskId: string, reaso
     const src = queue.shift()!;
     if (visited.has(src)) continue;
     visited.add(src);
-    // Reload tasks each iteration so we see the latest status on disk and
-    // don't attempt to cancel an already-terminal task a second time (e.g.
-    // when a task depends on multiple failed ancestors).
-    const tasks = loadTasks(groupId);
     for (const t of tasks) {
       if (cancelled.has(t.id)) continue;
       if (isTerminalStatus(t.status)) continue;
@@ -399,6 +402,10 @@ function cascadeFailureToDependents(groupId: string, failedTaskId: string, reaso
         skippedReason: `级联取消：${reason}`,
       });
       if (updated) {
+        // Reflect the new status in our snapshot so the `isTerminalStatus`
+        // guard short-circuits for any later iteration that reaches this task
+        // via a different ancestor.
+        t.status = "cancelled";
         guildEventBus.emit({ type: "task_cancelled", taskId: t.id });
         cancelled.add(t.id);
         queue.push(t.id);

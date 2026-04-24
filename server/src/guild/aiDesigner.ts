@@ -92,14 +92,20 @@ export function findBalancedJsonSpans(s: string): string[] {
   for (let i = 0; i < s.length; i++) {
     if (s[i] !== "{") continue;
     let depth = 0;
-    let inString = false;
+    let inDouble = false;
+    let inSingle = false;
     let escape = false;
     for (let j = i; j < s.length; j++) {
       const c = s[j];
       if (escape) { escape = false; continue; }
       if (c === "\\") { escape = true; continue; }
-      if (c === '"') { inString = !inString; continue; }
-      if (inString) continue;
+      // Track both quote flavours: strict JSON uses double, but LLM output
+      // sometimes leaks Python-style single quotes. JSON.parse will still
+      // reject single-quoted spans — we just need the depth tracker not to
+      // treat braces inside a single-quoted string as structural.
+      if (!inSingle && c === '"') { inDouble = !inDouble; continue; }
+      if (!inDouble && c === "'") { inSingle = !inSingle; continue; }
+      if (inDouble || inSingle) continue;
       if (c === "{") depth++;
       else if (c === "}") {
         depth--;

@@ -30,6 +30,7 @@ import { listPipelines, getPipeline, expandPipeline, savePipeline, deletePipelin
 import {
   generateGroupPlan,
   generatePipelinePlan,
+  deepSanitize,
   type GroupPlan,
   type PipelinePlan,
   type AgentPlanItem,
@@ -594,7 +595,11 @@ export function postForkAgent(req: Request, res: Response): void {
     const sourceId = p(req.params.id);
     const source = getAgent(sourceId);
     if (!source) { res.status(404).json({ error: "Source agent not found" }); return; }
-    const overrides = (req.body ?? {}) as Partial<CreateAgentParams>;
+    // Strip `__proto__`/`constructor`/`prototype` from overrides (including
+    // nested asset metadata) — buildForkParams spreads `overrides.assets`
+    // straight through, so without this a caller could land polluted keys
+    // on disk via the fork path, bypassing the AI-designer's deepSanitize.
+    const overrides = (deepSanitize(req.body ?? {}) ?? {}) as Partial<CreateAgentParams>;
     const forked = createAgent(buildForkParams(source, overrides));
     res.status(201).json(forked);
   } catch (e) {
@@ -1258,6 +1263,14 @@ export function getGroupStream(req: Request, res: Response): void {
           break;
         case "agent_updated": {
           const agent = getAgent(event.agentId);
+          // Agent migrated out of this group — drop it from our tracking set
+          // and stop forwarding. Without this, an agent that leaves the group
+          // via an agent-only update (no accompanying group_updated) keeps
+          // leaking events to this SSE stream forever.
+          if (agent && agent.groupId !== groupId) {
+            groupAgentIds.delete(event.agentId);
+            break;
+          }
           // Membership may have just changed (e.g. agent joined this group); fall back to live lookup.
           if (!groupAgentIds.has(event.agentId) && agent?.groupId !== groupId) break;
           if (agent) groupAgentIds.add(agent.id);
