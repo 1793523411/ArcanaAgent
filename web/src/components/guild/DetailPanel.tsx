@@ -663,6 +663,62 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               </div>
             )}
 
+            {selectedTask.acceptanceAssertions && selectedTask.acceptanceAssertions.length > 0 && (
+              <div
+                className="rounded-lg px-3 py-2 text-xs space-y-1.5"
+                style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+              >
+                <div className="flex items-center gap-2">
+                  <div className="font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                    验收断言（{selectedTask.acceptanceAssertions.length}）
+                  </div>
+                  <span
+                    className="text-[9px] px-1 py-0.5 rounded"
+                    style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
+                    title="任务完成时由 harness 机器校验，即使 agent 声称完成也会严格检查这些条件"
+                  >
+                    harness 校验
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {selectedTask.acceptanceAssertions.map((a, i) => (
+                    <div
+                      key={i}
+                      className="flex items-start gap-2 px-2 py-1 rounded"
+                      style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+                    >
+                      <span className="text-[9px] font-mono uppercase px-1 py-0.5 rounded shrink-0"
+                        style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}>
+                        {a.type === "file_exists" ? "存在" : "包含"}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-mono truncate" style={{ color: "var(--color-text)" }}>{a.ref}</div>
+                        {a.type === "file_contains" && (
+                          <div className="text-[10px] font-mono truncate" style={{ color: "var(--color-text-muted)" }}>
+                            {a.regex ? "/" : "\""}{a.pattern}{a.regex ? "/" : "\""}
+                          </div>
+                        )}
+                        {a.description && (
+                          <div className="text-[10px] italic mt-0.5" style={{ color: "var(--color-text-muted)" }}>
+                            {a.description}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {selectedTask.status === "failed"
+                  && selectedTask.result?.summary?.includes("验收未通过") && (
+                  <div
+                    className="text-[10px] px-2 py-1 rounded mt-1.5"
+                    style={{ background: "#fee2e2", color: "#991b1b" }}
+                  >
+                    ⚠ 此任务因验收断言失败未能完成 — 详情见下方「执行结果」
+                  </div>
+                )}
+              </div>
+            )}
+
             {selectedTask.declaredOutputs && selectedTask.declaredOutputs.length > 0 && (
               <DeliverablesPanel
                 outputs={selectedTask.declaredOutputs}

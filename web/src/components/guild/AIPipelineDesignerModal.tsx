@@ -450,7 +450,14 @@ function AgentRow({
 function StepRow({
   step, index, allAgents, existing, onPatch,
 }: {
-  step: { title: string; description: string; suggestedAgentId?: string; dependsOn?: number[]; kind?: string };
+  step: {
+    title: string;
+    description: string;
+    suggestedAgentId?: string;
+    dependsOn?: number[];
+    kind?: string;
+    acceptanceAssertions?: import("../../types/guild").AcceptanceAssertion[];
+  };
   index: number;
   allAgents: (AgentPlanItem & { planKey: string })[];
   existing: GuildAgent[];
@@ -490,6 +497,15 @@ function StepRow({
           )}
           {(step.dependsOn ?? []).length > 0 && (
             <span className="text-[10px] shrink-0" style={{ color: "var(--color-text-muted)" }}>← {step.dependsOn!.join(",")}</span>
+          )}
+          {(step.acceptanceAssertions?.length ?? 0) > 0 && (
+            <span
+              className="text-[10px] shrink-0 px-1 py-0.5 rounded"
+              style={{ background: "#dcfce7", color: "#166534" }}
+              title={`Harness 会机器校验 ${step.acceptanceAssertions!.length} 条验收断言`}
+            >
+              🛡 {step.acceptanceAssertions!.length}
+            </span>
           )}
           {agentLabel && (
             <span className="text-[10px] ml-auto px-1.5 py-0.5 rounded shrink-0" style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}>

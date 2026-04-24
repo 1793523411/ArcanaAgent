@@ -83,6 +83,12 @@ export interface PipelineTemplate {
 
 export type DeclaredOutputStatus = "pending" | "produced" | "missing";
 
+/** Machine-runnable acceptance assertion — mirrors the server's type. Displayed
+ *  read-only in DetailPanel; verified server-side at task completion. */
+export type AcceptanceAssertion =
+  | { type: "file_exists"; ref: string; description?: string }
+  | { type: "file_contains"; ref: string; pattern: string; regex?: boolean; description?: string };
+
 export interface TaskDeclaredOutput {
   ref: string;
   label?: string;
@@ -234,6 +240,7 @@ export interface GuildTask {
   suggestedSkills?: string[];
   suggestedAgentId?: string;
   acceptanceCriteria?: string;
+  acceptanceAssertions?: AcceptanceAssertion[];
   workspaceRef?: string;
   handoff?: TaskHandoff;
   /** Agents that rejected this task; auto-bidding skips them. */
