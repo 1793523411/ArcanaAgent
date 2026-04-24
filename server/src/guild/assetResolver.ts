@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "fs";
 import { join, extname } from "path";
 import type { AgentAsset } from "./types.js";
+import { getMcpStatus } from "../mcp/client.js";
 
 interface ResolvedAssetContext {
   assetId: string;
@@ -166,11 +167,58 @@ function resolveConfig(asset: AgentAsset): ResolvedAssetContext {
 }
 
 function resolveMcpServer(asset: AgentAsset): ResolvedAssetContext {
+  // Look up runtime MCP state by name (case-insensitive). If the server is
+  // already connected at startup we enrich the prompt with the actual tool
+  // names/descriptions so the agent knows what it can actually call — closes
+  // the gap where mcp_server assets previously produced only metadata text
+  // and the agent had to guess whether anything useful was available.
+  let statuses: ReturnType<typeof getMcpStatus> = [];
+  try {
+    statuses = getMcpStatus();
+  } catch {
+    // MCP not initialized (e.g. early startup / tests) — fall through to
+    // the legacy "metadata-only" snippet so asset resolution never crashes.
+  }
+  const needle = asset.name.toLowerCase();
+  const match = statuses.find((s) => s.name.toLowerCase() === needle);
+
+  if (match?.connected) {
+    const lines: string[] = [
+      `[mcp_server] ${asset.name}: ${asset.uri} (已连接，暴露 ${match.toolCount} 个工具)`,
+    ];
+    if (asset.description) lines.push(asset.description);
+    if (match.tools && match.tools.length > 0) {
+      lines.push("可用工具：");
+      for (const t of match.tools) {
+        lines.push(`  - ${t.name}: ${t.description}`);
+      }
+    }
+    return { assetId: asset.id, type: "mcp_server", name: asset.name, contextSnippet: lines.join("\n") };
+  }
+
+  if (match && !match.connected) {
+    // Configured but failed to connect — tell the agent not to try these tools.
+    const errHint = match.error ? ` (${match.error})` : "";
+    return {
+      assetId: asset.id,
+      type: "mcp_server",
+      name: asset.name,
+      contextSnippet:
+        `[mcp_server] ${asset.name}: ${asset.uri}\n` +
+        `⚠ 未连接${errHint} — 此资产声明的工具当前不可用\n${asset.description ?? ""}`,
+    };
+  }
+
+  // No configured MCP server with this name — the asset is aspirational
+  // (user listed it but never wired it into user config). Keep a clear hint
+  // rather than silently pretending it's usable.
   return {
     assetId: asset.id,
     type: "mcp_server",
     name: asset.name,
-    contextSnippet: `[mcp_server] ${asset.name}: ${asset.uri}\n${asset.description ?? ""}`,
+    contextSnippet:
+      `[mcp_server] ${asset.name}: ${asset.uri}\n` +
+      `⚠ 此 MCP 服务器未在用户配置中注册 — 请在设置中添加后再重启\n${asset.description ?? ""}`,
   };
 }
 
