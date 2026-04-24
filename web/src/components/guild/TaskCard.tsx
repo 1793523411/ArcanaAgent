@@ -1,5 +1,28 @@
-import type { GuildTask, GuildAgent } from "../../types/guild";
+import type { GuildTask, GuildAgent, TaskBid } from "../../types/guild";
 import type { ReactNode } from "react";
+
+/** Pick the weakest-contribution dimension of the highest-scoring
+ *  below-threshold bid. Lets the TaskCard show *why* an open task sits
+ *  there with bids but no assignment — "瓶颈：资产匹配" is more actionable
+ *  than "X 个未达门槛" alone. Mirrors the server-side findBottleneck logic. */
+function computeBottleneck(bids: TaskBid[]): string | null {
+  const below = bids.filter((b) => b.via === "below_threshold");
+  if (below.length === 0) return null;
+  const top = below.slice().sort((a, b) => b.confidence - a.confidence)[0];
+  const sb = top.scoreBreakdown;
+  if (!sb) return null;
+  const dims: Array<{ name: string; contribution: number }> = [];
+  if (sb.llmScore != null) dims.push({ name: "LLM 评分", contribution: (sb.llmScore / 10) * 0.55 });
+  else if (sb.embedding != null) dims.push({ name: "语义匹配", contribution: sb.embedding * 0.55 });
+  else {
+    dims.push({ name: "资产匹配", contribution: sb.asset * 0.35 });
+    dims.push({ name: "技能匹配", contribution: sb.skill * 0.20 });
+  }
+  dims.push({ name: "记忆匹配", contribution: sb.memory * 0.30 });
+  dims.push({ name: "历史胜率", contribution: sb.success * 0.15 });
+  dims.sort((a, b) => a.contribution - b.contribution);
+  return dims[0]?.name ?? null;
+}
 
 const PRIORITY_LABEL: Record<GuildTask["priority"], string> = {
   low: "低",
@@ -141,11 +164,24 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
             <span className="text-xs" style={{ color: assignedAgent.color }}>{assignedAgent.name}</span>
           </div>
         )}
-        {!assignedAgent && task.bids && task.bids.length > 0 && (
-          <div className="text-xs mt-1" style={{ color: "var(--color-text-muted)" }}>
-            {task.bids.length} 个投标
-          </div>
-        )}
+        {!assignedAgent && task.bids && task.bids.length > 0 && (() => {
+          const belowCount = task.bids.filter((b) => b.via === "below_threshold").length;
+          const bottleneck = belowCount > 0 ? computeBottleneck(task.bids) : null;
+          return (
+            <div className="text-xs mt-1 flex items-center gap-1.5 flex-wrap" style={{ color: "var(--color-text-muted)" }}>
+              <span>{task.bids.length} 个投标</span>
+              {belowCount > 0 && (
+                <span
+                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  style={{ background: "#fee2e2", color: "#991b1b" }}
+                  title={`${belowCount} 个候选未达竞标门槛${bottleneck ? `，其中最接近的一位瓶颈在「${bottleneck}」` : ""}`}
+                >
+                  {belowCount} 未达门槛{bottleneck ? ` · 瓶颈：${bottleneck}` : ""}
+                </span>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );
