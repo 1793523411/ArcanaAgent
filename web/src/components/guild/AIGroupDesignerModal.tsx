@@ -187,12 +187,15 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
     <div className="fixed inset-0 z-50 flex items-center justify-center">
       <div className="absolute inset-0 bg-black/40" onClick={phase !== "loading" && phase !== "applying" ? onClose : undefined} />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-group-designer-heading"
         className="relative w-full max-w-2xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "90vh" }}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
           <div>
-            <h3 className="text-base font-semibold flex items-center gap-2" style={{ color: "var(--color-text)" }}>
+            <h3 id="ai-group-designer-heading" className="text-base font-semibold flex items-center gap-2" style={{ color: "var(--color-text)" }}>
               <span>✨</span> AI 建组
             </h3>
             <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>

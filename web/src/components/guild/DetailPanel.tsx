@@ -70,6 +70,19 @@ const ASSET_TYPE_ICON: Record<string, string> = {
   prompt: "💬", config: "⚙️", mcp_server: "🖥️", custom: "📎",
 };
 
+/** Reject `javascript:`/`data:`/relative/garbage refs before rendering them as
+ *  a clickable anchor. Artifact refs come from LLM-authored task output —
+ *  treating them as untrusted and gating through URL parsing keeps href-based
+ *  XSS vectors out of the DOM. */
+function isSafeHttpUrl(ref: string): boolean {
+  try {
+    const u = new URL(ref);
+    return u.protocol === "http:" || u.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onAgentForked, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
@@ -525,7 +538,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     <div className="space-y-1">
                       {allArtifacts.map((a, i) => {
                         const ai = ARTIFACT_ICON[a.kind] ?? ARTIFACT_ICON.note;
-                        const isUrl = a.kind === "url" || /^https?:\/\//.test(a.ref);
+                        const isUrl = isSafeHttpUrl(a.ref);
                         return (
                           <div
                             key={i}
@@ -860,7 +873,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     <div className="space-y-1">
                       {selectedTask.result.handoff.artifacts.map((a, i) => {
                         const ai = ARTIFACT_ICON[a.kind] ?? ARTIFACT_ICON.note;
-                        const isUrl = a.kind === "url" || /^https?:\/\//.test(a.ref);
+                        const isUrl = isSafeHttpUrl(a.ref);
                         return (
                           <div
                             key={i}

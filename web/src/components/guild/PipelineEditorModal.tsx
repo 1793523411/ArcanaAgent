@@ -136,6 +136,9 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pipeline 编辑器"
         className="rounded-xl overflow-hidden flex"
         style={{
           width: "min(1080px, 92vw)",

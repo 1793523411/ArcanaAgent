@@ -25,7 +25,9 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     let cancelled = false;
     listGuildAgents()
       .then((list) => { if (!cancelled) setAgents(list); })
-      .catch(() => {});
+      .catch((e) => {
+        if (!cancelled) setError(friendlyError(e));
+      });
     return () => { cancelled = true; };
   }, []);
 
@@ -96,12 +98,15 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={phase !== "loading" && phase !== "applying" ? onClose : undefined} />
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ai-pipeline-designer-heading"
         className="relative w-full max-w-3xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "92vh" }}
       >
         <div className="flex items-center justify-between px-5 py-3 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
           <div>
-            <h3 className="text-base font-semibold flex items-center gap-2" style={{ color: "var(--color-text)" }}>
+            <h3 id="ai-pipeline-designer-heading" className="text-base font-semibold flex items-center gap-2" style={{ color: "var(--color-text)" }}>
               <span>✨</span> AI 生成流水线模板
             </h3>
             <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>
