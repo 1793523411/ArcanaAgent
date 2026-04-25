@@ -32,6 +32,15 @@ export default function LiveAgentPanel({
   const [panelTab, setPanelTab] = useState<PanelTab>("exec");
   const [panelHeight, setPanelHeight] = useState(260);
   const [dragging, setDragging] = useState(false);
+  // Collapse: keep only the header bar so the user can hide the log when
+  // they're not debugging, but still see at-a-glance counts. Persisted.
+  const [collapsed, setCollapsedState] = useState<boolean>(() => {
+    try { return localStorage.getItem("guild.livePanelCollapsed") === "1"; } catch { return false; }
+  });
+  const setCollapsed = (v: boolean) => {
+    setCollapsedState(v);
+    try { localStorage.setItem("guild.livePanelCollapsed", v ? "1" : "0"); } catch {}
+  };
   const dragStartRef = useRef<{ y: number; h: number } | null>(null);
   const [execListWidth, setExecListWidth] = useState<number>(() => {
     if (typeof window === "undefined") return 192;
@@ -126,17 +135,19 @@ export default function LiveAgentPanel({
   const workingCount = executions.filter((e) => e.status === "working").length;
 
   return (
-    <div className="shrink-0 flex flex-col" style={{ height: panelHeight }}>
-      {/* Drag handle */}
-      <div
-        className="h-1.5 shrink-0 cursor-row-resize hover:bg-[var(--color-accent)] transition-colors"
-        style={{ background: dragging ? "var(--color-accent)" : "var(--color-border)" }}
-        onMouseDown={(e) => {
-          e.preventDefault();
-          dragStartRef.current = { y: e.clientY, h: panelHeight };
-          setDragging(true);
-        }}
-      />
+    <div className="shrink-0 flex flex-col" style={{ height: collapsed ? "auto" : panelHeight }}>
+      {/* Drag handle — hidden when collapsed since there's nothing to resize */}
+      {!collapsed && (
+        <div
+          className="h-1.5 shrink-0 cursor-row-resize hover:bg-[var(--color-accent)] transition-colors"
+          style={{ background: dragging ? "var(--color-accent)" : "var(--color-border)" }}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            dragStartRef.current = { y: e.clientY, h: panelHeight };
+            setDragging(true);
+          }}
+        />
+      )}
 
       {/* Header */}
       <div
@@ -208,7 +219,7 @@ export default function LiveAgentPanel({
               清空
             </button>
           )}
-          {panelTab === "exec" && selectedExec && selectedAgent && (
+          {!collapsed && panelTab === "exec" && selectedExec && selectedAgent && (
             <div className="flex items-center gap-1.5 text-xs" style={{ color: "var(--color-text-muted)" }}>
               <span>{selectedAgent.icon}</span>
               <span style={{ color: selectedAgent.color }}>{selectedAgent.name}</span>
@@ -220,11 +231,23 @@ export default function LiveAgentPanel({
               )}
             </div>
           )}
+          <button
+            type="button"
+            className="text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+            style={{ color: "var(--color-text-muted)" }}
+            onClick={() => setCollapsed(!collapsed)}
+            title={collapsed ? "展开面板" : "收起面板"}
+            aria-label={collapsed ? "展开面板" : "收起面板"}
+            aria-expanded={!collapsed}
+          >
+            {collapsed ? "▲ 展开" : "▼ 收起"}
+          </button>
         </div>
       </div>
 
-      {/* Body */}
-      {panelTab === "scheduler" ? (
+      {/* Body — hidden when collapsed; header counts give the user enough
+          peripheral signal to decide whether to expand. */}
+      {!collapsed && (panelTab === "scheduler" ? (
         <SchedulerLogView entries={schedulerLog} agents={agents} />
       ) : (
       <div className="flex-1 flex min-h-0" style={{ background: "var(--color-bg)" }}>
@@ -342,7 +365,7 @@ export default function LiveAgentPanel({
           )}
         </div>
       </div>
-      )}
+      ))}
     </div>
   );
 }

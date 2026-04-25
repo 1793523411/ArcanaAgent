@@ -33,6 +33,15 @@ export default function InstructionInput({
   const [text, setText] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("medium");
   const [asRequirement, setAsRequirement] = useState(true);
+  // Collapse the form to a one-line header so the user can hide it when
+  // they're heads-down on watching tasks run. Persisted across sessions.
+  const [collapsed, setCollapsedState] = useState<boolean>(() => {
+    try { return localStorage.getItem("guild.instructionCollapsed") === "1"; } catch { return false; }
+  });
+  const setCollapsed = (v: boolean) => {
+    setCollapsedState(v);
+    try { localStorage.setItem("guild.instructionCollapsed", v ? "1" : "0"); } catch {}
+  };
 
   const [pipelines, setPipelines] = useState<PipelineTemplate[]>([]);
   const [pipelinesLoaded, setPipelinesLoaded] = useState(false);
@@ -107,18 +116,27 @@ export default function InstructionInput({
         {onSubmitPipeline && (
           <ModeTab active={mode === "pipeline"} onClick={() => setMode("pipeline")}>流水线模板</ModeTab>
         )}
-        {mode === "pipeline" && onSubmitPipeline && (
-          <>
-            <div className="flex-1" />
-            <button
-              className="text-[11px] px-2 py-1 rounded"
-              style={{ border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
-              onClick={() => setEditorOpen(true)}
-            >
-              管理流水线模板
-            </button>
-          </>
+        <div className="flex-1" />
+        {!collapsed && mode === "pipeline" && onSubmitPipeline && (
+          <button
+            className="text-[11px] px-2 py-1 rounded"
+            style={{ border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
+            onClick={() => setEditorOpen(true)}
+          >
+            管理流水线模板
+          </button>
         )}
+        <button
+          type="button"
+          className="text-[10px] px-1.5 py-1 rounded hover:bg-[var(--color-surface-hover)]"
+          style={{ color: "var(--color-text-muted)" }}
+          onClick={() => setCollapsed(!collapsed)}
+          title={collapsed ? "展开输入区" : "收起输入区"}
+          aria-label={collapsed ? "展开输入区" : "收起输入区"}
+          aria-expanded={!collapsed}
+        >
+          {collapsed ? "▲ 展开" : "▼ 收起"}
+        </button>
       </div>
       <PipelineEditorModal
         open={editorOpen}
@@ -126,6 +144,7 @@ export default function InstructionInput({
         onChange={reloadPipelines}
       />
 
+      {!collapsed && (<>
       {mode === "pipeline" && (
         <div className="flex flex-col gap-2">
           {pipelines.length === 0 && pipelinesLoaded ? (
@@ -254,6 +273,7 @@ export default function InstructionInput({
           {loading ? "发送中…" : mode === "pipeline" ? "按流水线模板创建" : "发送"}
         </button>
       </div>
+      </>)}
     </div>
   );
 }

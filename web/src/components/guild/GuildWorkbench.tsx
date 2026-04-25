@@ -62,6 +62,14 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   // Resizable left panel
   const [leftWidth, setLeftWidth] = useState(224);
   const [leftResizing, setLeftResizing] = useState(false);
+  // Collapsible left panel — persisted; mirrors detailCollapsed pattern.
+  const [leftCollapsed, setLeftCollapsedState] = useState<boolean>(() => {
+    try { return localStorage.getItem("guild.leftCollapsed") === "1"; } catch { return false; }
+  });
+  const setLeftCollapsed = (v: boolean) => {
+    setLeftCollapsedState(v);
+    try { localStorage.setItem("guild.leftCollapsed", v ? "1" : "0"); } catch {}
+  };
 
   // Resizable right panel
   const [detailWidth, setDetailWidth] = useState(320);
@@ -373,42 +381,73 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
 
       {/* Body */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
-        {/* Left: group list */}
-        <div
-          className="shrink-0 overflow-hidden flex flex-col"
-          style={{ width: leftWidth, background: "var(--color-surface)", borderRight: "none" }}
-        >
-          {guild.loading ? (
-            <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--color-text-muted)" }}>
-              加载中...
+        {/* Left: group list — collapsible. When collapsed, renders a thin
+            vertical strip mirroring the right detail-panel collapse pattern.
+            Saves the user ~220px of horizontal real estate when they're
+            heads-down on a single group. */}
+        {leftCollapsed ? (
+          <button
+            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-r transition-colors hover:bg-[var(--color-surface-hover)]"
+            style={{ background: "var(--color-surface)", borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
+            onClick={() => setLeftCollapsed(false)}
+            title="展开小组列表"
+            aria-label="展开小组列表"
+          >
+            <span className="text-sm">▶</span>
+            <span className="text-[10px]" style={{ writingMode: "vertical-rl" }}>小组</span>
+          </button>
+        ) : (
+          <>
+            <div
+              className="shrink-0 overflow-hidden flex flex-col"
+              style={{ width: leftWidth, background: "var(--color-surface)", borderRight: "none" }}
+            >
+              {/* Inline collapse trigger sits above the list — small, unobtrusive,
+                  doesn't interfere with the existing GroupList chrome. */}
+              <div className="flex items-center justify-end px-2 py-1 border-b" style={{ borderColor: "var(--color-border)" }}>
+                <button
+                  className="text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                  style={{ color: "var(--color-text-muted)" }}
+                  onClick={() => setLeftCollapsed(true)}
+                  title="收起小组列表"
+                  aria-label="收起小组列表"
+                >
+                  ◀ 收起
+                </button>
+              </div>
+              {guild.loading ? (
+                <div className="flex-1 flex items-center justify-center text-xs" style={{ color: "var(--color-text-muted)" }}>
+                  加载中...
+                </div>
+              ) : (
+                <GroupList
+                  groups={guild.groups}
+                  agents={mergedAgents}
+                  selectedGroupId={guild.selectedGroupId}
+                  onSelectGroup={(id) => {
+                    guild.setSelectedGroupId(id);
+                    setSelectedDetail(null);
+                  }}
+                  onSelectAgent={(id) => setSelectedDetail({ type: "agent", id })}
+                  onCreateGroup={() => setShowCreateGroup(true)}
+                  onCreateAgent={() => setShowCreateAgent(true)}
+                  onAddAgentToGroup={handleAddAgentToGroup}
+                  onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
+                  onDeleteGroup={handleDeleteGroup}
+                  onSetGroupLead={handleSetGroupLead}
+                  onEditGroup={setEditingGroup}
+                />
+              )}
             </div>
-          ) : (
-            <GroupList
-              groups={guild.groups}
-              agents={mergedAgents}
-              selectedGroupId={guild.selectedGroupId}
-              onSelectGroup={(id) => {
-                guild.setSelectedGroupId(id);
-                setSelectedDetail(null);
-              }}
-              onSelectAgent={(id) => setSelectedDetail({ type: "agent", id })}
-              onCreateGroup={() => setShowCreateGroup(true)}
-              onCreateAgent={() => setShowCreateAgent(true)}
-              onAddAgentToGroup={handleAddAgentToGroup}
-              onRemoveAgentFromGroup={handleRemoveAgentFromGroup}
-              onDeleteGroup={handleDeleteGroup}
-              onSetGroupLead={handleSetGroupLead}
-              onEditGroup={setEditingGroup}
-            />
-          )}
-        </div>
 
-        {/* Left resize handle */}
-        <div
-          className="w-1.5 shrink-0 cursor-col-resize hover:bg-[var(--color-accent)] transition-colors"
-          style={{ background: leftResizing ? "var(--color-accent)" : "var(--color-border)" }}
-          onMouseDown={(e) => { e.preventDefault(); setLeftResizing(true); }}
-        />
+            {/* Left resize handle */}
+            <div
+              className="w-1.5 shrink-0 cursor-col-resize hover:bg-[var(--color-accent)] transition-colors"
+              style={{ background: leftResizing ? "var(--color-accent)" : "var(--color-border)" }}
+              onMouseDown={(e) => { e.preventDefault(); setLeftResizing(true); }}
+            />
+          </>
+        )}
 
         {/* Center: task board or onboarding */}
         <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
