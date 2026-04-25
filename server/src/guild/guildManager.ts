@@ -562,6 +562,12 @@ export function getAgentMemoryDir(agentId: string): string {
   return join(agentDir(agentId), "memory");
 }
 
+/** Per-group "shared" directory. The name refers to *visibility scope*
+ *  ("group-readable") not lifetime — in `isolated` artifact mode the
+ *  executor still places artifacts under `shared/{taskId}/...` so they're
+ *  scoped per task. In `collaborative` mode artifacts live directly under
+ *  `shared/` and are reused across tasks. The directory layout is the same
+ *  in both modes; only the path-composition above this layer differs. */
 export function getGroupSharedDir(groupId: string): string {
   return join(groupDir(groupId), "shared");
 }

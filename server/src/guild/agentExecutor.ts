@@ -325,35 +325,73 @@ function buildGuildAgentPrompt(
     sections.push(`- 你可以读取和修改其他任务留下的文件，但请在 Handoff 中声明修改原因`);
   }
 
+  // ─── Instructions: lightweight tasks get a much smaller block ─────
+  // A "lightweight" task has no parent (not part of a decomposition or
+  // pipeline), no formal acceptance criteria, no dependencies, and a short
+  // description. For these we skip the mandatory handoff block — the agent
+  // can just answer directly. Decomposition / pipeline subtasks still need
+  // handoff because downstream consumers read it via appendHandoff.
+  const isLightweight =
+    !task.parentTaskId &&
+    !task.acceptanceCriteria &&
+    (!task.acceptanceAssertions || task.acceptanceAssertions.length === 0) &&
+    (!task.dependsOn || task.dependsOn.length === 0) &&
+    (task.description?.length ?? 0) < 300;
+
   sections.push(`\n## Instructions`);
-  sections.push(`完成上面的任务。如果任务包含不属于你领域的工作，**不要硬做** — 在 Handoff 中说明"哪部分需要谁"，Lead 会补发新子任务。`);
-  sections.push(``);
-  sections.push(`完成后，在回复的最后追加一个结构化 Handoff 块，严格使用以下格式（字面 fence，中间是 JSON）：`);
-  sections.push("```handoff");
-  sections.push(`{`);
-  sections.push(`  "summary": "一句话说明你做了什么",`);
-  sections.push(`  "artifacts": [`);
-  sections.push(`    { "kind": "commit|file|url|note", "ref": "具体引用", "description": "可选说明" }`);
-  sections.push(`  ],`);
-  sections.push(`  "memories": [`);
-  sections.push(`    { "type": "knowledge|preference", "title": "短标题", "content": "具体内容", "tags": ["标签"] }`);
-  sections.push(`  ],`);
-  sections.push(`  "inputsConsumed": ["上游 handoff/文件/决策"],`);
-  sections.push(`  "openQuestions": ["留给下游的问题"]`);
-  sections.push(`}`);
-  sections.push("```");
-  sections.push(`memories 用于记录你在本次任务中学到的重要信息：`);
-  sections.push(`- knowledge: 领域知识、技术要点、API 用法、架构细节等可复用的事实`);
-  sections.push(`- preference: 你发现的有效工作方式、工具偏好、代码风格等行为偏好`);
-  sections.push(`不需要每次都写 memories，只在确实学到新东西时添加。experience 类型会自动从任务结果生成。`);
-  sections.push(``);
-  sections.push(`Handoff 块之外的内容仍可以自由书写（解释、思考、代码片段），但 JSON 必须是有效的。`);
-  sections.push(``);
-  sections.push(`如果任务要求产出结构化数据（例如下游步骤需要一个数组或字段），再追加一个 \`pipeline-output\` 块：`);
-  sections.push("```pipeline-output");
-  sections.push(`{ "key": "value", "items": [ ... ] }`);
-  sections.push("```");
-  sections.push(`该块仅在任务描述明确要求时添加；对普通任务可省略。`);
+  if (isLightweight) {
+    sections.push(`完成上面的任务，**直接给出答案**即可，不要列执行计划、不要写验收清单、不要追加 Handoff JSON。`);
+    sections.push(`如果任务超出你的领域，简短说明哪部分需要别人协助即可。`);
+    sections.push(``);
+    sections.push(`只有在你**确实创建了文件**（如代码、报告）或**学到值得记录的领域知识**时，才在末尾追加 \`\`\`handoff JSON 块声明。其他情况一律省略 handoff。`);
+  } else {
+    sections.push(`完成上面的任务。如果任务包含不属于你领域的工作，**不要硬做** — 在 Handoff 中说明"哪部分需要谁"，Lead 会补发新子任务。`);
+    sections.push(``);
+    sections.push(`**输出风格要求**（重要 — 偏离会被视为错误格式）：`);
+    sections.push(`- 正文**只写最终交付内容**。不要"### 执行计划完成清单"、"### 步骤验证"、"### 最终结果"这种章节标题。`);
+    sections.push(`- 不要写"验收证据"、"步骤如下"、"已完成 X"这种自我汇报 — 这些信息只放在 Handoff JSON 的 \`summary\` 字段里。`);
+    sections.push(`- 反例（**不要这样写**）：`);
+    sections.push("  ```");
+    sections.push(`  ### 执行计划完成清单`);
+    sections.push(`  1. 选择主题 [x]`);
+    sections.push(`     - 验收证据：选择了 ...`);
+    sections.push(`  ### 最终答案`);
+    sections.push(`  XXX`);
+    sections.push("  ```");
+    sections.push(`- 正例（**这样写**）：`);
+    sections.push("  ```");
+    sections.push(`  XXX`);
+    sections.push("  ```");
+    sections.push(`  然后追加 \`\`\`handoff JSON。`);
+    sections.push(``);
+    sections.push(`完成后，在回复的最后追加一个结构化 Handoff 块，严格使用以下格式（字面 fence，中间是 JSON）：`);
+    sections.push("```handoff");
+    sections.push(`{`);
+    sections.push(`  "summary": "一句话说明你做了什么",`);
+    sections.push(`  "artifacts": [`);
+    sections.push(`    { "kind": "commit|file|url|note", "ref": "具体引用", "description": "可选说明" }`);
+    sections.push(`  ],`);
+    sections.push(`  "memories": [`);
+    sections.push(`    { "type": "knowledge|preference", "title": "短标题", "content": "具体内容", "tags": ["标签"] }`);
+    sections.push(`  ],`);
+    sections.push(`  "inputsConsumed": ["上游 handoff/文件/决策"],`);
+    sections.push(`  "openQuestions": ["留给下游的问题"]`);
+    sections.push(`}`);
+    sections.push("```");
+    sections.push(`**重要**：artifacts 里的 \`kind: "file"\` 必须是你**真实写入磁盘**的文件路径。如果你只是把内容写在回复正文里，请用 \`kind: "note"\` — 否则会被检测为缺失文件。`);
+    sections.push(`memories 用于记录你在本次任务中学到的重要信息：`);
+    sections.push(`- knowledge: 领域知识、技术要点、API 用法、架构细节等可复用的事实`);
+    sections.push(`- preference: 你发现的有效工作方式、工具偏好、代码风格等行为偏好`);
+    sections.push(`不需要每次都写 memories，只在确实学到新东西时添加。experience 类型会自动从任务结果生成。`);
+    sections.push(``);
+    sections.push(`Handoff 块之外的内容仍可以自由书写（解释、思考、代码片段），但 JSON 必须是有效的。`);
+    sections.push(``);
+    sections.push(`如果任务要求产出结构化数据（例如下游步骤需要一个数组或字段），再追加一个 \`pipeline-output\` 块：`);
+    sections.push("```pipeline-output");
+    sections.push(`{ "key": "value", "items": [ ... ] }`);
+    sections.push("```");
+    sections.push(`该块仅在任务描述明确要求时添加；对普通任务可省略。`);
+  }
 
   return sections.join("\n");
 }
@@ -426,6 +464,18 @@ export async function executeAgentTask(
     const userConfig = loadUserConfig();
     const harnessConfig = buildGuildHarnessConfig();
 
+    // For lightweight ad-hoc tasks the planning prelude (a separate LLM call
+    // that emits the "执行计划完成清单" structure) doubles latency and pushes the
+    // model toward verbose self-reporting in the main response. Skip it when
+    // the task is small + parameter-free; mirrors the buildGuildAgentPrompt
+    // lightweight branch above.
+    const lightweight =
+      !task.parentTaskId &&
+      !task.acceptanceCriteria &&
+      (!task.acceptanceAssertions || task.acceptanceAssertions.length === 0) &&
+      (!task.dependsOn || task.dependsOn.length === 0) &&
+      (task.description?.length ?? 0) < 300;
+
     // Run agent using existing streamAgentWithTokens
     const stream = streamAgentWithTokens(
       messages,
@@ -444,7 +494,7 @@ export async function executeAgentTask(
         subagentSystemPromptOverride: systemPrompt,
         conversationMode: "default",
         allowedTools: agent.allowedTools,
-        planningEnabled: userConfig.planning?.enabled ?? true,
+        planningEnabled: lightweight ? false : (userConfig.planning?.enabled ?? true),
         planProgressEnabled: userConfig.planning?.streamProgress ?? true,
         enhancements: userConfig.enhancements,
         ...(harnessConfig ? { harnessConfig } : {}),
@@ -574,26 +624,38 @@ export async function executeAgentTask(
     }
 
     // ─── Deliverable validation ─────────────────────────────────────
-    // An agent is only "done" if it actually produced something. Three checks:
+    // An agent is only "done" if it actually produced something. Checks:
     //   1. The model emitted at least some content (not pure silence).
-    //   2. Any handoff artifact with kind="file" resolves to a real file.
-    //   3. Any `.md`/code-file name mentioned in the acceptance criteria is
+    //   2. Any `.md`/code-file name mentioned in the acceptance criteria is
     //      on disk. Catches cases where the agent forgot to list artifacts.
-    // Any failure throws; the catch block then fails the task correctly,
-    // preventing downstream steps from consuming a phantom output.
+    // Handoff `kind:"file"` artifacts pointing at non-existent paths get
+    // demoted to `kind:"note"` (with a recovery note describing the lost
+    // file ref) — Doubao mini and other smaller models routinely fabricate
+    // file paths in handoff JSON without ever invoking write_file, and
+    // throwing turned every text-only deliverable into a hard failure.
+    // Acceptance-criteria-mentioned files remain a hard requirement: those
+    // are explicit user-declared file deliverables, not model hallucinations.
     if (!accumulatedContent.trim()) {
       throw new Error("Agent produced no output");
     }
     if (handoff && handoff.artifacts.length > 0) {
-      const missing: string[] = [];
-      for (const a of handoff.artifacts) {
-        if (a.kind !== "file") continue;
-        if (!resolveArtifactPath(a.ref, sharedDir, wsDir)) missing.push(a.ref);
-      }
-      if (missing.length > 0) {
-        throw new Error(
-          `Handoff declared file artifact(s) not found on disk: ${missing.join(", ")}`,
-        );
+      const demoted: string[] = [];
+      handoff.artifacts = handoff.artifacts.map((a) => {
+        if (a.kind !== "file") return a;
+        if (resolveArtifactPath(a.ref, sharedDir, wsDir)) return a;
+        demoted.push(a.ref);
+        return {
+          ...a,
+          kind: "note",
+          description: a.description
+            ? `${a.description}（注：声明的文件 ${a.ref} 未实际写入磁盘，已降级为 note）`
+            : `声明的文件 ${a.ref} 未实际写入磁盘，已降级为 note`,
+        };
+      });
+      if (demoted.length > 0) {
+        serverLogger.warn("[guild] handoff file artifact(s) missing — demoted to note", {
+          taskId, agentId, refs: demoted,
+        });
       }
     }
     const criteriaFiles = extractFileRefsFromCriteria(task.acceptanceCriteria);

@@ -119,6 +119,13 @@ function BidCard({
               title={`该 Agent 的最终得分 ${sb.final.toFixed(3)} 低于竞标门槛 ${sb.threshold.toFixed(3)}`}
             >未达门槛</span>
           )}
+          {sb?.llmScore != null && sb.llmScore >= 8 && (
+            <span
+              className="text-[9px] px-1 py-0.5 rounded"
+              style={{ background: "#ec489922", color: "#be185d" }}
+              title={`LLM 评分 ${sb.llmScore.toFixed(1)}/10 — 强匹配${sb.llmReason ? "：" + sb.llmReason : ""}`}
+            >LLM {sb.llmScore.toFixed(1)}/10</span>
+          )}
           <span style={{ color: isBelow ? "var(--color-text-muted)" : "var(--color-accent)" }}>
             置信度 {Math.round(bid.confidence * 100)}%
           </span>

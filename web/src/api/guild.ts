@@ -245,7 +245,7 @@ export async function deleteGuildAgent(agentId: string): Promise<void> {
   if (!r.ok) throw new Error(await r.text());
 }
 
-export async function releaseGuildAgent(agentId: string): Promise<{ success: boolean; releasedTaskId: string | null }> {
+export async function releaseGuildAgent(agentId: string): Promise<{ agent: GuildAgent | null; releasedTaskId: string | null }> {
   const r = await fetch(`${BASE}/guild/agents/${agentId}/release`, { method: "POST" });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

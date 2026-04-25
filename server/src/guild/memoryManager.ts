@@ -339,7 +339,13 @@ export function settleTaskMemory(
   }
   contentLines.push(``);
   contentLines.push(`## Result`);
-  contentLines.push(result.summary);
+  // Use the structured handoff summary (one-line, what was done) as the
+  // canonical "Result". Storing the full verbose result.summary here means
+  // future memory recall feeds the agent its own bloated past output as a
+  // template, which Doubao mini then copies verbatim — kills any prompt
+  // attempt to slim the writing style. Keep handoff summary or fall back
+  // to the first 200 chars of result.summary as a last resort.
+  contentLines.push(handoffSummary && handoffSummary.length > 0 ? handoffSummary : compact(result.summary).slice(0, 200));
   if (result.handoff?.artifacts?.length) {
     contentLines.push(``);
     contentLines.push(`## Artifacts`);

@@ -160,9 +160,7 @@ async function callLLM(
 ): Promise<unknown> {
   const cfg = loadUserConfig();
   const { baseUrl, apiKey, modelId, api } = loadModelConfig(cfg.modelId);
-  const url = api === "anthropic-messages"
-    ? `${stripTrailingSlash(baseUrl)}/v1/messages`
-    : `${stripTrailingSlash(baseUrl)}/v1/chat/completions`;
+  const url = buildEndpointUrl(baseUrl, api);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     Accept: "application/json",
@@ -204,6 +202,29 @@ async function callLLM(
 
 function stripTrailingSlash(s: string): string {
   return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+/** Compose the chat/messages endpoint URL respecting whatever versioning is
+ *  already encoded in the provider's baseUrl. Examples:
+ *    https://ark.cn-beijing.volces.com/api/v3   → …/v3/chat/completions
+ *    https://poloai.top                          → …/v1/messages
+ *    https://poloai.top/v1                       → …/v1/chat/completions
+ *    https://api.minimaxi.com/anthropic          → …/anthropic/messages
+ *  Without this detection we previously double-prefixed `/v1` for providers
+ *  that already ship the version in the baseUrl, producing 404s. Mirrors what
+ *  langchain's getLLM does internally — pulled out so direct-fetch callers
+ *  (aiDesigner + the legacy single-agent generator) can share one source of
+ *  truth. Exported because src/api/routes.ts also depends on it. */
+export function buildEndpointUrl(baseUrl: string, api: string): string {
+  const stripped = stripTrailingSlash(baseUrl);
+  const endpoint = api === "anthropic-messages" ? "messages" : "chat/completions";
+  let pathname = "";
+  try { pathname = new URL(stripped).pathname; } catch { pathname = ""; }
+  // Heuristic: any of these path tokens means "the version segment is already
+  // included in baseUrl, do NOT prepend /v1". Covers /v1, /v3 (volcengine),
+  // /anthropic (proxy gateways), and pre-baked endpoint paths.
+  const alreadyVersioned = /\/(v\d+|anthropic|messages|completions|api\/v\d+)/.test(pathname);
+  return alreadyVersioned ? `${stripped}/${endpoint}` : `${stripped}/v1/${endpoint}`;
 }
 
 function extractAnthropicText(json: Record<string, unknown>): string {

@@ -15,7 +15,7 @@ import { readManifest } from "./manifestManager.js";
 import { readWorkspaceRaw, readWorkspace } from "./workspace.js";
 import {
   createTask, getTask, getGroupTasks, updateTask, cancelTask, assignTask, getExecutionLog,
-  removeTask, findTaskGroup, detectDependencyCycle,
+  removeTask, findTaskGroup, detectDependencyCycle, getSubtasks,
 } from "./taskBoard.js";
 import { getMemories } from "./memoryManager.js";
 import { executeAgentTask, requestExecutionAbort, isExecutionActive } from "./agentExecutor.js";
@@ -165,9 +165,21 @@ export function postGroupAgent(req: Request, res: Response): void {
   try {
     const { agentId } = req.body;
     if (!agentId) { res.status(400).json({ error: "agentId is required" }); return; }
-    const ok = assignAgentToGroup(agentId, p(req.params.id));
-    if (!ok) { res.status(400).json({ error: "Failed to assign agent" }); return; }
-    res.json({ success: true });
+    const groupId = p(req.params.id);
+    // Pre-check existence so the route can return distinct 404s instead of
+    // collapsing every failure into a generic 400 ("Failed to assign agent").
+    // assignAgentToGroup itself returns true for the no-op already-in-group case.
+    const group = getGroup(groupId);
+    if (!group) { res.status(404).json({ error: `Group not found: ${groupId}` }); return; }
+    const agent = getAgent(agentId);
+    if (!agent) { res.status(404).json({ error: `Agent not found: ${agentId}` }); return; }
+    const ok = assignAgentToGroup(agentId, groupId);
+    if (!ok) { res.status(500).json({ error: "Failed to assign agent — both group and agent exist; check server logs" }); return; }
+    // Return the updated group so the client can update its cache without
+    // a follow-up GET — matches the convention of postGroup/putGroupById.
+    const updated = getGroup(groupId);
+    if (!updated) { res.status(500).json({ error: "Group disappeared after assign" }); return; }
+    res.json(updated);
   } catch (e) {
     sendServerError(res, e);
   }
@@ -175,9 +187,22 @@ export function postGroupAgent(req: Request, res: Response): void {
 
 export function deleteGroupAgent(req: Request, res: Response): void {
   try {
-    const ok = removeAgentFromGroup(p(req.params.agentId), p(req.params.id));
-    if (!ok) { res.status(400).json({ error: "Failed to remove agent" }); return; }
-    res.json({ success: true });
+    const groupId = p(req.params.id);
+    const agentId = p(req.params.agentId);
+    const group = getGroup(groupId);
+    if (!group) { res.status(404).json({ error: `Group not found: ${groupId}` }); return; }
+    const agent = getAgent(agentId);
+    if (!agent) { res.status(404).json({ error: `Agent not found: ${agentId}` }); return; }
+    if (!group.agents.includes(agentId)) {
+      res.status(409).json({ error: `Agent ${agentId} is not a member of group ${groupId}` });
+      return;
+    }
+    const ok = removeAgentFromGroup(agentId, groupId);
+    if (!ok) { res.status(500).json({ error: "Failed to remove agent — both group and agent exist; check server logs" }); return; }
+    // Mirror postGroupAgent — return updated group.
+    const updated = getGroup(groupId);
+    if (!updated) { res.status(500).json({ error: "Group disappeared after remove" }); return; }
+    res.json(updated);
   } catch (e) {
     sendServerError(res, e);
   }
@@ -787,6 +812,35 @@ export function deleteTask(req: Request, res: Response): void {
     let groupId: string | null = hint && getTask(hint, taskId) ? hint : null;
     if (!groupId) groupId = findTaskGroup(taskId);
     if (!groupId) { res.status(404).json({ error: "Task not found" }); return; }
+    // ?cascade=true / 1 → also cancel + remove every subtask underneath this
+    // parent. Without this the user has to click delete on each child of a
+    // stuck Lead/Pipeline plan, while the parent still rolls up to "failed"
+    // because the subtasks were never resolved.
+    const cascade = req.query.cascade === "true" || req.query.cascade === "1";
+    const cascadedIds: string[] = [];
+    if (cascade) {
+      const visited = new Set<string>();
+      const queue: string[] = [taskId];
+      while (queue.length) {
+        const cur = queue.shift()!;
+        if (visited.has(cur)) continue;
+        visited.add(cur);
+        const children = getSubtasks(groupId, cur);
+        for (const c of children) {
+          queue.push(c.id);
+          // Abort executions and cancel non-terminal subtasks before removing —
+          // skips the rollup-from-cascadeFailureToDependents path because we're
+          // about to delete the parent anyway.
+          if (c.status === "in_progress" && isExecutionActive(groupId, c.id)) {
+            requestExecutionAbort(groupId, c.id);
+          }
+          if (c.status === "open" || c.status === "in_progress" || c.status === "bidding" || c.status === "planning" || c.status === "blocked") {
+            cancelTask(groupId, c.id);
+          }
+          if (removeTask(groupId, c.id)) cascadedIds.push(c.id);
+        }
+      }
+    }
     // If the task is currently executing, abort the run before removing it
     // so we don't leak an execution or stomp on an in-flight agent.
     const existing = getTask(groupId, taskId);
@@ -797,7 +851,7 @@ export function deleteTask(req: Request, res: Response): void {
     }
     const ok = removeTask(groupId, taskId);
     if (!ok) { res.status(404).json({ error: "Task not found" }); return; }
-    res.json({ success: true });
+    res.json({ success: true, cascadedIds });
   } catch (e) {
     sendServerError(res, e);
   }
@@ -965,7 +1019,10 @@ export function postReleaseAgent(req: Request, res: Response): void {
       cancelledGroupId,
     });
 
-    res.json({ success: true, releasedTaskId });
+    // Return updated agent + the released taskId so clients can refresh
+    // their cache without a follow-up GET (mirrors postGroupAgent style).
+    const updated = getAgent(agentId);
+    res.json({ agent: updated, releasedTaskId });
   } catch (e) {
     sendServerError(res, e);
   }

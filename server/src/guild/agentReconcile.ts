@@ -8,7 +8,13 @@ const BIDDING_STALE_MS = 30 * 1000;
 // Give a freshly assigned task time to register an active execution before treating
 // it as orphaned. Production executors register synchronously after assignment, but
 // scheduler retries / sweeps may race the executeAgentTask invocation by a few ms.
-const IN_PROGRESS_GRACE_MS = 5 * 1000;
+/** Grace before reconciler may reset an `in_progress` task that has no live
+ *  executor registered. The executor registers itself a few hundred ms after
+ *  assignTask, but on cold start (first LLM call to a slow upstream) we've
+ *  measured 8-15s before any tokens flow back. 5s was triggering duplicate
+ *  dispatch on those edges; 30s gives the executor time to either register or
+ *  truly die. */
+const IN_PROGRESS_GRACE_MS = 30 * 1000;
 
 /**
  * If an agent is marked working but their current task is not actually being executed
@@ -74,6 +80,13 @@ export function reconcileGroupOrphanTasks(groupId: string): number {
 
   for (const t of stuck) {
     if (t.status === "in_progress") {
+      // Aggregator parent tasks (requirement / pipeline) have no executor of
+      // their own — their `in_progress` state is driven by parentLifecycle and
+      // resolved by rollupParentRequirement when all subtasks reach terminal.
+      // Without this guard the reconciler routinely flips them back to "open"
+      // mid-decomposition (5s grace expires long before subtasks finish), which
+      // both confuses the UI state machine and risks duplicate dispatch.
+      if (t.kind === "requirement" || t.kind === "pipeline") continue;
       if (isExecutionActive(groupId, t.id)) continue;
       // Skip recent assignments — the executor registers itself a few ticks after
       // assignTask, so we avoid stomping on tasks that just transitioned to in_progress.

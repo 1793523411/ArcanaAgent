@@ -138,6 +138,7 @@ function buildPlannerSystemPrompt(group: Group): string {
   sections.push(`3. suggestedAgentId 只能是上方"小组成员"列出的真实 id；若不确定可填 null。`);
   sections.push(`4. 不要输出任何 JSON 之外的文字（不要解释、不要道歉、不要 markdown）。`);
   sections.push(`5. 如果信息不足无法拆解，返回 "subtasks": []，并在 openQuestions / risks 里说明原因。`);
+  sections.push(`6. **不要凭空加"整合 / 汇总 / 总结 / 输出最终交付物"这类纯收尾子任务**：父任务有内置 rollup 会自动汇总所有子任务结果。只有当用户明确要求"产出一份合并报告 / 整合文档 / 综合方案"等真实需要 LLM 综合判断的产出时，才允许追加一个综合子任务，并在 description 中写明它的 specific 产出。`);
   return sections.join("\n");
 }
 

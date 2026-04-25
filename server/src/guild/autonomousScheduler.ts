@@ -29,6 +29,16 @@ const PRIORITY_RANK: Record<GuildTask["priority"], number> = {
 
 const RECONCILE_INTERVAL_MS = 20 * 1000;
 
+/** Per-group concurrency cap. Without this the scheduler will dispatch every
+ *  eligible task at once — fine for a 3-agent demo, ruinous when the LLM is
+ *  rate-limited or the group has 16+ agents. Each agent_status_changed →
+ *  scheduleGroup re-runs the dispatch, so capping here just defers extra work
+ *  to the next tick (when an agent frees up). Override via env for ops tuning. */
+const MAX_CONCURRENT_PER_GROUP = Math.max(
+  1,
+  Number.parseInt(process.env.GUILD_MAX_CONCURRENT_PER_GROUP ?? "", 10) || 4,
+);
+
 export class GuildAutonomousScheduler {
   private started = false;
   private scheduledGroups = new Set<string>();
@@ -254,9 +264,18 @@ export class GuildAutonomousScheduler {
       // LLM caches symmetrically — previously only embedding was tracked,
       // letting LLM cache entries linger until process restart.
       const warmedTaskIds = eligible.map((t) => t.id);
+      // Count agents already working before we start dispatching so the cap
+      // accounts for in-flight executions from prior cycles, not just this loop.
+      let inFlight = groupAgents.filter((a) => a.status === "working").length;
       try {
       for (const candidate of eligible) {
         if (!this.started) break;
+        if (inFlight >= MAX_CONCURRENT_PER_GROUP) {
+          // Defer remaining tasks; agent_status_changed → scheduleGroup will
+          // re-run the dispatch when a slot frees up.
+          this.pendingReruns.add(groupId);
+          break;
+        }
         const task = this.getTaskFn(groupId, candidate.id);
         if (!task || (task.status !== "open" && task.status !== "bidding")) continue;
         const winner = this.autoBidFn(groupId, task);
@@ -286,6 +305,7 @@ export class GuildAutonomousScheduler {
         });
         clearTaskEmbeddingCache(task.id);
         clearTaskLlmCache(task.id);
+        inFlight += 1;
         this.executeAgentTaskFn(winner.agentId, groupId, task.id).catch((e) => {
           serverLogger.error("[guild] autonomous scheduler execution failed", {
             groupId,
