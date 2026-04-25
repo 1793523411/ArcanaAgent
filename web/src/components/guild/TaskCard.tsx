@@ -172,7 +172,7 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
               <span>{task.bids.length} 个投标</span>
               {belowCount > 0 && (
                 <span
-                  className="text-[10px] px-1.5 py-0.5 rounded"
+                  className="text-[10px] px-1.5 py-0.5 rounded max-w-[14rem] truncate"
                   style={{ background: "#fee2e2", color: "#991b1b" }}
                   title={`${belowCount} 个候选未达竞标门槛${bottleneck ? `，其中最接近的一位瓶颈在「${bottleneck}」` : ""}`}
                 >

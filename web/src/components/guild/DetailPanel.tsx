@@ -642,8 +642,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 {selectedTask.status === "in_progress" && staleTaskIds?.has(selectedTask.id) && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
-                    style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}
-                    title="最近 8 秒没有收到任何输出 — Agent 可能正在深度推理（长 reasoning / 大 tool 调用）"
+                    style={{ background: "#fef3c7", color: "#92400e" }}
+                    title="最近 8 秒没有收到任何输出 — Agent 可能正在深度推理（长 reasoning / 大 tool 调用），也可能卡住"
                   >
                     <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "currentColor" }} />
                     思考中…
@@ -824,7 +824,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
             })()}
 
             {/* Bids */}
-            {selectedTask.bids && selectedTask.bids.length > 0 && (
+            {selectedTask.bids && selectedTask.bids.length > 0 ? (
               <BidList
                 bids={selectedTask.bids}
                 agents={agents}
@@ -832,7 +832,16 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 expandedBidId={expandedBid}
                 onToggleExpand={setExpandedBid}
               />
-            )}
+            ) : selectedTask.status === "open" && !selectedTask.assignedAgentId ? (
+              // Open + no winner + no bids — make the empty state explicit so
+              // the user doesn't read "blank area" as "data still loading".
+              <div
+                className="text-xs px-3 py-2 rounded-lg"
+                style={{ background: "var(--color-bg)", border: "1px dashed var(--color-border)", color: "var(--color-text-muted)" }}
+              >
+                暂无投标 — 自动调度器还没收到候选 Agent
+              </div>
+            ) : null}
 
             {/* Result */}
             {selectedTask.result && (

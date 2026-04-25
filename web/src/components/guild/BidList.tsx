@@ -73,9 +73,12 @@ function BidCard({
       style={{
         background: "var(--color-bg)",
         border: `1px solid ${isWinner ? "var(--color-accent)" : "var(--color-border)"}`,
-        opacity: isBelow ? 0.65 : 1,
       }}
     >
+      {/* Don't dim the whole card for below-threshold bids — that drags
+          the agent name down with it and the user can't tell apart "未达门槛"
+          from "agent 离线/失效". The badge already conveys the status; opacity
+          is reserved for the secondary metrics row below. */}
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium truncate" style={{ color: agent?.color ?? "var(--color-text)" }}>
           {agent ? `${agent.icon} ${agent.name}` : bid.agentId}
@@ -106,7 +109,7 @@ function BidCard({
           </span>
         </div>
       </div>
-      <div style={{ color: "var(--color-text-muted)" }}>{bid.reasoning}</div>
+      <div style={{ color: "var(--color-text-muted)", opacity: isBelow ? 0.65 : 1 }}>{bid.reasoning}</div>
       {sb && (
         <>
           <button
@@ -157,9 +160,23 @@ function BreakdownGrid({ sb }: { sb: NonNullable<TaskBid["scoreBreakdown"]> }) {
         </>
       )}
       <div>负载惩罚</div><div className="text-right tabular-nums">-{fx(sb.loadPenalty)}</div>
-      <div>门槛</div><div className="text-right tabular-nums">{fx(sb.threshold)}</div>
-      <div className="font-semibold" style={{ color: "var(--color-text)" }}>最终得分</div>
-      <div className="text-right tabular-nums font-semibold" style={{ color: "var(--color-accent)" }}>{fx(sb.final)}</div>
+      {/* Top border on the threshold/final pair separates the rollup from
+          the per-dimension contributors so the eye lands on "got/needed"
+          immediately, not on whatever row happened to be last in the grid. */}
+      <div className="pt-1 border-t" style={{ borderColor: "var(--color-border)" }}>门槛</div>
+      <div className="pt-1 border-t text-right tabular-nums" style={{ borderColor: "var(--color-border)" }}>{fx(sb.threshold)}</div>
+      <div className="font-semibold text-xs" style={{ color: "var(--color-text)" }}>最终得分</div>
+      <div
+        className="text-right tabular-nums font-semibold text-xs"
+        style={{ color: sb.final >= sb.threshold ? "var(--color-accent)" : "#dc2626" }}
+      >
+        {fx(sb.final)}
+        {sb.final < sb.threshold && (
+          <span className="ml-1 text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+            （差 {fx(sb.threshold - sb.final)}）
+          </span>
+        )}
+      </div>
     </div>
   );
 }

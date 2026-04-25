@@ -244,7 +244,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
                 </div>
               )}
               <button onClick={onClose} className="text-lg leading-none px-2" style={{ color: "var(--color-text-muted)" }}>
-                ×
+                ✕
               </button>
             </div>
           </div>

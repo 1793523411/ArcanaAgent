@@ -228,6 +228,8 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
           <button
             onClick={onClose}
             disabled={phase === "loading" || phase === "applying"}
+            title={phase === "loading" ? "AI 正在生成方案，按 ESC 取消" : phase === "applying" ? "正在写入 — 完成前无法关闭" : "关闭"}
+            aria-label="关闭"
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
             style={{ color: "var(--color-text-muted)", opacity: phase === "loading" || phase === "applying" ? 0.3 : 1 }}
           >✕</button>
@@ -298,28 +300,33 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
           )}
           {phase === "preview" && plan && (
             <>
-              {confirmReset ? (
-                <span className="text-xs flex items-center gap-2" style={{ color: "#dc2626" }}>
-                  当前编辑将丢失
+              {/* Anchor the reset slot to a fixed min-width so the inline
+                  "确认放弃 / 继续编辑" expansion doesn't shove the primary
+                  "一键创建" button sideways and cause mis-clicks. */}
+              <div className="flex items-center min-w-[14rem]">
+                {confirmReset ? (
+                  <span className="text-xs flex items-center gap-2" style={{ color: "#dc2626" }}>
+                    当前编辑将丢失
+                    <button
+                      className="underline px-1"
+                      onClick={resetToPrompt}
+                    >确认放弃</button>
+                    <button
+                      className="px-1"
+                      style={{ color: "var(--color-text-muted)" }}
+                      onClick={() => setConfirmReset(false)}
+                    >继续编辑</button>
+                  </span>
+                ) : (
                   <button
-                    className="underline px-1"
-                    onClick={resetToPrompt}
-                  >确认放弃</button>
-                  <button
-                    className="px-1"
+                    className="px-4 py-1.5 rounded-lg text-sm"
                     style={{ color: "var(--color-text-muted)" }}
-                    onClick={() => setConfirmReset(false)}
-                  >继续编辑</button>
-                </span>
-              ) : (
-                <button
-                  className="px-4 py-1.5 rounded-lg text-sm"
-                  style={{ color: "var(--color-text-muted)" }}
-                  onClick={handleResetClick}
-                >
-                  重新描述
-                </button>
-              )}
+                    onClick={handleResetClick}
+                  >
+                    重新描述
+                  </button>
+                )}
+              </div>
               <button
                 className="px-4 py-1.5 rounded-lg text-sm text-white"
                 style={{ background: plan.agents.length > 0 ? "var(--color-accent)" : "var(--color-text-muted)" }}
@@ -339,7 +346,14 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
             </>
           )}
           {phase === "applying" && (
-            <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>创建中...</div>
+            <div className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+              <span
+                className="inline-block w-3 h-3 rounded-full border-2 animate-spin"
+                style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
+                aria-hidden="true"
+              />
+              正在创建 Agent 与小组…
+            </div>
           )}
         </div>
       </div>
@@ -496,10 +510,10 @@ function AgentPlanCard({
         <span className="text-lg shrink-0">{displayIcon}</span>
         <button
           onClick={onToggleLead}
-          title={isLead ? "取消 Lead" : "设为 Lead"}
+          title={isLead ? "当前 Lead — 点击取消" : "设为 Lead（小组的领导/协调者）"}
           aria-label={isLead ? "取消 Lead" : "设为 Lead"}
-          className="shrink-0 text-sm"
-          style={{ opacity: isLead ? 1 : 0.3 }}
+          className="shrink-0 w-7 h-7 flex items-center justify-center rounded text-sm hover:bg-[var(--color-surface-hover)]"
+          style={{ opacity: isLead ? 1 : 0.45 }}
         ><span aria-hidden="true">👑</span></button>
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium truncate" style={{ color: "var(--color-text)" }}>

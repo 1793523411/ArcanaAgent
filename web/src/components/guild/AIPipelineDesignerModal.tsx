@@ -135,6 +135,8 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
           <button
             onClick={onClose}
             disabled={phase === "loading" || phase === "applying"}
+            title={phase === "loading" ? "AI 正在生成模板，按 ESC 取消" : phase === "applying" ? "正在保存 — 完成前无法关闭" : "关闭"}
+            aria-label="关闭"
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
             style={{ color: "var(--color-text-muted)", opacity: phase === "loading" || phase === "applying" ? 0.3 : 1 }}
           >✕</button>
@@ -226,7 +228,14 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
             </>
           )}
           {phase === "applying" && (
-            <div className="text-xs" style={{ color: "var(--color-text-muted)" }}>保存中...</div>
+            <div className="flex items-center gap-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
+              <span
+                className="inline-block w-3 h-3 rounded-full border-2 animate-spin"
+                style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
+                aria-hidden="true"
+              />
+              正在保存模板…
+            </div>
           )}
         </div>
       </div>
@@ -369,7 +378,6 @@ function AgentRow({
   existing: GuildAgent[];
   onUpdate: (n: AgentPlanItem & { planKey: string }) => void;
 }) {
-  const meta = ACTION_META[item.action];
   const source = item.action === "reuse" ? existing.find((a) => a.id === item.agentId)
     : item.action === "fork" ? existing.find((a) => a.id === item.sourceAgentId)
     : null;
@@ -456,9 +464,6 @@ function AgentRow({
           ))}
         </select>
       )}
-      <span className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0" style={{ background: meta.bg, color: meta.color }}>
-        {meta.label}
-      </span>
     </div>
   );
 }
