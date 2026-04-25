@@ -258,11 +258,17 @@ export function renderPlanTable(subtasks: GuildTask[]): string {
   const header = "| ID | Title | Owner | Depends | Status | Acceptance |";
   const divider = "|----|-------|-------|---------|--------|------------|";
   const esc = (s: string) => s.replace(/\|/g, "\\|");
+  const trunc = (s: string, n: number): string => (s.length > n ? s.slice(0, n) + "…" : s);
   const rows = subtasks.map((t) => {
     const owner = t.suggestedAgentId ?? t.assignedAgentId ?? "—";
     const deps = (t.dependsOn ?? []).join(", ") || "—";
-    const acc = esc((t.acceptanceCriteria ?? "—").slice(0, 80));
-    return `| \`${t.id}\` | ${esc(t.title)} | ${owner} | ${esc(deps)} | ${t.status} | ${acc} |`;
+    // Cap title at 120 — LLM-authored titles occasionally come back as full
+    // sentences (50+ Chinese chars), which both blow out the markdown table
+    // visually and waste context window when this table is fed back to the
+    // agent in subsequent prompts.
+    const title = esc(trunc(t.title, 120));
+    const acc = esc(trunc(t.acceptanceCriteria ?? "—", 80));
+    return `| \`${t.id}\` | ${title} | ${owner} | ${esc(deps)} | ${t.status} | ${acc} |`;
   });
   return [header, divider, ...rows].join("\n");
 }
