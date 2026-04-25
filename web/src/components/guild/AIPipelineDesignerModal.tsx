@@ -150,7 +150,14 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center">
+    // Stop click propagation at the outermost wrapper. This modal renders
+    // inside PipelineEditorModal's DOM tree, and that parent puts an
+    // onClick={onClose} handler on ITS outermost div — without stopProp,
+    // clicking ✕ or 取消 here bubbles up and closes the parent modal too.
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center"
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="absolute inset-0 bg-black/50" onClick={phase !== "loading" && phase !== "applying" ? onClose : undefined} />
       <div
         role="dialog"

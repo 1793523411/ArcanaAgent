@@ -220,7 +220,14 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center">
+    // Stop click propagation at the outermost wrapper. Defensive — this
+    // modal can be rendered inside other modals (CreateGroupModal today)
+    // whose outer click-outside-close handlers would otherwise fire on
+    // bubbled clicks from inside this dialog.
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      onClick={(e) => e.stopPropagation()}
+    >
       <div className="absolute inset-0 bg-black/40" onClick={phase !== "loading" && phase !== "applying" ? onClose : undefined} />
       <div
         role="dialog"
