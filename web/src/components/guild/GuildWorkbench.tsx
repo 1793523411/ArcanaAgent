@@ -6,6 +6,7 @@ import { useConfig } from "../../hooks/useConfig";
 import GroupList from "./GroupList";
 import TaskBoard from "./TaskBoard";
 import DetailPanel from "./DetailPanel";
+import Chevron from "./Chevron";
 import CreateGroupModal from "./CreateGroupModal";
 import CreateAgentModal from "./CreateAgentModal";
 import LiveAgentPanel from "./LiveAgentPanel";
@@ -387,13 +388,13 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
             heads-down on a single group. */}
         {leftCollapsed ? (
           <button
-            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-r transition-colors hover:bg-[var(--color-surface-hover)]"
+            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-r transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
             style={{ background: "var(--color-surface)", borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
             onClick={() => setLeftCollapsed(false)}
             title="展开小组列表"
             aria-label="展开小组列表"
           >
-            <span className="text-sm">▶</span>
+            <Chevron direction="right" size={14} />
             <span className="text-[10px]" style={{ writingMode: "vertical-rl" }}>小组</span>
           </button>
         ) : (
@@ -406,13 +407,14 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                   doesn't interfere with the existing GroupList chrome. */}
               <div className="flex items-center justify-end px-2 py-1 border-b" style={{ borderColor: "var(--color-border)" }}>
                 <button
-                  className="text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                  className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
                   style={{ color: "var(--color-text-muted)" }}
                   onClick={() => setLeftCollapsed(true)}
                   title="收起小组列表"
                   aria-label="收起小组列表"
                 >
-                  ◀ 收起
+                  <Chevron direction="left" size={12} />
+                  收起
                 </button>
               </div>
               {guild.loading ? (
@@ -517,12 +519,13 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
         {/* Collapsed: thin vertical expand strip. Expanded: resize handle + full panel. */}
         {detailCollapsed ? (
           <button
-            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-l transition-colors hover:bg-[var(--color-surface-hover)]"
+            className="w-7 shrink-0 flex flex-col items-center justify-center gap-2 border-l transition-colors hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
             style={{ background: "var(--color-surface)", borderColor: "var(--color-border)", color: "var(--color-text-muted)" }}
             onClick={() => setDetailCollapsed(false)}
             title="展开详情面板"
+            aria-label="展开详情面板"
           >
-            <span className="text-sm">◀</span>
+            <Chevron direction="left" size={14} />
             <span className="text-[10px]" style={{ writingMode: "vertical-rl" }}>详情</span>
           </button>
         ) : (

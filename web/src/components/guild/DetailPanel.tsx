@@ -6,6 +6,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import AgentMemoryPanel from "./AgentMemoryPanel";
 import DeliverablesPanel from "./DeliverablesPanel";
 import BidList from "./BidList";
+import Chevron from "./Chevron";
 import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections, forkGuildAgent } from "../../api/guild";
 
 const SubtaskDAG = lazy(() => import("./SubtaskDAG"));
@@ -182,8 +183,9 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
               style={{ color: "var(--color-text-muted)" }}
               title="收起面板"
+              aria-label="收起面板"
             >
-              ▶
+              <Chevron direction="right" size={14} />
             </button>
           </div>
         )}
@@ -193,10 +195,11 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
           {onCollapse && (
             <button
               onClick={onCollapse}
-              className="text-xs mt-3 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
+              className="inline-flex items-center gap-1 text-xs mt-3 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
               style={{ color: "var(--color-accent)" }}
             >
-              收起面板 ▶
+              收起面板
+              <Chevron direction="right" size={12} />
             </button>
           )}
         </div>
@@ -217,8 +220,9 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
               style={{ color: "var(--color-text-muted)" }}
               title="收起面板"
+              aria-label="收起面板"
             >
-              ▶
+              <Chevron direction="right" size={14} />
             </button>
           )}
           <button

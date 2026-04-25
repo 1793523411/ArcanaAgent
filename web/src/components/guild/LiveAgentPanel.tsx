@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { TaskExecution, ExecutionEvent, SchedulerLogEntry } from "../../hooks/useGuildStream";
+import Chevron from "./Chevron";
 
 type PanelTab = "exec" | "scheduler";
 
@@ -233,14 +234,15 @@ export default function LiveAgentPanel({
           )}
           <button
             type="button"
-            className="text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+            className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
             style={{ color: "var(--color-text-muted)" }}
             onClick={() => setCollapsed(!collapsed)}
             title={collapsed ? "展开面板" : "收起面板"}
             aria-label={collapsed ? "展开面板" : "收起面板"}
             aria-expanded={!collapsed}
           >
-            {collapsed ? "▲ 展开" : "▼ 收起"}
+            <Chevron direction={collapsed ? "up" : "down"} size={12} />
+            {collapsed ? "展开" : "收起"}
           </button>
         </div>
       </div>

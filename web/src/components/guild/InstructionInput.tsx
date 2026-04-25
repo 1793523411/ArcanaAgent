@@ -3,6 +3,7 @@ import type { TaskPriority, TaskKind, PipelineTemplate } from "../../types/guild
 import { listPipelines } from "../../api/guild";
 import Select from "./Select";
 import PipelineEditorModal from "./PipelineEditorModal";
+import Chevron from "./Chevron";
 
 type Mode = "text" | "pipeline";
 
@@ -128,14 +129,15 @@ export default function InstructionInput({
         )}
         <button
           type="button"
-          className="text-[10px] px-1.5 py-1 rounded hover:bg-[var(--color-surface-hover)]"
+          className="inline-flex items-center gap-1 text-[10px] px-1.5 py-1 rounded hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
           style={{ color: "var(--color-text-muted)" }}
           onClick={() => setCollapsed(!collapsed)}
           title={collapsed ? "展开输入区" : "收起输入区"}
           aria-label={collapsed ? "展开输入区" : "收起输入区"}
           aria-expanded={!collapsed}
         >
-          {collapsed ? "▲ 展开" : "▼ 收起"}
+          <Chevron direction={collapsed ? "down" : "up"} size={12} />
+          {collapsed ? "展开" : "收起"}
         </button>
       </div>
       <PipelineEditorModal
