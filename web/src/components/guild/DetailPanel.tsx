@@ -110,6 +110,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
   const [workspaceInlineOpen, setWorkspaceInlineOpen] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmFork, setConfirmFork] = useState(false);
   const [releaseBusy, setReleaseBusy] = useState(false);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [forkBusy, setForkBusy] = useState(false);
@@ -279,16 +280,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   style={{ background: "#a855f722", color: "#9333ea", opacity: forkBusy ? 0.5 : 1 }}
                   disabled={forkBusy}
                   title="复制一份独立的 Agent，含相同资产与 prompt — 方便基于它改造（但不继承记忆与历史胜率）"
-                  onClick={async () => {
-                    if (forkBusy) return;
-                    setForkBusy(true);
-                    try {
-                      const forked = await forkGuildAgent(selectedAgent.id);
-                      onAgentForked(forked.id);
-                    } finally {
-                      setForkBusy(false);
-                    }
-                  }}
+                  onClick={() => { if (!forkBusy) setConfirmFork(true); }}
                 >
                   {forkBusy ? "派生中…" : "🌿 派生"}
                 </button>
@@ -351,6 +343,26 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               confirmLabel="删除"
               variant="danger"
               loading={deleteBusy}
+            />
+            <ConfirmDialog
+              open={confirmFork}
+              onOpenChange={(o) => { if (!o && !forkBusy) setConfirmFork(false); }}
+              onConfirm={async () => {
+                if (!onAgentForked || forkBusy) return;
+                setForkBusy(true);
+                try {
+                  const forked = await forkGuildAgent(selectedAgent.id);
+                  onAgentForked(forked.id);
+                  setConfirmFork(false);
+                } finally {
+                  setForkBusy(false);
+                }
+              }}
+              title={`派生 Agent「${selectedAgent.name}」?`}
+              description={"会复制一份独立的 Agent，名字带「(派生)」后缀。\n保留 systemPrompt 与资产，但不继承记忆与历史胜率。"}
+              confirmLabel="派生"
+              variant="primary"
+              loading={forkBusy}
             />
 
             {/* Stats */}

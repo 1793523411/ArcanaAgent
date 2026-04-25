@@ -8,6 +8,7 @@ import TeamPanel from "./components/TeamPanel";
 import AgentTeamPanel from "./components/AgentTeamPanel";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
 import GuildWorkbench from "./components/guild/GuildWorkbench";
+import ProfilePage from "./components/ProfilePage";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
@@ -17,6 +18,7 @@ export default function App() {
   const match = useMatch("/c/:conversationId");
   const conversationIdFromUrl = match?.params.conversationId;
   const guildMatch = useMatch("/guild/:groupId?");
+  const profileMatch = useMatch("/profile");
   const navigate = useNavigate();
   const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
@@ -625,6 +627,9 @@ export default function App() {
           onClose={() => navigate("/")}
           initialGroupId={guildMatch?.params.groupId}
         />
+      )}
+      {profileMatch && (
+        <ProfilePage />
       )}
       {showModels && (
         <ModelsPanel onClose={() => setShowModels(false)} onSaved={() => { setShowModels(false); }} />

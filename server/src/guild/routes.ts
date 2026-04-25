@@ -385,22 +385,32 @@ function resolvePlanItemToAgentParams(item: AgentPlanItem): {
   return { createParams: buildForkParams(source, item.overrides ?? {}) };
 }
 
-/** LLM plan-generation requests can take 30-60s. Hook client disconnect and a
- *  hard timeout into an AbortController so we don't waste LLM quota on orphaned
- *  calls or hang indefinitely on a stuck upstream. */
-const LLM_GENERATE_TIMEOUT_MS = 90_000;
+/** Plan generation 直接走 fetch（绕开 LangChain 的 retry/参数注入问题）。
+ *  实测 polo 上 claude-sonnet-4-6 这一档输出 ~2k token 的 JSON plan
+ *  通常 15-25s，所以 45s 兜底给一倍头度。Hook client disconnect 也用同一
+ *  controller，避免用户主动关页面后浪费 LLM 配额。 */
+const LLM_GENERATE_TIMEOUT_MS = 45_000;
 
-function abortOnClose(req: Request): { signal: AbortSignal; cleanup: () => void; ctrl: AbortController } {
+function abortOnClose(req: Request, res: Response): { signal: AbortSignal; cleanup: () => void; ctrl: AbortController } {
   const ctrl = new AbortController();
   const timeout = setTimeout(() => ctrl.abort(), LLM_GENERATE_TIMEOUT_MS);
-  const onClose = () => ctrl.abort();
-  req.on("close", onClose);
+  // Use res.on("close") rather than req.on("close"). Express body-parser fully
+  // consumes the request stream before our handler runs, and on Node 22 the
+  // IncomingMessage's "close" event can fire then — which would abort the LLM
+  // call before it ever started. The response stream's "close" fires reliably
+  // when the client disconnects (or when we've finished sending), and the
+  // !res.writableFinished guard skips the "we just sent the response normally"
+  // case so cleanup doesn't trigger a phantom abort.
+  const onResClose = () => {
+    if (!res.writableFinished) ctrl.abort();
+  };
+  res.on("close", onResClose);
   return {
     signal: ctrl.signal,
     ctrl,
     cleanup: () => {
       clearTimeout(timeout);
-      req.off("close", onClose);
+      res.off("close", onResClose);
     },
   };
 }
@@ -408,7 +418,7 @@ function abortOnClose(req: Request): { signal: AbortSignal; cleanup: () => void;
 export async function postGenerateGroupPlan(req: Request, res: Response): Promise<void> {
   const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
   if (!description) { res.status(400).json({ error: "description is required" }); return; }
-  const { signal, ctrl, cleanup } = abortOnClose(req);
+  const { signal, ctrl, cleanup } = abortOnClose(req, res);
   try {
     const plan = await generateGroupPlan(description, signal);
     res.json(plan);
@@ -512,7 +522,7 @@ export async function postApplyGroupPlan(req: Request, res: Response): Promise<v
 export async function postGeneratePipelinePlan(req: Request, res: Response): Promise<void> {
   const description = typeof req.body?.description === "string" ? req.body.description.trim() : "";
   if (!description) { res.status(400).json({ error: "description is required" }); return; }
-  const { signal, ctrl, cleanup } = abortOnClose(req);
+  const { signal, ctrl, cleanup } = abortOnClose(req, res);
   try {
     const plan = await generatePipelinePlan(description, signal);
     res.json(plan);

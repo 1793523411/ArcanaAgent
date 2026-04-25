@@ -83,7 +83,13 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
   /** Skip setState after unmount if apply-plan is still in flight when the
    *  modal closes — avoids a stale React warning. */
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Reset on (re-)mount so React StrictMode's synthetic unmount/remount in dev
+  // doesn't leave mountedRef.current permanently false — that breaks every
+  // setState-after-await guard (modal stuck loading, cancel button no-op).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const handleGenerate = async () => {
     if (!description.trim()) return;

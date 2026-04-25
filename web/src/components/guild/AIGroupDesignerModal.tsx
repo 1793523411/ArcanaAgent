@@ -91,7 +91,14 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
    *  gets unmounted for any other reason before the HTTP call resolves, skip
    *  the setState calls to avoid React warnings / stale-state writes. */
   const mountedRef = useRef(true);
-  useEffect(() => () => { mountedRef.current = false; }, []);
+  // Effect body must reset mountedRef.current = true. React StrictMode dev
+  // mounts → cleans up → re-mounts; without the reset, the synthetic cleanup
+  // leaves it permanently false, so every late-write guard short-circuits and
+  // setPhase never fires (modal locked in "loading", cancel feels dead).
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
 
   const handleGenerate = async () => {
     if (!description.trim()) return;

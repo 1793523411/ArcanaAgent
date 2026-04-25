@@ -6,8 +6,7 @@
  * step in routes.ts that materializes agents, groups, and pipelines.
  */
 
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
-import { getLLM } from "../llm/index.js";
+import { loadModelConfig } from "../config/models.js";
 import { loadUserConfig } from "../config/userConfig.js";
 import type { AgentAsset, GuildAgent } from "./types.js";
 import type { PipelineTemplate } from "./pipelines.js";
@@ -146,28 +145,85 @@ export function extractJson(content: string): unknown {
     : new Error("LLM 输出无法解析为 JSON");
 }
 
+/** Plan-generation LLM call. Bypasses LangChain on purpose:
+ *  - LangChain ChatAnthropic was injecting `top_p: -1` which polo rejects.
+ *  - LangChain default 6× exponential-backoff retries can stretch a single
+ *    failure to >30s while the user stares at a spinner.
+ *  - LangChain ChatAnthropic doesn't reliably propagate the AbortSignal to
+ *    the underlying fetch on cancel, so the server can't break out early.
+ *  Direct fetch is ~30 lines, signal-aware, and produces 2-5s round-trips
+ *  on healthy upstreams. */
 async function callLLM(
   systemPrompt: string,
   userInput: string,
   signal?: AbortSignal,
 ): Promise<unknown> {
-  const config = loadUserConfig();
-  const llm = getLLM(config.modelId);
-  const response = await llm.invoke(
-    [new SystemMessage(systemPrompt), new HumanMessage(userInput)],
-    { signal },
-  );
-  const content =
-    typeof response.content === "string"
-      ? response.content
-      : Array.isArray(response.content)
-        ? response.content
-            .map((c) =>
-              "type" in c && c.type === "text" && typeof c.text === "string" ? c.text : "",
-            )
-            .join("")
-        : String(response.content);
+  const cfg = loadUserConfig();
+  const { baseUrl, apiKey, modelId, api } = loadModelConfig(cfg.modelId);
+  const url = api === "anthropic-messages"
+    ? `${stripTrailingSlash(baseUrl)}/v1/messages`
+    : `${stripTrailingSlash(baseUrl)}/v1/chat/completions`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  let body: string;
+  if (api === "anthropic-messages") {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    body = JSON.stringify({
+      model: modelId,
+      max_tokens: 4096,
+      temperature: 0,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userInput }],
+    });
+  } else {
+    headers.Authorization = `Bearer ${apiKey}`;
+    body = JSON.stringify({
+      model: modelId,
+      max_tokens: 4096,
+      temperature: 0,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userInput },
+      ],
+    });
+  }
+  const r = await fetch(url, { method: "POST", headers, body, signal });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`LLM HTTP ${r.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await r.json()) as Record<string, unknown>;
+  const content = api === "anthropic-messages"
+    ? extractAnthropicText(json)
+    : extractOpenAIText(json);
   return extractJson(content);
+}
+
+function stripTrailingSlash(s: string): string {
+  return s.endsWith("/") ? s.slice(0, -1) : s;
+}
+
+function extractAnthropicText(json: Record<string, unknown>): string {
+  const blocks = Array.isArray(json.content) ? json.content : [];
+  return blocks
+    .map((b) => {
+      if (b && typeof b === "object" && (b as { type?: string }).type === "text") {
+        const t = (b as { text?: unknown }).text;
+        return typeof t === "string" ? t : "";
+      }
+      return "";
+    })
+    .join("");
+}
+
+function extractOpenAIText(json: Record<string, unknown>): string {
+  const choices = Array.isArray(json.choices) ? json.choices : [];
+  const first = choices[0] as { message?: { content?: unknown } } | undefined;
+  const content = first?.message?.content;
+  return typeof content === "string" ? content : "";
 }
 
 // ─── Agent roster rendering (context for the LLM) ─────────────

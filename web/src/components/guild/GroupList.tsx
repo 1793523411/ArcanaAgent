@@ -1,6 +1,20 @@
 import { useState } from "react";
 import type { Group, GuildAgent } from "../../types/guild";
 import ConfirmDialog from "./ConfirmDialog";
+import Chevron from "./Chevron";
+
+/** Persist a boolean to localStorage. Wrapped in try/catch because Safari
+ *  private mode + the lock-screen "no storage" mode both throw on access. */
+function usePersistedBool(key: string, fallback: boolean): [boolean, (v: boolean) => void] {
+  const [val, setVal] = useState<boolean>(() => {
+    try { return localStorage.getItem(key) === "1"; } catch { return fallback; }
+  });
+  const set = (v: boolean) => {
+    setVal(v);
+    try { localStorage.setItem(key, v ? "1" : "0"); } catch { /* ignore */ }
+  };
+  return [val, set];
+}
 
 interface Props {
   groups: Group[];
@@ -38,11 +52,22 @@ export default function GroupList({
   const [addingAgentKey, setAddingAgentKey] = useState<string | null>(null);
   const [removingAgentKey, setRemovingAgentKey] = useState<string | null>(null);
   const [settingLeadGroup, setSettingLeadGroup] = useState<string | null>(null);
+  const [groupsCollapsed, setGroupsCollapsed] = usePersistedBool("guild.groupsSectionCollapsed", false);
+  const [poolCollapsed, setPoolCollapsed] = usePersistedBool("guild.poolSectionCollapsed", false);
 
   return (
     <div className="flex flex-col h-full">
       <div className="px-3 py-3 border-b shrink-0 flex items-center justify-between" style={{ borderColor: "var(--color-border)" }}>
-        <span className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>小组</span>
+        <button
+          type="button"
+          className="flex items-center gap-1.5 hover:opacity-80"
+          onClick={() => setGroupsCollapsed(!groupsCollapsed)}
+          aria-expanded={!groupsCollapsed}
+          title={groupsCollapsed ? "展开小组列表" : "收起小组列表"}
+        >
+          <Chevron direction={groupsCollapsed ? "right" : "down"} size={12} />
+          <span className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>小组</span>
+        </button>
         <button
           className="text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
           style={{ color: "var(--color-accent)" }}
@@ -53,6 +78,7 @@ export default function GroupList({
         </button>
       </div>
 
+      {!groupsCollapsed && (
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {groups.length === 0 && (
           <div className="text-xs text-center py-6" style={{ color: "var(--color-text-muted)" }}>
@@ -279,11 +305,25 @@ export default function GroupList({
           );
         })}
       </div>
+      )}
 
-      {/* Agent pool */}
-      <div className="shrink-0 border-t px-3 py-3 space-y-2" style={{ borderColor: "var(--color-border)" }}>
+      {/* Agent pool — flex-1 when groups is collapsed so it fills the empty
+          middle, otherwise stays compact at the bottom (current behavior). */}
+      <div
+        className={`border-t px-3 py-3 space-y-2 ${groupsCollapsed && !poolCollapsed ? "flex-1 overflow-y-auto" : "shrink-0"}`}
+        style={{ borderColor: "var(--color-border)" }}
+      >
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>Agent 池</span>
+          <button
+            type="button"
+            className="flex items-center gap-1.5 hover:opacity-80"
+            onClick={() => setPoolCollapsed(!poolCollapsed)}
+            aria-expanded={!poolCollapsed}
+            title={poolCollapsed ? "展开 Agent 池" : "收起 Agent 池"}
+          >
+            <Chevron direction={poolCollapsed ? "right" : "down"} size={12} />
+            <span className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>Agent 池</span>
+          </button>
           <button
             className="text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
             style={{ color: "var(--color-accent)" }}
@@ -293,7 +333,8 @@ export default function GroupList({
             + Agent
           </button>
         </div>
-        {poolAgents.length === 0 ? (
+        {!poolCollapsed && (
+        poolAgents.length === 0 ? (
           <div className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>暂无空闲 Agent</div>
         ) : (
           <div className="space-y-1">
@@ -311,6 +352,7 @@ export default function GroupList({
               </div>
             ))}
           </div>
+        )
         )}
       </div>
       <ConfirmDialog
