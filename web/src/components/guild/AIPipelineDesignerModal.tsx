@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { PipelinePlan, AgentPlanItem } from "../../api/guild";
 import { generatePipelinePlan, applyPipelinePlan, listGuildAgents } from "../../api/guild";
-import { friendlyError } from "../../lib/guildErrors";
+import { friendlyError, trapTabInDialog } from "../../lib/guildErrors";
 
 interface Props {
   onDone: (templateId: string) => void;
@@ -62,6 +62,11 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
+  /** Skip setState after unmount if apply-plan is still in flight when the
+   *  modal closes — avoids a stale React warning. */
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
   const handleGenerate = async () => {
     if (!description.trim()) return;
     const ctrl = new AbortController();
@@ -95,8 +100,10 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     setError(null);
     try {
       const { template } = await applyPipelinePlan(plan);
+      if (!mountedRef.current) return;
       onDone(template.id);
     } catch (e) {
+      if (!mountedRef.current) return;
       setError(friendlyError(e));
       setPhase("preview");
     }
@@ -109,6 +116,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
         role="dialog"
         aria-modal="true"
         aria-labelledby="ai-pipeline-designer-heading"
+        onKeyDown={trapTabInDialog}
         className="relative w-full max-w-3xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "92vh" }}
       >

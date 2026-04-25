@@ -1,3 +1,31 @@
+import type React from "react";
+
+/**
+ * Trap Tab navigation inside a dialog container — prevents focus from
+ * escaping the modal into the backdrop page content (WCAG 2.4.3). Attach
+ * via `onKeyDown` on the dialog's outermost div. Not a full focus manager
+ * (doesn't restore focus on close, doesn't auto-focus on open); it's the
+ * minimum needed to keep the focus ring contained.
+ */
+export function trapTabInDialog(e: React.KeyboardEvent<HTMLElement>): void {
+  if (e.key !== "Tab") return;
+  const root = e.currentTarget;
+  const focusables = root.querySelectorAll<HTMLElement>(
+    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+  );
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  const active = document.activeElement as HTMLElement | null;
+  if (e.shiftKey && active === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && active === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
+
 /**
  * Map raw fetch/LLM exceptions to user-actionable Chinese messages.
  *

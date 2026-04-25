@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { GroupPlan, AgentPlanItem } from "../../api/guild";
 import { generateGroupPlan, applyGroupPlan } from "../../api/guild";
-import { friendlyError } from "../../lib/guildErrors";
+import { friendlyError, trapTabInDialog } from "../../lib/guildErrors";
 
 interface Props {
   agents: GuildAgent[];
@@ -75,6 +75,12 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
 
   // Abort any in-flight request if the modal unmounts.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /** Applied during apply-plan: if the user force-closes the modal or it
+   *  gets unmounted for any other reason before the HTTP call resolves, skip
+   *  the setState calls to avoid React warnings / stale-state writes. */
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const handleGenerate = async () => {
     if (!description.trim()) return;
@@ -171,8 +177,10 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
         agents: plan.agents.map(({ _uid: _u, ...rest }) => rest as AgentPlanItem),
       };
       const { group } = await applyGroupPlan(serverPlan);
+      if (!mountedRef.current) return;
       onDone(group.id);
     } catch (e) {
+      if (!mountedRef.current) return;
       setError(friendlyError(e));
       setPhase("preview");
     }
@@ -201,6 +209,7 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
         role="dialog"
         aria-modal="true"
         aria-labelledby="ai-group-designer-heading"
+        onKeyDown={trapTabInDialog}
         className="relative w-full max-w-2xl rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "90vh" }}
       >

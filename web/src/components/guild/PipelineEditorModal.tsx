@@ -9,6 +9,7 @@ import {
 import PipelineCanvas from "./PipelineCanvas";
 import ConfirmDialog from "./ConfirmDialog";
 import AIPipelineDesignerModal from "./AIPipelineDesignerModal";
+import { trapTabInDialog } from "../../lib/guildErrors";
 
 interface Props {
   open: boolean;
@@ -139,6 +140,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
         role="dialog"
         aria-modal="true"
         aria-label="Pipeline 编辑器"
+        onKeyDown={trapTabInDialog}
         className="rounded-xl overflow-hidden flex"
         style={{
           width: "min(1080px, 92vw)",

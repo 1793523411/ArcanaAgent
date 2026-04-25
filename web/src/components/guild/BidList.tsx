@@ -124,37 +124,42 @@ function BidCard({
 }
 
 function BreakdownGrid({ sb }: { sb: NonNullable<TaskBid["scoreBreakdown"]> }) {
+  // Each field is non-optional in the type, but server-side scoring evolves
+  // (new model variants, missing features flagged as undefined) — so we
+  // defensively null-coalesce. `.toFixed` on undefined is a hard throw that
+  // would white-screen the whole bid panel for any schema drift.
+  const fx = (n: number | undefined, digits = 3) => (n ?? 0).toFixed(digits);
   return (
     <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px]" style={{ color: "var(--color-text-muted)" }}>
       {sb.llmScore != null ? (
         <>
           <div>LLM 评分</div>
-          <div className="text-right tabular-nums" style={{ color: "#ec4899" }}>{sb.llmScore.toFixed(1)}/10</div>
+          <div className="text-right tabular-nums" style={{ color: "#ec4899" }}>{fx(sb.llmScore, 1)}/10</div>
           {sb.llmReason && <div className="col-span-2 text-[9px] italic" style={{ color: "var(--color-text-muted)" }}>{sb.llmReason}</div>}
         </>
       ) : sb.embedding != null ? (
         <>
           <div>语义匹配</div>
-          <div className="text-right tabular-nums" style={{ color: "#8b5cf6" }}>{sb.embedding.toFixed(3)}</div>
+          <div className="text-right tabular-nums" style={{ color: "#8b5cf6" }}>{fx(sb.embedding)}</div>
         </>
       ) : (
         <>
-          <div>资产匹配</div><div className="text-right tabular-nums">{sb.asset.toFixed(3)}</div>
-          <div>技能匹配</div><div className="text-right tabular-nums">{sb.skill.toFixed(3)}</div>
+          <div>资产匹配</div><div className="text-right tabular-nums">{fx(sb.asset)}</div>
+          <div>技能匹配</div><div className="text-right tabular-nums">{fx(sb.skill)}</div>
         </>
       )}
-      <div>记忆匹配</div><div className="text-right tabular-nums">{sb.memory.toFixed(3)}</div>
-      <div>历史胜率</div><div className="text-right tabular-nums">{sb.success.toFixed(3)}</div>
-      <div>所有者奖励</div><div className="text-right tabular-nums">{sb.ownerBonus.toFixed(3)}</div>
+      <div>记忆匹配</div><div className="text-right tabular-nums">{fx(sb.memory)}</div>
+      <div>历史胜率</div><div className="text-right tabular-nums">{fx(sb.success)}</div>
+      <div>所有者奖励</div><div className="text-right tabular-nums">{fx(sb.ownerBonus)}</div>
       {!sb.embedding && (
         <>
-          <div>资产奖励</div><div className="text-right tabular-nums">{sb.assetBonus.toFixed(3)}</div>
+          <div>资产奖励</div><div className="text-right tabular-nums">{fx(sb.assetBonus)}</div>
         </>
       )}
-      <div>负载惩罚</div><div className="text-right tabular-nums">-{sb.loadPenalty.toFixed(3)}</div>
-      <div>门槛</div><div className="text-right tabular-nums">{sb.threshold.toFixed(3)}</div>
+      <div>负载惩罚</div><div className="text-right tabular-nums">-{fx(sb.loadPenalty)}</div>
+      <div>门槛</div><div className="text-right tabular-nums">{fx(sb.threshold)}</div>
       <div className="font-semibold" style={{ color: "var(--color-text)" }}>最终得分</div>
-      <div className="text-right tabular-nums font-semibold" style={{ color: "var(--color-accent)" }}>{sb.final.toFixed(3)}</div>
+      <div className="text-right tabular-nums font-semibold" style={{ color: "var(--color-accent)" }}>{fx(sb.final)}</div>
     </div>
   );
 }
