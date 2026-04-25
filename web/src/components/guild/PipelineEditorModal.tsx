@@ -171,16 +171,16 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
             className="mx-2 mt-2 mb-1 px-2 py-2 rounded-lg text-xs flex items-center justify-between"
             style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)", border: "1px solid var(--color-accent)" }}
             onClick={() => setAiOpen(true)}
-            title="用 AI 描述一句话，自动生成模板 + 配套 Agent"
+            title="用 AI 描述一句话，自动生成流水线模板 + 配套 Agent"
           >
             <span className="flex flex-col items-start leading-tight">
-              <span className="flex items-center gap-1 font-semibold">✨ 用 AI 生成模板</span>
-              <span className="text-[10px]" style={{ opacity: 0.75 }}>一句话生成流水线</span>
+              <span className="flex items-center gap-1 font-semibold">✨ 用 AI 生成流水线模板</span>
+              <span className="text-[10px]" style={{ opacity: 0.75 }}>一句话生成完整流水线</span>
             </span>
             <span aria-hidden="true">→</span>
           </button>
           <div className="px-3 py-2 text-sm font-medium flex items-center justify-between gap-1 border-t" style={{ color: "var(--color-text)", borderColor: "var(--color-border)" }}>
-            <span>手工模板</span>
+            <span>手工流水线模板</span>
             <button
               className="text-xs px-2 py-0.5 rounded"
               style={{ background: "var(--color-accent)", color: "white" }}
@@ -192,7 +192,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
           <div className="flex-1 overflow-y-auto text-sm">
             {list.length === 0 && (
               <div className="px-3 py-2 text-xs" style={{ color: "var(--color-text-muted)" }}>
-                暂无模板
+                暂无流水线模板
               </div>
             )}
             {list.map((t) => (
@@ -221,7 +221,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
             className="px-4 py-2 flex items-center justify-between border-b text-sm"
             style={{ borderColor: "var(--color-border)", color: "var(--color-text)" }}
           >
-            <span>{isNew ? "新建模板" : selectedId ? `编辑 ${selectedId}` : "选择模板或新建"}</span>
+            <span>{isNew ? "新建流水线模板" : selectedId ? `编辑 ${selectedId}` : "选择流水线模板或新建"}</span>
             <div className="flex items-center gap-2">
               {(isNew || selectedId) && (
                 <div className="flex text-xs rounded overflow-hidden" style={{ border: "1px solid var(--color-border)" }}>
@@ -260,7 +260,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
 
           {!isNew && !selectedId ? (
             <div className="flex-1 flex items-center justify-center text-sm" style={{ color: "var(--color-text-muted)" }}>
-              从左侧选择一个模板编辑，或点击「新建」
+              从左侧选择一个流水线模板编辑，或点击「新建」
             </div>
           ) : view === "json" ? (
             <div className="flex-1 flex flex-col min-h-0" style={{ background: "var(--color-bg)" }}>
@@ -478,7 +478,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
                 onChange={(next) => setDraft({ ...draft, outputs: next })}
                 forceFinal
                 title="最终交付产物"
-                hint="模板级产物自动视为 isFinal — pipeline 完成时会对账"
+                hint="流水线级产物自动视为 isFinal — 流水线完成时会对账"
               />
 
               <SectionHeader
@@ -550,8 +550,8 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
         open={confirmingRemove}
         onOpenChange={(o) => { if (!o && !saving) setConfirmingRemove(false); }}
         onConfirm={doRemove}
-        title={`删除模板「${draft.name || "未命名"}」?`}
-        description="删除后无法恢复。仍在使用该模板的任务不受影响，但新建任务时将找不到该模板。"
+        title={`删除流水线模板「${draft.name || "未命名"}」?`}
+        description="删除后无法恢复。仍在使用该流水线模板的任务不受影响，但新建任务时将找不到该模板。"
         confirmLabel="删除"
         variant="danger"
         loading={saving}

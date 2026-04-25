@@ -115,7 +115,7 @@ export default function InstructionInput({
               style={{ border: "1px solid var(--color-border)", color: "var(--color-text-muted)" }}
               onClick={() => setEditorOpen(true)}
             >
-              管理模板
+              管理流水线模板
             </button>
           </>
         )}
@@ -130,7 +130,7 @@ export default function InstructionInput({
         <div className="flex flex-col gap-2">
           {pipelines.length === 0 && pipelinesLoaded ? (
             <div className="text-[11px] px-2 py-1 rounded" style={{ color: "var(--color-text-muted)", background: "var(--color-bg)" }}>
-              暂无模板。将 JSON 放到 <code>data/guild/pipelines/</code> 即可注册。
+              暂无流水线模板。将 JSON 放到 <code>data/guild/pipelines/</code> 即可注册。
             </div>
           ) : (
             <>
@@ -185,7 +185,7 @@ export default function InstructionInput({
         onChange={(e) => setText(e.target.value)}
         placeholder={
           mode === "pipeline"
-            ? "可选：自定义任务标题（留空则使用模板名）"
+            ? "可选：自定义任务标题（留空则使用流水线模板名）"
             : placeholder ?? "输入指令创建任务…（Shift+Enter 换行，Enter 发送）"
         }
         rows={mode === "pipeline" ? 2 : 3}
@@ -251,7 +251,7 @@ export default function InstructionInput({
           onClick={handleSend}
           disabled={mode === "text" ? loading || !text.trim() : pipelineSendDisabled}
         >
-          {loading ? "发送中…" : mode === "pipeline" ? "按模板创建" : "发送"}
+          {loading ? "发送中…" : mode === "pipeline" ? "按流水线模板创建" : "发送"}
         </button>
       </div>
     </div>

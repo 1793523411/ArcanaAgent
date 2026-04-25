@@ -198,7 +198,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
     setCreatingTask(true);
     try {
       await guild.createTaskFromPipeline(guild.selectedGroupId, payload);
-      showToast(`已按模板创建任务`, "success");
+      showToast(`已按流水线模板创建任务`, "success");
     } catch (e) {
       showToast(`创建任务失败: ${e}`, "error");
     } finally {

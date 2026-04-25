@@ -803,7 +803,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 <div>
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="text-xs font-semibold flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
-                      {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
+                      {selectedTask.kind === "pipeline" ? "流水线执行图" : "子任务依赖图"}
                       {/* Count crumb stays visible whether the inline preview is
                           open or not — losing it after expand was disorienting. */}
                       <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
@@ -823,7 +823,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                         className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
                         style={{ color: "var(--color-accent)" }}
                         onClick={() => setExpandedDAG(true)}
-                        aria-label="全屏查看流程图"
+                        aria-label="全屏查看流水线执行图"
                       >
                         全屏查看
                       </button>
@@ -1107,13 +1107,13 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 >
                   <div className="flex items-center justify-between px-5 py-3 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
                     <h3 className="text-sm font-semibold" style={{ color: "var(--color-text)" }}>
-                      {selectedTask.title} — {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
+                      {selectedTask.title} — {selectedTask.kind === "pipeline" ? "流水线执行图" : "子任务依赖图"}
                     </h3>
                     <button
                       onClick={() => setExpandedDAG(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
-                      aria-label="关闭流程图全屏"
+                      aria-label="关闭流水线执行图全屏"
                     >
                       ✕
                     </button>

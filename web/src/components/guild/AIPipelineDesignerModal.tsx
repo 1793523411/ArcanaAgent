@@ -175,7 +175,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
             <p className="text-[11px] mt-0.5" style={{ color: "var(--color-text-muted)" }}>
               {phase === "prompt" ? "描述工作流，AI 会规划步骤与合适的 Agent" :
                phase === "loading" ? "正在设计..." :
-               phase === "preview" ? "审查方案，可调整后保存为模板" :
+               phase === "preview" ? "审查方案，可调整后保存为流水线模板" :
                // applying: header carries actionable counts, footer carries the spinner.
                (() => {
                  const stepCount = plan?.template.steps.length ?? 0;
@@ -192,7 +192,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
               <button
                 onClick={onClose}
                 disabled={closeDisabled}
-                title={phase === "loading" ? "AI 正在生成模板，按 ESC 取消" : phase === "applying" ? "正在保存 — 完成前无法关闭" : "关闭"}
+                title={phase === "loading" ? "AI 正在生成流水线模板，按 ESC 取消" : phase === "applying" ? "正在保存 — 完成前无法关闭" : "关闭"}
                 aria-label="关闭"
                 className={`w-7 h-7 flex items-center justify-center rounded-lg ${closeDisabled ? "cursor-not-allowed" : "hover:bg-[var(--color-surface-hover)]"}`}
                 style={{ color: "var(--color-text-muted)", opacity: closeDisabled ? 0.45 : 1 }}
@@ -241,9 +241,9 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
                 className="w-8 h-8 rounded-full border-[3px] animate-spin"
                 style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
                 role="status"
-                aria-label="AI 正在设计模板"
+                aria-label="AI 正在设计流水线模板"
               />
-              <div className="text-sm" style={{ color: "var(--color-text-muted)" }}>AI 正在设计模板...</div>
+              <div className="text-sm" style={{ color: "var(--color-text-muted)" }}>AI 正在设计流水线模板...</div>
               <div className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
                 已等待 {elapsedSec}s · 通常 20-60 秒 · 按 ESC 或下方按钮取消
               </div>
@@ -320,7 +320,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
                 className="px-4 py-1.5 rounded-lg text-sm text-white"
                 style={{ background: "var(--color-accent)" }}
                 onClick={handleApply}
-              >保存模板</button>
+              >保存流水线模板</button>
             </>
           )}
           {phase === "loading" && (
@@ -340,7 +340,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
                 style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
                 aria-hidden="true"
               />
-              正在保存模板…
+              保存中…
             </div>
           )}
         </div>
