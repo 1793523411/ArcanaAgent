@@ -35,8 +35,8 @@ export default function AgentCard({ agent, onClick, selected }: Props) {
     >
       <span className="text-lg shrink-0">{agent.icon}</span>
       <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium truncate" style={{ color: agent.color }}>{agent.name}</div>
-        <div className="text-xs truncate" style={{ color: "var(--color-text-muted)" }}>{agent.description}</div>
+        <div className="text-sm font-medium truncate" style={{ color: agent.color }} title={agent.name}>{agent.name}</div>
+        <div className="text-xs truncate" style={{ color: "var(--color-text-muted)" }} title={agent.description}>{agent.description}</div>
         {agent.assets.length > 0 && (
           <div className="flex items-center gap-1 mt-0.5">
             {[...new Set(agent.assets.map((a) => a.type))].slice(0, 4).map((t) => (

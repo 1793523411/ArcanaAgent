@@ -19,6 +19,9 @@
   --color-success-bg: rgba(16, 185, 129, 0.15);
   --color-success-border: rgba(16, 185, 129, 0.45);
   --color-success-text: #6ee7b7;
+  --color-warning-bg: rgba(245, 158, 11, 0.15);
+  --color-warning-border: rgba(245, 158, 11, 0.45);
+  --color-warning-text: #fcd34d;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -42,6 +45,9 @@ html.theme-light {
   --color-success-bg: rgba(16, 185, 129, 0.12);
   --color-success-border: rgba(16, 185, 129, 0.45);
   --color-success-text: #166534;
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-warning-border: rgba(245, 158, 11, 0.45);
+  --color-warning-text: #92400e;
 }
 
 html {

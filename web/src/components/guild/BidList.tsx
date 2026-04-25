@@ -183,13 +183,13 @@ function BreakdownGrid({ sb }: { sb: NonNullable<TaskBid["scoreBreakdown"]> }) {
       <div className="font-semibold text-xs" style={{ color: "var(--color-text)" }}>最终得分</div>
       <div
         className="text-right tabular-nums font-semibold text-xs"
-        style={{ color: sb.final >= sb.threshold ? "var(--color-accent)" : "#dc2626" }}
+        style={{ color: sb.final >= sb.threshold ? "var(--color-accent)" : "var(--color-error-text)" }}
       >
         {fx(sb.final)}
         {sb.final < sb.threshold && (
           // Match the red final-score weight so the delta — the most
           // actionable number on the card — doesn't read as decoration.
-          <span className="ml-1 text-[10px] font-medium" style={{ color: "#dc2626" }}>
+          <span className="ml-1 text-[10px] font-medium" style={{ color: "var(--color-error-text)" }}>
             （差 {fx(sb.threshold - sb.final)}）
           </span>
         )}

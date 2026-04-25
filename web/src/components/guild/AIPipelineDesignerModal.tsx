@@ -200,7 +200,7 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
               {agentsError && (
                 <div
                   className="text-xs rounded-lg px-3 py-2 flex items-start gap-2"
-                  style={{ background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e" }}
+                  style={{ background: "var(--color-warning-bg)", border: "1px solid var(--color-warning-border)", color: "var(--color-warning-text)" }}
                   role="alert"
                 >
                   <span aria-hidden="true">⚠️</span>

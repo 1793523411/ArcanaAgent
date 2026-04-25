@@ -241,7 +241,11 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
                phase === "preview" ? "审查方案，可调整后一键落盘" :
                // applying: header carries the actionable count, footer the spinner
                // — keeps the two strings from being literally identical.
-               `正在写入 ${plan?.agents.length ?? 0} 个 Agent · 1 个小组`}
+               // Drop the agent crumb at zero so we never render
+               // "正在写入 0 个 Agent · 1 个小组" (looks like the apply is broken).
+               (plan?.agents.length ?? 0) > 0
+                 ? `正在写入 ${plan!.agents.length} 个 Agent · 1 个小组`
+                 : "正在写入小组"}
             </p>
           </div>
           {(() => {
@@ -619,7 +623,7 @@ function AgentPlanCard({
             <>
               <div
                 className="text-[10px] rounded px-2 py-1"
-                style={{ background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}
+                style={{ background: "var(--color-warning-bg)", color: "var(--color-warning-text)", border: "1px solid var(--color-warning-border)" }}
               >
                 ⓘ 派生会复制源 agent 的 systemPrompt 和资产作为起点，但不继承其记忆与历史胜率（相当于新员工读过前辈的笔记）
               </div>

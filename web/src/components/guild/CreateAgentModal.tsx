@@ -4,7 +4,7 @@ import { generateGuildAgent } from "../../api/guild";
 import { getModels, type ModelInfo } from "../../api";
 import Select from "./Select";
 import { ASSET_TYPE_META, ASSET_TYPES } from "../../constants/guild";
-import { friendlyError } from "../../lib/guildErrors";
+import { friendlyError, trapTabInDialog } from "../../lib/guildErrors";
 
 type CreatePayload = Omit<GuildAgent, "id" | "status" | "currentTaskId" | "createdAt" | "updatedAt" | "stats">;
 
@@ -40,6 +40,13 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
   useEffect(() => {
     getModels().then(setModels).catch(() => {});
   }, []);
+
+  // ESC closes — keyboard parity with the AI designer modals.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   // Asset form
   const [assetType, setAssetType] = useState<AssetType>("repo");
@@ -108,9 +115,13 @@ export default function CreateAgentModal({ editAgent, onConfirm, onClose }: Prop
       <div
         className="relative w-full max-w-lg rounded-xl shadow-2xl flex flex-col overflow-hidden"
         style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)", maxHeight: "90vh" }}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="create-agent-modal-heading"
+        onKeyDown={trapTabInDialog}
       >
         <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ borderColor: "var(--color-border)" }}>
-          <h3 className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{isEdit ? "编辑 Agent" : "创建 Guild Agent"}</h3>
+          <h3 id="create-agent-modal-heading" className="text-base font-semibold" style={{ color: "var(--color-text)" }}>{isEdit ? "编辑 Agent" : "创建 Guild Agent"}</h3>
           <button
             onClick={onClose}
             className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"

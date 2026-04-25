@@ -156,6 +156,22 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
     return () => { cancelled = true; };
   }, [selectedTask?.id, selectedTask?.kind, selectedTask?.parentTaskId, selectedTask?.groupId]);
 
+  // ESC closes whichever fullscreen modal is open. Required because the
+  // close button no longer auto-focuses (the prior pattern self-dismissed
+  // when opened via Enter — keyup fired on the freshly-focused ✕). Stacked
+  // priority order: result > workspace > DAG, matching the visual z-order.
+  useEffect(() => {
+    if (!expandedResult && !expandedWorkspace && !expandedDAG) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+      if (expandedResult) setExpandedResult(false);
+      else if (expandedWorkspace) setExpandedWorkspace(false);
+      else if (expandedDAG) setExpandedDAG(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [expandedResult, expandedWorkspace, expandedDAG]);
+
   if (!selectedAgent && !selectedTask) {
     return (
       <div className="flex flex-col h-full">
@@ -675,7 +691,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 {selectedTask.status === "in_progress" && staleTaskIds?.has(selectedTask.id) && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
-                    style={{ background: "#fef3c7", color: "#92400e" }}
+                    style={{ background: "var(--color-warning-bg)", color: "var(--color-warning-text)" }}
                     title="最近 8 秒没有收到任何输出 — Agent 可能正在深度推理（长 reasoning / 大 tool 调用），也可能卡住"
                   >
                     <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "currentColor" }} />
@@ -788,11 +804,11 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   <div className="flex items-center justify-between mb-1.5">
                     <div className="text-xs font-semibold flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
                       {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
-                      {!dagInlineOpen && (
-                        <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
-                          · {subtaskCount} 个节点
-                        </span>
-                      )}
+                      {/* Count crumb stays visible whether the inline preview is
+                          open or not — losing it after expand was disorienting. */}
+                      <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+                        · {subtaskCount} 个节点
+                      </span>
                     </div>
                     <div className="flex items-center gap-1">
                       <button
@@ -807,6 +823,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                         className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
                         style={{ color: "var(--color-accent)" }}
                         onClick={() => setExpandedDAG(true)}
+                        aria-label="全屏查看流程图"
                       >
                         全屏查看
                       </button>
@@ -839,11 +856,14 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="text-xs font-semibold flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
                     协作工作区（{selectedTask.kind === "requirement" ? "本需求" : "父需求"}）
-                    {!workspaceInlineOpen && workspaceMd !== null && (
-                      <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
-                        · {workspaceError ? "加载失败" : workspaceMd.trim() === "" ? "空" : `${workspaceMd.length} 字符`}
-                      </span>
-                    )}
+                    {/* Always visible — including during load — so the user has
+                        a continuous read on what's in the section. */}
+                    <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+                      · {workspaceError ? "加载失败"
+                        : workspaceMd === null ? "加载中"
+                        : workspaceMd.trim() === "" ? "空"
+                        : `${workspaceMd.length} 字符`}
+                    </span>
                   </div>
                   <div className="flex items-center gap-1">
                     <button
@@ -859,6 +879,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                         className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
                         style={{ color: "var(--color-accent)" }}
                         onClick={() => setExpandedWorkspace(true)}
+                        aria-label="全屏查看协作工作区"
                       >
                         全屏查看
                       </button>
@@ -871,7 +892,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", maxHeight: 260 }}
                   >
                     {workspaceError ? (
-                      <div style={{ color: "#ef4444" }}>加载失败：{workspaceError}</div>
+                      <div style={{ color: "var(--color-error-text)" }}>加载失败：{workspaceError}</div>
                     ) : workspaceMd === null ? (
                       <div style={{ color: "var(--color-text-muted)" }}>加载中…</div>
                     ) : workspaceMd.trim() === "" ? (
@@ -908,9 +929,13 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 expandedBidId={expandedBid}
                 onToggleExpand={setExpandedBid}
               />
-            ) : selectedTask.status === "open" && !selectedTask.assignedAgentId ? (
-              // Open + no winner + no bids — make the empty state explicit so
-              // the user doesn't read "blank area" as "data still loading".
+            ) : selectedTask.status === "open" && !selectedTask.assignedAgentId && (selectedTask._rejectedBy?.length ?? 0) === 0 ? (
+              // Open + no winner + no bids + no rejections — make the empty
+              // state explicit so the user doesn't read "blank area" as
+              // "data still loading". When rejections exist, the rejection
+              // hint above already explains the situation; rendering this
+              // would contradict it ("waiting for candidates" vs "agents
+              // refused").
               <div
                 className="text-xs px-3 py-2 rounded-lg"
                 style={{ background: "var(--color-bg)", border: "1px dashed var(--color-border)", color: "var(--color-text-muted)" }}
@@ -928,6 +953,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
                     style={{ color: "var(--color-accent)" }}
                     onClick={() => setExpandedResult(true)}
+                    aria-label="全屏查看执行结果"
                   >
                     全屏查看
                   </button>
@@ -1031,8 +1057,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedResult(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
-                      aria-label="关闭"
-                      autoFocus
+                      aria-label="关闭执行结果全屏"
                     >
                       ✕
                     </button>
@@ -1060,8 +1085,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedWorkspace(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
-                      aria-label="关闭"
-                      autoFocus
+                      aria-label="关闭协作工作区全屏"
                     >
                       ✕
                     </button>
@@ -1089,8 +1113,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedDAG(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
-                      aria-label="关闭"
-                      autoFocus
+                      aria-label="关闭流程图全屏"
                     >
                       ✕
                     </button>

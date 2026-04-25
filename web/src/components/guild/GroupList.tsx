@@ -140,7 +140,7 @@ export default function GroupList({
                         style={{ background: a.status === "working" ? "#22c55e" : "var(--color-border)" }}
                       />
                       <button
-                        className="text-[10px] px-1 hover:text-red-400 disabled:opacity-50"
+                        className="text-[10px] px-1 hover:text-[var(--color-error-text)] disabled:opacity-50"
                         style={{ color: "var(--color-text-muted)" }}
                         title="移出小组"
                         disabled={removingAgentKey === `${group.id}:${a.id}`}
