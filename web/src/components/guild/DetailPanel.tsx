@@ -180,12 +180,13 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
           <div className="flex justify-end px-2 py-2 border-b" style={{ borderColor: "var(--color-border)" }}>
             <button
               onClick={onCollapse}
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
               style={{ color: "var(--color-text-muted)" }}
               title="收起面板"
               aria-label="收起面板"
             >
-              <Chevron direction="right" size={14} />
+              <Chevron direction="left" size={12} />
+              收起
             </button>
           </div>
         )}
@@ -198,8 +199,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               className="inline-flex items-center gap-1 text-xs mt-3 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
               style={{ color: "var(--color-accent)" }}
             >
+              <Chevron direction="left" size={12} />
               收起面板
-              <Chevron direction="right" size={12} />
             </button>
           )}
         </div>
@@ -217,12 +218,13 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
           {onCollapse && (
             <button
               onClick={onCollapse}
-              className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
+              className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] hover:text-[var(--color-text)]"
               style={{ color: "var(--color-text-muted)" }}
               title="收起面板"
               aria-label="收起面板"
             >
-              <Chevron direction="right" size={14} />
+              <Chevron direction="left" size={12} />
+              收起
             </button>
           )}
           <button

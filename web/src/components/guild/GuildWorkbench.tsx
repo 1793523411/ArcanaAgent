@@ -525,7 +525,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
             title="展开详情面板"
             aria-label="展开详情面板"
           >
-            <Chevron direction="left" size={14} />
+            <Chevron direction="right" size={14} />
             <span className="text-[10px]" style={{ writingMode: "vertical-rl" }}>详情</span>
           </button>
         ) : (
