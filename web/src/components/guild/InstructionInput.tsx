@@ -136,7 +136,7 @@ export default function InstructionInput({
           aria-label={collapsed ? "展开输入区" : "收起输入区"}
           aria-expanded={!collapsed}
         >
-          <Chevron direction={collapsed ? "down" : "up"} size={12} />
+          <Chevron direction={collapsed ? "up" : "down"} size={12} />
           {collapsed ? "展开" : "收起"}
         </button>
       </div>

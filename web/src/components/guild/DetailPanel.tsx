@@ -185,7 +185,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               title="收起面板"
               aria-label="收起面板"
             >
-              <Chevron direction="left" size={12} />
+              <Chevron direction="right" size={12} />
               收起
             </button>
           </div>
@@ -199,7 +199,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               className="inline-flex items-center gap-1 text-xs mt-3 px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]"
               style={{ color: "var(--color-accent)" }}
             >
-              <Chevron direction="left" size={12} />
+              <Chevron direction="right" size={12} />
               收起面板
             </button>
           )}
@@ -223,7 +223,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               title="收起面板"
               aria-label="收起面板"
             >
-              <Chevron direction="left" size={12} />
+              <Chevron direction="right" size={12} />
               收起
             </button>
           )}
