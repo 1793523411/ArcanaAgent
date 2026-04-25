@@ -7,6 +7,24 @@ import { atomicWriteFileSync } from "./atomicFs.js";
 // getSubtasks from inside functions, and this import is used only inside
 // completeTask. Both sides' top-level bindings are ready before any call.
 import { syncPipelineOutputsAfterCompletion } from "./pipelines.js";
+import { serverLogger } from "../lib/logger.js";
+
+/** Output-sync is non-fatal — it only updates a derived deliverables view —
+ *  so we swallow exceptions to keep the task-status flip atomic. But silent
+ *  swallow makes prod incidents invisible; log at debug so the trail exists
+ *  without spamming normal logs. */
+function safeSyncPipelineOutputs(groupId: string, taskId: string, context: string): void {
+  try {
+    syncPipelineOutputsAfterCompletion(groupId, taskId);
+  } catch (e) {
+    serverLogger.debug("[taskBoard] syncPipelineOutputsAfterCompletion failed (non-fatal)", {
+      groupId,
+      taskId,
+      context,
+      error: String(e),
+    });
+  }
+}
 import { getGroup, getGroupSharedDir } from "./guildManager.js";
 import { runAcceptanceAssertions, formatFailures } from "./verification.js";
 
@@ -297,7 +315,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
         skippedReason: `retry exhausted (${policy.max}) — skipped: ${error}`,
       });
       if (task) {
-        try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
+        safeSyncPipelineOutputs(groupId, taskId, "retry-skip");
         guildEventBus.emit({ type: "task_cancelled", taskId });
         cascadeFailureToDependents(groupId, taskId, `依赖任务已跳过（${task.title}）`);
         rollupParentRequirement(groupId, task);
@@ -335,7 +353,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
         skippedReason: `retry exhausted (${policy.max}) — fallback=${fallback.id}: ${error}`,
       });
       if (task) {
-        try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
+        safeSyncPipelineOutputs(groupId, taskId, "retry-fallback");
         guildEventBus.emit({ type: "task_cancelled", taskId });
         rollupParentRequirement(groupId, task);
       }
@@ -351,7 +369,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
     result: { summary: `Failed: ${error}` },
   });
   if (task) {
-    try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
+    safeSyncPipelineOutputs(groupId, taskId, "fail");
     guildEventBus.emit({ type: "task_failed", taskId, agentId, error });
     cascadeFailureToDependents(groupId, taskId, `依赖任务失败（${task.title}）`);
     rollupParentRequirement(groupId, task);
@@ -362,7 +380,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
 export function cancelTask(groupId: string, taskId: string): GuildTask | null {
   const task = updateTask(groupId, taskId, { status: "cancelled", completedAt: new Date().toISOString() });
   if (task) {
-    try { syncPipelineOutputsAfterCompletion(groupId, taskId); } catch {}
+    safeSyncPipelineOutputs(groupId, taskId, "cancel");
     guildEventBus.emit({ type: "task_cancelled", taskId });
     cascadeFailureToDependents(groupId, taskId, `依赖任务已取消（${task.title}）`);
     rollupParentRequirement(groupId, task);
