@@ -80,10 +80,25 @@ function BidCard({
           from "agent 离线/失效". The badge already conveys the status; opacity
           is reserved for the secondary metrics row below. */}
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium truncate" style={{ color: agent?.color ?? "var(--color-text)" }}>
+        <span
+          className="font-medium truncate"
+          style={{
+            color: agent?.color ?? "var(--color-text-muted)",
+            // A deleted-agent bid otherwise looks visually identical to a
+            // live below-threshold one — half-opacity flags it as historical.
+            opacity: agent ? 1 : 0.6,
+          }}
+        >
           {agent ? `${agent.icon} ${agent.name}` : bid.agentId}
         </span>
         <div className="flex items-center gap-1.5 shrink-0">
+          {!agent && (
+            <span
+              className="text-[9px] px-1 py-0.5 rounded"
+              style={{ background: "var(--color-border)", color: "var(--color-text-muted)" }}
+              title="该 Agent 已被删除，本次投标仅作为历史记录"
+            >Agent 已删除</span>
+          )}
           {isWinner && (
             <span
               className="text-[9px] px-1 py-0.5 rounded"
@@ -172,7 +187,9 @@ function BreakdownGrid({ sb }: { sb: NonNullable<TaskBid["scoreBreakdown"]> }) {
       >
         {fx(sb.final)}
         {sb.final < sb.threshold && (
-          <span className="ml-1 text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+          // Match the red final-score weight so the delta — the most
+          // actionable number on the card — doesn't read as decoration.
+          <span className="ml-1 text-[10px] font-medium" style={{ color: "#dc2626" }}>
             （差 {fx(sb.threshold - sb.final)}）
           </span>
         )}

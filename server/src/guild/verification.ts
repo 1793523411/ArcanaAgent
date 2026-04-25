@@ -44,19 +44,43 @@ const MAX_READ_BYTES = 2 * 1024 * 1024;
  *    3. content slice cap applied ONLY to the regex path (substring match
  *       doesn't backtrack so the full file is fine there). */
 const MAX_REGEX_PATTERN_LEN = 500;
-const MAX_REGEX_CONTENT_BYTES = 512 * 1024; // 512KB window for regex.test
+// 512K UTF-16 code units (~512KB ASCII, up to ~1MB worst-case UTF-8). Cap is
+// applied via `string.length` not byte count, so naming is intentionally
+// "_LEN" not "_BYTES" — the JS engine sees code units.
+const MAX_REGEX_CONTENT_LEN = 512 * 1024;
 
 /** Conservative ReDoS static check. Catches the common backtracking shapes —
- *  nested quantifiers like `(a+)+` / `(.+)*` and backreferences — without
- *  parsing the full regex grammar. Not exhaustive; see `MAX_REGEX_CONTENT_BYTES`
- *  and `MAX_REGEX_PATTERN_LEN` as the defense-in-depth layers. */
+ *  nested quantifiers like `(a+)+` / `(.+)*`, overlapping alternation like
+ *  `(a|a)+`, and backreferences — without parsing the full regex grammar.
+ *  Not exhaustive; see `MAX_REGEX_CONTENT_LEN` and `MAX_REGEX_PATTERN_LEN`
+ *  as the defense-in-depth layers. */
 function isLikelyReDoSPattern(pattern: string): boolean {
   if (pattern.length > MAX_REGEX_PATTERN_LEN) return true;
-  // Any group that (a) contains a quantifier inside and (b) is itself
-  // quantified — covers (a+)+, (.+)*, (a*)+, ([^)]+)+ etc.
-  if (/\([^)]*[+*?][^)]*\)[+*?{]/.test(pattern)) return true;
-  // Backreferences amplify ambiguity and combine with quantifiers badly.
+  // Backreferences amplify ambiguity badly when combined with quantifiers.
   if (/\\[1-9]/.test(pattern)) return true;
+  // Quantifier-on-quantifier with NO anchor literal between the inner
+  // quantifier and the group close — (\d+)+, (.+)*, (a*b+)+. Patterns like
+  // (?:v\d+\.)+ are NOT flagged because the trailing literal \. anchors each
+  // iteration, breaking the catastrophic shape. Without this narrowing the
+  // older rule false-rejected legitimate templates like (?:https?://)?.
+  if (/\((?:\?:)?[^)]*[+*?]\)[+*?{]/.test(pattern)) return true;
+  // Quantified alternation with overlapping leading character — (a|a)+,
+  // (ab|a)+, (foo|f)+. Catches the classic overlapping-alternation ReDoS
+  // (e.g. ^(a|a)+$) without rejecting safe shapes like (?:foo|bar)+ where
+  // alternatives are disjoint at their first byte.
+  if (hasOverlappingQuantifiedAlternation(pattern)) return true;
+  return false;
+}
+
+function hasOverlappingQuantifiedAlternation(pattern: string): boolean {
+  const groupRe = /\((?:\?:)?([^()]+)\)[+*{]/g;
+  let m: RegExpExecArray | null;
+  while ((m = groupRe.exec(pattern)) !== null) {
+    const inner = m[1];
+    if (!inner.includes("|")) continue;
+    const heads = inner.split("|").map((p) => p[0] ?? "").filter(Boolean);
+    if (new Set(heads).size < heads.length) return true;
+  }
   return false;
 }
 
@@ -114,8 +138,8 @@ function checkOne(assertion: AcceptanceAssertion, absRoot: string): string | nul
     }
     // Slice the content for regex-mode only — substring match is linear
     // so the full file is fine above; here we bound backtracking cost.
-    const target = content.length > MAX_REGEX_CONTENT_BYTES
-      ? content.slice(0, MAX_REGEX_CONTENT_BYTES)
+    const target = content.length > MAX_REGEX_CONTENT_LEN
+      ? content.slice(0, MAX_REGEX_CONTENT_LEN)
       : content;
     if (!re.test(target)) return `内容未命中正则 /${pattern}/：${assertion.ref}`;
     return null;
@@ -144,6 +168,47 @@ function resolveSafe(absRoot: string, ref: string): string | null {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+/** Whitelist + shape-validate a raw acceptanceAssertions payload from a
+ *  client. Accepts only the two known assertion shapes, drops unknown keys,
+ *  rejects regex patterns that would trip the ReDoS guard at runtime, and
+ *  silently filters malformed entries instead of throwing — the caller can
+ *  diff `raw.length` vs the result to decide whether to surface a 400.
+ *
+ *  Why this lives here: routes.ts, aiDesigner.ts, and the from-pipeline
+ *  endpoint all need the exact same gate, and the ReDoS heuristic
+ *  (`isLikelyReDoSPattern`) is the primary correctness contract being
+ *  enforced. Keeping both in this module avoids drift between the runtime
+ *  enforcement and the input-time filter. */
+export function sanitizeAssertions(raw: unknown): AcceptanceAssertion[] | undefined {
+  if (raw == null) return undefined;
+  if (!Array.isArray(raw)) return undefined;
+  const out: AcceptanceAssertion[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.ref !== "string" || o.ref.length === 0) continue;
+    const description = typeof o.description === "string" ? o.description : undefined;
+    if (o.type === "file_exists") {
+      out.push(description ? { type: "file_exists", ref: o.ref, description } : { type: "file_exists", ref: o.ref });
+      continue;
+    }
+    if (o.type === "file_contains") {
+      if (typeof o.pattern !== "string" || o.pattern.length === 0) continue;
+      const regex = o.regex === true;
+      // Pre-flight ReDoS check at input time so a malicious template never
+      // lands in storage. The runtime check in checkOne is still the
+      // authoritative guard, but rejecting early keeps the persisted shape
+      // clean.
+      if (regex && isLikelyReDoSPattern(o.pattern)) continue;
+      const rec: AcceptanceAssertion = { type: "file_contains", ref: o.ref, pattern: o.pattern };
+      if (regex) rec.regex = true;
+      if (description) rec.description = description;
+      out.push(rec);
+    }
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 /** Format failures for display in result.summary / scheduler log.

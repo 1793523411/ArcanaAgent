@@ -13,6 +13,7 @@ import type { AgentAsset, GuildAgent } from "./types.js";
 import type { PipelineTemplate } from "./pipelines.js";
 import { listAgents, getAgent } from "./guildManager.js";
 import { validateExpression, type Expression } from "./expression.js";
+import { sanitizeAssertions } from "./verification.js";
 
 // Hard caps on LLM-produced shape size. A misbehaving LLM or prompt injection
 // must not be able to crash the process via deeply-nested branches or make the
@@ -577,31 +578,12 @@ function normalizeStep(
   }
   if (typeof s.suggestedAgentId === "string") step.suggestedAgentId = s.suggestedAgentId;
   if (typeof s.acceptanceCriteria === "string") step.acceptanceCriteria = s.acceptanceCriteria;
-  // Structured assertions: whitelist shape, drop any malformed entry.
-  if (Array.isArray(s.acceptanceAssertions)) {
-    const cleaned: unknown[] = [];
-    for (const raw of s.acceptanceAssertions) {
-      if (!raw || typeof raw !== "object") continue;
-      const a = raw as Record<string, unknown>;
-      const desc = typeof a.description === "string" ? a.description : undefined;
-      if (a.type === "file_exists" && typeof a.ref === "string" && a.ref.trim()) {
-        cleaned.push({ type: "file_exists", ref: a.ref, description: desc });
-      } else if (
-        a.type === "file_contains" &&
-        typeof a.ref === "string" && a.ref.trim() &&
-        typeof a.pattern === "string"
-      ) {
-        cleaned.push({
-          type: "file_contains",
-          ref: a.ref,
-          pattern: a.pattern,
-          regex: a.regex === true,
-          description: desc,
-        });
-      }
-    }
-    if (cleaned.length > 0) step.acceptanceAssertions = cleaned;
-  }
+  // Structured assertions: shape-validate via the canonical sanitizer so the
+  // ReDoS heuristic is enforced identically here, in routes.ts (POST /tasks),
+  // and at completion-time runtime. The sanitizer drops malformed entries and
+  // any regex pattern that would trip the ReDoS guard.
+  const cleanedAssertions = sanitizeAssertions(s.acceptanceAssertions);
+  if (cleanedAssertions) step.acceptanceAssertions = cleanedAssertions;
   if (s.priority === "low" || s.priority === "medium" || s.priority === "high" || s.priority === "urgent") {
     step.priority = s.priority;
   }

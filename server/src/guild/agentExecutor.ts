@@ -619,23 +619,41 @@ export async function executeAgentTask(
       }
     }
 
-    // Complete task — once this returns, the task is persisted as completed.
-    completeTask(groupId, taskId, agentId, result);
-    finalizeExecutionLog(groupId, taskId, "completed");
+    // Complete task — completeTask runs acceptanceAssertions and may flip the
+    // task to "failed" on a failed verdict; in that case the returned task
+    // carries status "failed" and we must NOT count this as a success.
+    const finalized = completeTask(groupId, taskId, agentId, result);
+    const assertionFailed = finalized?.status === "failed";
 
-    // Apply success stats *immediately* after completion so any throw in the
+    finalizeExecutionLog(groupId, taskId, assertionFailed ? "failed" : "completed");
+
+    // Apply stats *immediately* after completion so any throw in the
     // non-critical post-complete steps below (handoff append, settleExperience)
-    // still leaves a correctly-incremented tasksCompleted / successRate.
-    // `statsCounted` then guards the catch block from double-mutating.
+    // still leaves correct counters. `statsCounted` then guards the catch
+    // block from double-mutating.
     const stats = agent.stats;
-    stats.tasksCompleted++;
-    stats.tasksFailed = stats.tasksFailed ?? 0;
+    if (assertionFailed) {
+      stats.tasksFailed = (stats.tasksFailed ?? 0) + 1;
+    } else {
+      stats.tasksCompleted++;
+      stats.tasksFailed = stats.tasksFailed ?? 0;
+    }
     stats.totalWorkTimeMs += durationMs;
     const total = stats.tasksCompleted + stats.tasksFailed;
     stats.successRate = total > 0 ? stats.tasksCompleted / total : 1;
     stats.lastActiveAt = new Date().toISOString();
     updateAgentStats(agentId, stats);
     statsCounted = true;
+
+    // Acceptance-assertion rejection: skip success-only side effects (handoff
+    // append, memory settle) and short-circuit. completeTask already emitted
+    // task_failed and rolled up the parent requirement.
+    if (assertionFailed) {
+      updateAgent(agentId, { status: "idle", currentTaskId: undefined });
+      guildEventBus.emit({ type: "agent_status_changed", agentId, status: "idle" });
+      guildEventBus.emit({ type: "agent_updated", agentId });
+      return { summary: finalized?.result?.summary ?? "Acceptance assertions failed" };
+    }
 
     // Persist handoff to the shared workspace so downstream teammates can see it.
     if (handoff && task.parentTaskId) {

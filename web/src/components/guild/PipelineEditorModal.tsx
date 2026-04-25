@@ -21,6 +21,15 @@ type Draft = PipelineTemplate;
 
 const BLANK: Draft = { id: "", name: "", description: "", inputs: [], steps: [] };
 
+/** Short UI-only id for React `key`s on dynamic lists. crypto.randomUUID
+ *  isn't available in some embedded WebViews — fall back to Math.random. */
+function uid(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `uid-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 export default function PipelineEditorModal({ open, onClose, onChange }: Props) {
   const [list, setList] = useState<PipelineTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -1342,15 +1351,30 @@ function AssertionsEditor({
   onChange: (next: AcceptanceAssertion[] | undefined) => void;
 }) {
   const list = assertions ?? [];
+  // Stable per-row UI ids — array index is unsafe as a React key here because
+  // deleting row i causes downstream rows to inherit the deleted row's
+  // controlled-input state, briefly displaying the wrong values.
+  const [ids, setIds] = useState<string[]>(() => list.map(() => uid()));
+  // Resync if the parent swapped the assertion array out (different step
+  // selected). Length-based: if the parent edits in place via our handlers,
+  // ids stay stable; if the array is replaced wholesale, we rebuild.
+  useEffect(() => {
+    if (ids.length !== list.length) {
+      setIds(list.map(() => uid()));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [list.length]);
   const patch = (i: number, next: AcceptanceAssertion) => {
     const copy = list.slice();
     copy[i] = next;
     onChange(copy);
   };
   const add = () => {
+    setIds((prev) => [...prev, uid()]);
     onChange([...list, { type: "file_exists", ref: "" }]);
   };
   const remove = (i: number) => {
+    setIds((prev) => prev.filter((_, j) => j !== i));
     const copy = list.filter((_, j) => j !== i);
     onChange(copy.length === 0 ? undefined : copy);
   };
@@ -1392,7 +1416,7 @@ function AssertionsEditor({
       )}
       {list.map((a, i) => (
         <div
-          key={i}
+          key={ids[i] ?? `__fallback-${i}`}
           className="flex flex-col gap-2 p-3 rounded-lg"
           style={{ border: "1px solid var(--color-border)", background: "var(--color-bg)" }}
         >

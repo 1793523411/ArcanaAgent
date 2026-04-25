@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GuildAgent } from "../../types/guild";
 import type { PipelinePlan, AgentPlanItem } from "../../api/guild";
 import { generatePipelinePlan, applyPipelinePlan, listGuildAgents } from "../../api/guild";
@@ -24,8 +24,17 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
   const [phase, setPhase] = useState<Phase>("prompt");
   const [description, setDescription] = useState("");
   const [plan, setPlan] = useState<PipelinePlan | null>(null);
+  /** Snapshot of the AI's original plan, captured when it first arrives. Drives
+   *  the "重新描述" dirty-check so a user with edits gets a confirm step
+   *  instead of silently losing them — mirrors AIGroupDesignerModal. */
+  const [originalPlan, setOriginalPlan] = useState<PipelinePlan | null>(null);
+  const [confirmReset, setConfirmReset] = useState(false);
   const [agents, setAgents] = useState<GuildAgent[]>([]);
   const [error, setError] = useState<string | null>(null);
+  /** Separate from `error` so a failed agent-fetch doesn't get clobbered by
+   *  later generate/apply errors and vice-versa. The fetch is non-blocking —
+   *  the user can still generate a brand-new pipeline without existing agents. */
+  const [agentsError, setAgentsError] = useState<string | null>(null);
   const [elapsedSec, setElapsedSec] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -34,16 +43,25 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     listGuildAgents()
       .then((list) => { if (!cancelled) setAgents(list); })
       .catch((e) => {
-        if (!cancelled) setError(friendlyError(e));
+        if (!cancelled) setAgentsError(friendlyError(e));
       });
     return () => { cancelled = true; };
   }, []);
+
+  // Mirror isDirty into a ref so the ESC handler can read it without re-binding
+  // on every keystroke and without TDZ-referencing the useMemo declared further
+  // down.
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         if (phase === "loading") {
           abortRef.current?.abort();
+        } else if (phase === "preview" && isDirtyRef.current) {
+          // ESC routes through the dirty-check confirmation so editing a long
+          // step description isn't silently lost on a stray keypress.
+          setConfirmReset(true);
         } else if (phase !== "applying") {
           onClose();
         }
@@ -75,10 +93,14 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     setError(null);
     try {
       const result = await generatePipelinePlan(description.trim(), ctrl.signal);
-      if (ctrl.signal.aborted) return;
+      // Skip late writes if the user cancelled or the parent force-unmounted us.
+      if (ctrl.signal.aborted || !mountedRef.current) return;
       setPlan(result);
+      // Deep clone so later edits to `plan` don't mutate the original snapshot.
+      setOriginalPlan(JSON.parse(JSON.stringify(result)) as PipelinePlan);
       setPhase("preview");
     } catch (e) {
+      if (!mountedRef.current) return;
       if (ctrl.signal.aborted) {
         setPhase("prompt");
         return;
@@ -109,6 +131,24 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     }
   };
 
+  const isDirty = useMemo(() => {
+    if (!plan || !originalPlan) return false;
+    return JSON.stringify(plan) !== JSON.stringify(originalPlan);
+  }, [plan, originalPlan]);
+  isDirtyRef.current = isDirty;
+
+  const resetToPrompt = () => {
+    setPhase("prompt");
+    setPlan(null);
+    setOriginalPlan(null);
+    setConfirmReset(false);
+  };
+
+  const handleResetClick = () => {
+    if (isDirty) setConfirmReset(true);
+    else resetToPrompt();
+  };
+
   return (
     <div className="fixed inset-0 z-[60] flex items-center justify-center">
       <div className="absolute inset-0 bg-black/50" onClick={phase !== "loading" && phase !== "applying" ? onClose : undefined} />
@@ -129,22 +169,46 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
               {phase === "prompt" ? "描述工作流，AI 会规划步骤与合适的 Agent" :
                phase === "loading" ? "正在设计..." :
                phase === "preview" ? "审查方案，可调整后保存为模板" :
-               "保存中..."}
+               // applying: header carries actionable counts, footer carries the spinner.
+               (() => {
+                 const stepCount = plan?.template.steps.length ?? 0;
+                 const newAgentCount = plan?.agents.filter((a) => a.action !== "reuse").length ?? 0;
+                 return newAgentCount > 0
+                   ? `正在写入 ${stepCount} 个步骤 · ${newAgentCount} 个新 Agent`
+                   : `正在写入 ${stepCount} 个步骤`;
+               })()}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            disabled={phase === "loading" || phase === "applying"}
-            title={phase === "loading" ? "AI 正在生成模板，按 ESC 取消" : phase === "applying" ? "正在保存 — 完成前无法关闭" : "关闭"}
-            aria-label="关闭"
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
-            style={{ color: "var(--color-text-muted)", opacity: phase === "loading" || phase === "applying" ? 0.3 : 1 }}
-          >✕</button>
+          {(() => {
+            const closeDisabled = phase === "loading" || phase === "applying";
+            return (
+              <button
+                onClick={onClose}
+                disabled={closeDisabled}
+                title={phase === "loading" ? "AI 正在生成模板，按 ESC 取消" : phase === "applying" ? "正在保存 — 完成前无法关闭" : "关闭"}
+                aria-label="关闭"
+                className={`w-7 h-7 flex items-center justify-center rounded-lg ${closeDisabled ? "cursor-not-allowed" : "hover:bg-[var(--color-surface-hover)]"}`}
+                style={{ color: "var(--color-text-muted)", opacity: closeDisabled ? 0.45 : 1 }}
+              >✕</button>
+            );
+          })()}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
           {phase === "prompt" && (
             <div className="space-y-3">
+              {agentsError && (
+                <div
+                  className="text-xs rounded-lg px-3 py-2 flex items-start gap-2"
+                  style={{ background: "#fffbeb", border: "1px solid #fde68a", color: "#92400e" }}
+                  role="alert"
+                >
+                  <span aria-hidden="true">⚠️</span>
+                  <span>
+                    无法获取已有 Agent（{agentsError}）— 仍可继续生成全新方案，AI 将默认全部新建。
+                  </span>
+                </div>
+              )}
               <label className="block text-xs mb-1" style={{ color: "var(--color-text-muted)" }}>
                 描述工作流 — 包括输入、步骤、依赖、最终交付物
               </label>
@@ -157,14 +221,21 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
                 autoFocus
               />
               <div className="text-[11px] rounded-lg px-3 py-2" style={{ background: "var(--color-bg)", border: "1px dashed var(--color-border)", color: "var(--color-text-muted)" }}>
-                AI 会参考你现有的 {agents.length} 个 Agent — 优先复用，必要时提议新建或派生
+                {agentsError
+                  ? "AI 将根据你的描述提议新 Agent（无法引用现有 Agent）"
+                  : `AI 会参考你现有的 ${agents.length} 个 Agent — 优先复用，必要时提议新建或派生`}
               </div>
             </div>
           )}
 
           {phase === "loading" && (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <div className="text-3xl animate-pulse">🧠</div>
+              <div
+                className="w-8 h-8 rounded-full border-[3px] animate-spin"
+                style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
+                role="status"
+                aria-label="AI 正在设计模板"
+              />
               <div className="text-sm" style={{ color: "var(--color-text-muted)" }}>AI 正在设计模板...</div>
               <div className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
                 已等待 {elapsedSec}s · 通常 20-60 秒 · 按 ESC 或下方按钮取消
@@ -187,7 +258,11 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
           )}
 
           {error && (
-            <div className="mt-3 text-xs px-3 py-2 rounded" style={{ background: "#fee2e2", color: "#991b1b" }}>
+            <div
+              className="mt-3 text-xs px-3 py-2 rounded max-h-32 overflow-y-auto whitespace-pre-wrap break-words"
+              style={{ background: "#fee2e2", color: "#991b1b" }}
+              role="alert"
+            >
               {error}
             </div>
           )}
@@ -207,9 +282,33 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
           )}
           {phase === "preview" && plan && (
             <>
-              <button className="px-4 py-1.5 rounded-lg text-sm" style={{ color: "var(--color-text-muted)" }} onClick={() => { setPhase("prompt"); setPlan(null); }}>
-                重新描述
-              </button>
+              {/* Anchor the reset slot at a fixed min-width so the inline
+                  "确认放弃 / 继续编辑" expansion doesn't shove the primary
+                  "保存模板" button sideways and cause mis-clicks. */}
+              <div className="flex items-center min-w-[14rem]">
+                {confirmReset ? (
+                  <span className="text-xs flex items-center gap-2" style={{ color: "#dc2626" }}>
+                    当前编辑将丢失
+                    <button
+                      className="underline px-1"
+                      onClick={resetToPrompt}
+                    >确认放弃</button>
+                    <button
+                      className="px-1"
+                      style={{ color: "var(--color-text-muted)" }}
+                      onClick={() => setConfirmReset(false)}
+                    >继续编辑</button>
+                  </span>
+                ) : (
+                  <button
+                    className="px-4 py-1.5 rounded-lg text-sm"
+                    style={{ color: "var(--color-text-muted)" }}
+                    onClick={handleResetClick}
+                  >
+                    重新描述
+                  </button>
+                )}
+              </div>
               <button
                 className="px-4 py-1.5 rounded-lg text-sm text-white"
                 style={{ background: "var(--color-accent)" }}

@@ -1,5 +1,6 @@
 import type { GuildTask, GuildAgent, TaskBid } from "../../types/guild";
 import type { ReactNode } from "react";
+import { useState } from "react";
 
 /** Pick the weakest-contribution dimension of the highest-scoring
  *  below-threshold bid. Lets the TaskCard show *why* an open task sits
@@ -73,6 +74,9 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
   const kind = task.kind ?? "adhoc";
   const statusAccent = STATUS_ACCENT[task.status];
   const subtaskCount = task.subtaskIds?.length ?? 0;
+  // Tap-to-expand for the bottleneck badge — native title only fires on
+  // hover, so on touch devices the truncated dimension name was unrecoverable.
+  const [bottleneckExpanded, setBottleneckExpanded] = useState(false);
 
   const background = selected
     ? "var(--color-accent-alpha)"
@@ -172,9 +176,19 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
               <span>{task.bids.length} 个投标</span>
               {belowCount > 0 && (
                 <span
-                  className="text-[10px] px-1.5 py-0.5 rounded max-w-[14rem] truncate"
+                  role="button"
+                  tabIndex={0}
+                  className={`text-[10px] px-1.5 py-0.5 rounded cursor-help ${bottleneckExpanded ? "whitespace-normal break-words" : "max-w-[16rem] truncate"}`}
                   style={{ background: "#fee2e2", color: "#991b1b" }}
-                  title={`${belowCount} 个候选未达竞标门槛${bottleneck ? `，其中最接近的一位瓶颈在「${bottleneck}」` : ""}`}
+                  title={`${belowCount} 个候选未达竞标门槛${bottleneck ? `，其中最接近的一位瓶颈在「${bottleneck}」` : ""}（点击展开/收起）`}
+                  onClick={(e) => { e.stopPropagation(); setBottleneckExpanded((v) => !v); }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setBottleneckExpanded((v) => !v);
+                    }
+                  }}
                 >
                   {belowCount} 未达门槛{bottleneck ? ` · 瓶颈：${bottleneck}` : ""}
                 </span>

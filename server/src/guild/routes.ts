@@ -36,6 +36,8 @@ import {
   type AgentPlanItem,
 } from "./aiDesigner.js";
 import type { GuildAgent, CreateAgentParams } from "./types.js";
+import { sanitizeAssertions } from "./verification.js";
+import { createHash } from "node:crypto";
 
 /** Safely extract a single string from Express 5 params (string | string[]) */
 function p(val: string | string[] | undefined): string {
@@ -58,6 +60,14 @@ function getStringQuery(req: Request, name: string): string {
 function sendServerError(res: Response, e: unknown, context?: string): void {
   serverLogger.error(`[guild] ${context ?? "request"} failed`, { error: String(e) });
   if (!res.headersSent) res.status(500).json({ error: "Internal server error" });
+}
+
+/** Stable, content-derived id for an apply-plan request. Used as the lock
+ *  key so two users coincidentally generating groups with the same display
+ *  name (e.g. "AI Team") don't get spurious 429s, while a genuine double-
+ *  click on the same plan still serializes correctly. */
+function planFingerprint(plan: unknown): string {
+  return createHash("sha1").update(JSON.stringify(plan)).digest("hex").slice(0, 16);
 }
 
 /** Serialize apply-plan calls per plan so a double-click (or accidental
@@ -333,7 +343,7 @@ export function postGroupTask(req: Request, res: Response): void {
       suggestedSkills: Array.isArray(req.body.suggestedSkills) ? req.body.suggestedSkills : undefined,
       suggestedAgentId: typeof req.body.suggestedAgentId === "string" ? req.body.suggestedAgentId : undefined,
       acceptanceCriteria: typeof req.body.acceptanceCriteria === "string" ? req.body.acceptanceCriteria : undefined,
-      acceptanceAssertions: Array.isArray(req.body.acceptanceAssertions) ? req.body.acceptanceAssertions : undefined,
+      acceptanceAssertions: sanitizeAssertions(req.body.acceptanceAssertions),
       createdBy: typeof req.body.createdBy === "string" ? req.body.createdBy : undefined,
     });
     // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
@@ -419,7 +429,9 @@ export async function postApplyGroupPlan(req: Request, res: Response): Promise<v
     res.status(400).json({ error: "Invalid plan shape" });
     return;
   }
-  const release = acquireApplyLock(`group:${plan.group.name.trim()}`, res);
+  // Lock by content fingerprint (not display name) so two users with the
+  // same group name in flight don't 429 each other.
+  const release = acquireApplyLock(`group:${planFingerprint(plan)}`, res);
   if (!release) return;
   const resolvedAgentIds: string[] = [];
   const reuseAgentIds = new Set<string>(); // distinct so rollback can special-case reuse vs created
@@ -533,7 +545,9 @@ export async function postApplyPipelinePlan(req: Request, res: Response): Promis
     return;
   }
 
-  const release = acquireApplyLock(`pipeline:${plan.template.id}`, res);
+  // Same rationale as group: lock by content fingerprint so two distinct
+  // users applying the same template concurrently don't block each other.
+  const release = acquireApplyLock(`pipeline:${planFingerprint(plan)}`, res);
   if (!release) return;
   const keyToId: Record<string, string> = {};
   const createdAgents: GuildAgent[] = [];
@@ -728,7 +742,21 @@ export function putTask(req: Request, res: Response): void {
     if (typeof req.body.title === "string") updates.title = req.body.title;
     if (typeof req.body.description === "string") updates.description = req.body.description;
     if (typeof req.body.priority === "string") updates.priority = req.body.priority;
-    if (typeof req.body.status === "string") updates.status = req.body.status;
+    if (typeof req.body.status === "string") {
+      // Side-effect-bearing transitions must go through dedicated endpoints:
+      //   completed → completeTask (runs acceptanceAssertions)
+      //   failed    → failTask (cascades to dependents, records failureReason)
+      //   cancelled → cancelTask (cascades, aborts execution)
+      //   in_progress → execution lifecycle (assigns agent, starts run)
+      // Allowing these via PUT lets a client skip assertion verification or
+      // bypass cascade semantics entirely.
+      const ALLOWED_PUT_STATUSES = new Set(["open", "bidding", "planning", "blocked"]);
+      if (!ALLOWED_PUT_STATUSES.has(req.body.status)) {
+        res.status(403).json({ error: `不能通过 PUT 直接将状态改为 ${req.body.status}，请走对应接口（complete/fail/cancel/assign）` });
+        return;
+      }
+      updates.status = req.body.status;
+    }
     if (Array.isArray(req.body.dependsOn)) updates.dependsOn = req.body.dependsOn;
     if (typeof req.body.acceptanceCriteria === "string") updates.acceptanceCriteria = req.body.acceptanceCriteria;
     const task = updateTask(groupId, taskId, updates);

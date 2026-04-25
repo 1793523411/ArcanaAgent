@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { runAcceptanceAssertions, formatFailures } from "./verification.js";
+import { runAcceptanceAssertions, formatFailures, sanitizeAssertions } from "./verification.js";
 
 // Each test gets its own cwd under tmpdir so symlink / path-traversal cases
 // can be set up cleanly without polluting sibling runs.
@@ -112,6 +112,45 @@ describe("runAcceptanceAssertions", () => {
     expect(elapsed).toBeLessThan(500);
   });
 
+  it("rejects overlapping-alternation ReDoS patterns like (a|a)+", () => {
+    // ^(a|a)+$ against `aaa...a!` exhibits exponential backtracking — the
+    // engine tries every partition of the run. Static guard must reject.
+    writeFileSync(join(CWD, "x.txt"), "a".repeat(28) + "!");
+    const start = Date.now();
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "^(a|a)+$", regex: true }],
+      CWD,
+    );
+    const elapsed = Date.now() - start;
+    expect(v.ok).toBe(false);
+    expect(v.failures[0].reason).toMatch(/ReDoS|拒绝/);
+    expect(elapsed).toBeLessThan(500);
+  });
+
+  it("accepts (?:foo|bar)+ — disjoint alternatives are not flagged", () => {
+    // The narrowing must not regress legitimate templates: (?:foo|bar)+ has
+    // alternatives that don't share a leading character, so the heuristic
+    // must let it through.
+    writeFileSync(join(CWD, "x.txt"), "foobarfoo");
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "(?:foo|bar)+", regex: true }],
+      CWD,
+    );
+    expect(v.ok).toBe(true);
+  });
+
+  it("accepts anchored-iteration patterns like (?:v\\d+\\.)+", () => {
+    // Inner \d+ followed by a literal \. anchors each iteration, so the
+    // backtracking shape doesn't materialize. The previous broad heuristic
+    // false-rejected this.
+    writeFileSync(join(CWD, "x.txt"), "v1.v22.v333.");
+    const v = runAcceptanceAssertions(
+      [{ type: "file_contains", ref: "x.txt", pattern: "(?:v\\d+\\.)+", regex: true }],
+      CWD,
+    );
+    expect(v.ok).toBe(true);
+  });
+
   it("rejects backreference patterns (ambiguity × quantifier risk)", () => {
     writeFileSync(join(CWD, "x.txt"), "abab");
     const v = runAcceptanceAssertions(
@@ -169,5 +208,56 @@ describe("formatFailures", () => {
     expect(text).toContain("(1) r1");
     expect(text).toContain("(2) r2");
     expect(text).toMatch(/^验收未通过/);
+  });
+});
+
+describe("sanitizeAssertions", () => {
+  it("returns undefined for non-array / empty input", () => {
+    expect(sanitizeAssertions(undefined)).toBeUndefined();
+    expect(sanitizeAssertions(null)).toBeUndefined();
+    expect(sanitizeAssertions("not an array")).toBeUndefined();
+    expect(sanitizeAssertions([])).toBeUndefined();
+  });
+
+  it("drops malformed entries (missing/invalid ref or unknown type)", () => {
+    const out = sanitizeAssertions([
+      { type: "file_exists", ref: "ok.md" },
+      { type: "file_exists" },                          // missing ref
+      { type: "file_exists", ref: "" },                 // empty ref
+      { type: "unknown_kind", ref: "x" },               // unknown type
+      null,                                              // not an object
+      "string",
+      { type: "file_contains", ref: "x" },              // missing pattern
+    ]);
+    expect(out).toEqual([{ type: "file_exists", ref: "ok.md" }]);
+  });
+
+  it("strips unknown keys (e.g. _rejectedBy smuggling)", () => {
+    const out = sanitizeAssertions([
+      { type: "file_exists", ref: "x.md", _rejectedBy: ["evil"], extra: 123 },
+    ]);
+    expect(out).toEqual([{ type: "file_exists", ref: "x.md" }]);
+  });
+
+  it("rejects regex assertions whose pattern would trip the ReDoS guard", () => {
+    const out = sanitizeAssertions([
+      { type: "file_contains", ref: "x.txt", pattern: "(a+)+$", regex: true },   // dropped
+      { type: "file_contains", ref: "y.txt", pattern: "^(a|a)+$", regex: true }, // dropped
+      { type: "file_contains", ref: "z.txt", pattern: "\\d+", regex: true },     // kept
+    ]);
+    expect(out).toEqual([
+      { type: "file_contains", ref: "z.txt", pattern: "\\d+", regex: true },
+    ]);
+  });
+
+  it("preserves description and regex flags faithfully", () => {
+    const out = sanitizeAssertions([
+      { type: "file_exists", ref: "a", description: "must exist" },
+      { type: "file_contains", ref: "b", pattern: "ok", description: "smoke" },
+    ]);
+    expect(out).toEqual([
+      { type: "file_exists", ref: "a", description: "must exist" },
+      { type: "file_contains", ref: "b", pattern: "ok", description: "smoke" },
+    ]);
   });
 });

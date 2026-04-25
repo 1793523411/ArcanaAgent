@@ -51,6 +51,20 @@ const PRIORITY_LABEL: Record<GuildTask["priority"], string> = {
   urgent: "紧急",
 };
 
+/** Map raw task status enum → Chinese label so the panel doesn't render
+ *  "状态：in_progress" alongside the Chinese 暂无输出… badge. Exhaustive
+ *  Record so adding a new TaskStatus member triggers a compile error here. */
+const TASK_STATUS_LABEL: Record<GuildTask["status"], string> = {
+  open: "待认领",
+  bidding: "投标中",
+  in_progress: "进行中",
+  completed: "已完成",
+  failed: "失败",
+  cancelled: "已取消",
+  planning: "规划中",
+  blocked: "阻塞中",
+};
+
 const PRIORITY_COLOR: Record<GuildTask["priority"], string> = {
   low: "var(--color-text-muted)",
   medium: "#f59e0b",
@@ -520,12 +534,14 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
               </button>
             </div>
 
-            {/* 工作产出 — aggregated artifacts from this agent's completed tasks */}
-            {tasks && tasks.length > 0 && (() => {
+            {/* 工作产出 — aggregated artifacts from this agent's completed tasks.
+                Always render the heading once `tasks` is loaded so the section
+                doesn't silently disappear for new / idle agents — users couldn't
+                otherwise tell whether the section exists. */}
+            {tasks && (() => {
               const agentTasks = tasks.filter(
                 (t) => t.assignedAgentId === selectedAgent.id && t.result,
               );
-              if (agentTasks.length === 0) return null;
               const allArtifacts = agentTasks.flatMap((t) =>
                 (t.result?.handoff?.artifacts ?? []).map((a) => ({ ...a, taskTitle: t.title, taskId: t.id })),
               );
@@ -534,7 +550,14 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                   <div className="text-xs font-semibold mb-2" style={{ color: "var(--color-text-muted)" }}>
                     工作产出（{agentTasks.length} 个任务）
                   </div>
-                  {allArtifacts.length > 0 ? (
+                  {agentTasks.length === 0 ? (
+                    <div
+                      className="text-xs italic px-3 py-2 rounded"
+                      style={{ color: "var(--color-text-muted)", background: "var(--color-bg)", border: "1px dashed var(--color-border)" }}
+                    >
+                      此 Agent 还没有完成任何任务的产出
+                    </div>
+                  ) : allArtifacts.length > 0 ? (
                     <div className="space-y-1">
                       {allArtifacts.map((a, i) => {
                         const ai = ARTIFACT_ICON[a.kind] ?? ARTIFACT_ICON.note;
@@ -638,7 +661,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 </span>
               </div>
               <div className="text-xs mt-1 flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
-                <span>状态：{selectedTask.status}</span>
+                <span>状态：{TASK_STATUS_LABEL[selectedTask.status] ?? selectedTask.status}</span>
                 {selectedTask.status === "in_progress" && staleTaskIds?.has(selectedTask.id) && (
                   <span
                     className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full"
@@ -646,7 +669,7 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                     title="最近 8 秒没有收到任何输出 — Agent 可能正在深度推理（长 reasoning / 大 tool 调用），也可能卡住"
                   >
                     <span className="inline-block w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "currentColor" }} />
-                    思考中…
+                    暂无输出…
                   </span>
                 )}
               </div>
@@ -955,6 +978,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedResult(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
+                      aria-label="关闭"
+                      autoFocus
                     >
                       ✕
                     </button>
@@ -982,6 +1007,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedWorkspace(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
+                      aria-label="关闭"
+                      autoFocus
                     >
                       ✕
                     </button>
@@ -1009,6 +1036,8 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                       onClick={() => setExpandedDAG(false)}
                       className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
                       style={{ color: "var(--color-text-muted)" }}
+                      aria-label="关闭"
+                      autoFocus
                     >
                       ✕
                     </button>

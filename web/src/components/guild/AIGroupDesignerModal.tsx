@@ -40,12 +40,18 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
   const [elapsedSec, setElapsedSec] = useState(0);
   const [confirmReset, setConfirmReset] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  /** Snapshot of the AI's original plan (agents keyed by _uid), captured when
-   *  the plan first arrives. Used for (a) the "重新描述" isDirty check and
-   *  (b) switchAction falling back to the AI-recommended sourceAgentId when
-   *  the user toggles reuse/fork away and back. */
+  /** Snapshot of the AI's original plan, captured when the plan first arrives.
+   *  Drives the "重新描述" isDirty check; held as state so the useMemo below
+   *  has a reactive dependency rather than a stale-prone ref read.
+   *  `originalByUidRef` stays a ref because switchAction reads it imperatively
+   *  inside an event handler, never inside a render-time computation. */
+  const [originalPlan, setOriginalPlan] = useState<GroupPlan | null>(null);
   const originalByUidRef = useRef<Map<string, AgentPlanItem>>(new Map());
-  const originalPlanRef = useRef<GroupPlan | null>(null);
+
+  // Mirror isDirty into a ref so the ESC handler below can read it without
+  // re-binding the listener on every keystroke (and without TDZ-referencing
+  // the useMemo that's declared further down).
+  const isDirtyRef = useRef(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -55,6 +61,11 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
       if (e.key === "Escape") {
         if (phase === "loading") {
           abortRef.current?.abort();
+        } else if (phase === "preview" && isDirtyRef.current) {
+          // Route through the same dirty-check the 重新描述 button uses so a
+          // stray ESC while editing a long system prompt doesn't silently
+          // discard the user's edits.
+          setConfirmReset(true);
         } else if (phase !== "applying") {
           onClose();
         }
@@ -90,10 +101,12 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
     setError(null);
     try {
       const result = await generateGroupPlan(description.trim(), ctrl.signal);
-      if (ctrl.signal.aborted) return; // user cancelled while LLM was mid-call
+      // Skip late writes if the user cancelled or the modal was force-unmounted
+      // by the parent for any non-abort reason.
+      if (ctrl.signal.aborted || !mountedRef.current) return;
       const withUids = attachUids(result);
       // Snapshot AI's original shape — used for dirty-check & switchAction hints.
-      originalPlanRef.current = JSON.parse(JSON.stringify(result));
+      setOriginalPlan(JSON.parse(JSON.stringify(result)) as GroupPlan);
       const origMap = new Map<string, AgentPlanItem>();
       for (const a of withUids.agents) {
         const { _uid, ...rest } = a;
@@ -103,6 +116,7 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
       setPlan(withUids);
       setPhase("preview");
     } catch (e) {
+      if (!mountedRef.current) return;
       if (ctrl.signal.aborted) {
         setPhase("prompt");
         return;
@@ -123,19 +137,22 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
    *  plan (agent system prompts included) on every evaluation — without the
    *  memo, every keystroke re-runs it on render. */
   const isDirty = useMemo(() => {
-    if (!plan || !originalPlanRef.current) return false;
+    if (!plan || !originalPlan) return false;
     const stripped: GroupPlan = {
       ...plan,
       agents: plan.agents.map(({ _uid: _u, ...rest }) => rest as AgentPlanItem),
     };
-    return JSON.stringify(stripped) !== JSON.stringify(originalPlanRef.current);
-  }, [plan]);
+    return JSON.stringify(stripped) !== JSON.stringify(originalPlan);
+  }, [plan, originalPlan]);
+  // Keep the ref in sync so the ESC listener (declared earlier, can't TDZ-reference
+  // the memo above) can read the current dirty state.
+  isDirtyRef.current = isDirty;
 
   const resetToPrompt = () => {
     setPhase("prompt");
     setPlan(null);
     setConfirmReset(false);
-    originalPlanRef.current = null;
+    setOriginalPlan(null);
     originalByUidRef.current = new Map();
   };
 
@@ -222,17 +239,24 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
               {phase === "prompt" ? "描述你想要的小组目标，AI 会规划成员与配置" :
                phase === "loading" ? "AI 正在分析..." :
                phase === "preview" ? "审查方案，可调整后一键落盘" :
-               "正在创建 Agent 与小组..."}
+               // applying: header carries the actionable count, footer the spinner
+               // — keeps the two strings from being literally identical.
+               `正在写入 ${plan?.agents.length ?? 0} 个 Agent · 1 个小组`}
             </p>
           </div>
-          <button
-            onClick={onClose}
-            disabled={phase === "loading" || phase === "applying"}
-            title={phase === "loading" ? "AI 正在生成方案，按 ESC 取消" : phase === "applying" ? "正在写入 — 完成前无法关闭" : "关闭"}
-            aria-label="关闭"
-            className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-[var(--color-surface-hover)]"
-            style={{ color: "var(--color-text-muted)", opacity: phase === "loading" || phase === "applying" ? 0.3 : 1 }}
-          >✕</button>
+          {(() => {
+            const closeDisabled = phase === "loading" || phase === "applying";
+            return (
+              <button
+                onClick={onClose}
+                disabled={closeDisabled}
+                title={phase === "loading" ? "AI 正在生成方案，按 ESC 取消" : phase === "applying" ? "正在写入 — 完成前无法关闭" : "关闭"}
+                aria-label="关闭"
+                className={`w-7 h-7 flex items-center justify-center rounded-lg ${closeDisabled ? "cursor-not-allowed" : "hover:bg-[var(--color-surface-hover)]"}`}
+                style={{ color: "var(--color-text-muted)", opacity: closeDisabled ? 0.45 : 1 }}
+              >✕</button>
+            );
+          })()}
         </div>
 
         <div className="flex-1 overflow-y-auto p-5">
@@ -257,7 +281,12 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
 
           {phase === "loading" && (
             <div className="flex flex-col items-center justify-center py-16 gap-3">
-              <div className="text-3xl animate-pulse">🧠</div>
+              <div
+                className="w-8 h-8 rounded-full border-[3px] animate-spin"
+                style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
+                role="status"
+                aria-label="AI 正在设计小组"
+              />
               <div className="text-sm" style={{ color: "var(--color-text-muted)" }}>AI 正在设计小组...</div>
               <div className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
                 已等待 {elapsedSec}s · 通常 20-60 秒 · 按 ESC 或下方按钮取消
@@ -280,7 +309,11 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
           )}
 
           {error && (
-            <div className="mt-3 text-xs px-3 py-2 rounded" style={{ background: "#fee2e2", color: "#991b1b" }}>
+            <div
+              className="mt-3 text-xs px-3 py-2 rounded max-h-32 overflow-y-auto whitespace-pre-wrap break-words"
+              style={{ background: "#fee2e2", color: "#991b1b" }}
+              role="alert"
+            >
               {error}
             </div>
           )}
@@ -352,7 +385,7 @@ export default function AIGroupDesignerModal({ agents, onDone, onClose }: Props)
                 style={{ borderColor: "var(--color-border)", borderTopColor: "var(--color-accent)" }}
                 aria-hidden="true"
               />
-              正在创建 Agent 与小组…
+              保存中…
             </div>
           )}
         </div>
@@ -490,8 +523,6 @@ function AgentPlanCard({
 }) {
   const [expanded, setExpanded] = useState(item.action !== "reuse");
 
-  const meta = ACTION_META[item.action];
-
   const source = item.action === "reuse" ? existingAgents.find((a) => a.id === item.agentId)
     : item.action === "fork" ? existingAgents.find((a) => a.id === item.sourceAgentId)
     : null;
@@ -519,13 +550,15 @@ function AgentPlanCard({
           <div className="text-sm font-medium truncate" style={{ color: "var(--color-text)" }}>
             {displayName}
           </div>
-          <div className="flex items-center gap-2 text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-            <span
-              className="px-1.5 py-0.5 rounded font-medium"
-              style={{ background: meta.bg, color: meta.color }}
-            >{meta.label}</span>
-            {item.reason && <span className="truncate">{item.reason}</span>}
-          </div>
+          {/* Action label badge dropped — the three-way switcher in the
+              expanded body already highlights the current action; duplicating
+              it as a static badge made the row read like two widgets reporting
+              the same state. Mirrors AIPipelineDesignerModal (commit 7471a1b). */}
+          {item.reason && (
+            <div className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
+              {item.reason}
+            </div>
+          )}
         </div>
         <button
           className="text-xs px-2 py-1 rounded"
