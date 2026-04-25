@@ -101,6 +101,12 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
+  // Inline collapse: DAG and workspace blocks default to a one-line header so
+  // a complex pipeline task doesn't bury the result section under two giant
+  // visual blocks. Users opt in via the 展开预览 toggle, or jump straight to
+  // 全屏查看. State is per-panel-mount; no persistence needed.
+  const [dagInlineOpen, setDagInlineOpen] = useState(false);
+  const [workspaceInlineOpen, setWorkspaceInlineOpen] = useState(false);
   const [confirmRelease, setConfirmRelease] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [releaseBusy, setReleaseBusy] = useState(false);
@@ -121,6 +127,10 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
     setWorkspaceMd(null);
     setWorkspaceError(null);
     setExpandedBid(null);
+    // Switching tasks should reset inline collapse state — otherwise the new
+    // task inherits the previous task's open/closed choice, which is jarring.
+    setDagInlineOpen(false);
+    setWorkspaceInlineOpen(false);
     if (!selectedTask) return;
     const parentId = selectedTask.kind === "requirement"
       ? selectedTask.id
@@ -767,67 +777,110 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 pipeline/requirement parent itself. Subtask detail is a zoom-in
                 view (description / handoff / log) where the bigger graph would
                 be noise; users click the parent to orient if needed. */}
-            {(selectedTask.kind === "pipeline" || selectedTask.kind === "requirement") && tasks && tasks.some((t) => t.parentTaskId === selectedTask.id) && (
-              <div>
-                <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
-                    {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
+            {/* DAG and workspace are the two largest blocks on the panel —
+                collapsed by default so a complex pipeline task doesn't bury
+                the result section. Users opt in via 展开预览 or jump straight
+                to 全屏查看. */}
+            {(selectedTask.kind === "pipeline" || selectedTask.kind === "requirement") && tasks && tasks.some((t) => t.parentTaskId === selectedTask.id) && (() => {
+              const subtaskCount = tasks.filter((t) => t.parentTaskId === selectedTask.id).length;
+              return (
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <div className="text-xs font-semibold flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
+                      {selectedTask.kind === "pipeline" ? "流程执行图" : "子任务依赖图"}
+                      {!dagInlineOpen && (
+                        <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+                          · {subtaskCount} 个节点
+                        </span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: "var(--color-text-muted)" }}
+                        onClick={() => setDagInlineOpen((v) => !v)}
+                        aria-expanded={dagInlineOpen}
+                      >
+                        {dagInlineOpen ? "收起预览" : "展开预览"}
+                      </button>
+                      <button
+                        className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: "var(--color-accent)" }}
+                        onClick={() => setExpandedDAG(true)}
+                      >
+                        全屏查看
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
-                    style={{ color: "var(--color-accent)" }}
-                    onClick={() => setExpandedDAG(true)}
-                  >
-                    全屏查看
-                  </button>
+                  {dagInlineOpen && (
+                    <>
+                      <DAGStatusLegend />
+                      <div
+                        className="rounded-lg"
+                        style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
+                      >
+                        <Suspense fallback={<div className="text-xs text-center py-4" style={{ color: "var(--color-text-muted)" }}>加载中…</div>}>
+                          <SubtaskDAG
+                            parentTask={selectedTask}
+                            allTasks={tasks}
+                            agents={agents}
+                            onSelectTask={onSelectTask}
+                          />
+                        </Suspense>
+                      </div>
+                    </>
+                  )}
                 </div>
-                <DAGStatusLegend />
-                <div
-                  className="rounded-lg"
-                  style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}
-                >
-                  <Suspense fallback={<div className="text-xs text-center py-4" style={{ color: "var(--color-text-muted)" }}>加载中…</div>}>
-                    <SubtaskDAG
-                      parentTask={selectedTask}
-                      allTasks={tasks}
-                      agents={agents}
-                      onSelectTask={onSelectTask}
-                    />
-                  </Suspense>
-                </div>
-              </div>
-            )}
+              );
+            })()}
 
             {(selectedTask.kind === "requirement" || selectedTask.parentTaskId) && (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+                  <div className="text-xs font-semibold flex items-center gap-2" style={{ color: "var(--color-text-muted)" }}>
                     协作工作区（{selectedTask.kind === "requirement" ? "本需求" : "父需求"}）
+                    {!workspaceInlineOpen && workspaceMd !== null && (
+                      <span className="text-[10px] font-normal" style={{ color: "var(--color-text-muted)" }}>
+                        · {workspaceError ? "加载失败" : workspaceMd.trim() === "" ? "空" : `${workspaceMd.length} 字符`}
+                      </span>
+                    )}
                   </div>
-                  {workspaceMd && workspaceMd.trim() !== "" && (
+                  <div className="flex items-center gap-1">
                     <button
                       className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
-                      style={{ color: "var(--color-accent)" }}
-                      onClick={() => setExpandedWorkspace(true)}
+                      style={{ color: "var(--color-text-muted)" }}
+                      onClick={() => setWorkspaceInlineOpen((v) => !v)}
+                      aria-expanded={workspaceInlineOpen}
                     >
-                      全屏查看
+                      {workspaceInlineOpen ? "收起预览" : "展开预览"}
                     </button>
-                  )}
+                    {workspaceMd && workspaceMd.trim() !== "" && (
+                      <button
+                        className="text-[10px] px-2 py-0.5 rounded hover:bg-[var(--color-surface-hover)]"
+                        style={{ color: "var(--color-accent)" }}
+                        onClick={() => setExpandedWorkspace(true)}
+                      >
+                        全屏查看
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div
-                  className="rounded-lg px-3 py-2 text-xs overflow-y-auto"
-                  style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", maxHeight: 260 }}
-                >
-                  {workspaceError ? (
-                    <div style={{ color: "#ef4444" }}>加载失败：{workspaceError}</div>
-                  ) : workspaceMd === null ? (
-                    <div style={{ color: "var(--color-text-muted)" }}>加载中…</div>
-                  ) : workspaceMd.trim() === "" ? (
-                    <div style={{ color: "var(--color-text-muted)" }}>工作区为空</div>
-                  ) : (
-                    <MarkdownContent>{workspaceMd}</MarkdownContent>
-                  )}
-                </div>
+                {workspaceInlineOpen && (
+                  <div
+                    className="rounded-lg px-3 py-2 text-xs overflow-y-auto"
+                    style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", maxHeight: 260 }}
+                  >
+                    {workspaceError ? (
+                      <div style={{ color: "#ef4444" }}>加载失败：{workspaceError}</div>
+                    ) : workspaceMd === null ? (
+                      <div style={{ color: "var(--color-text-muted)" }}>加载中…</div>
+                    ) : workspaceMd.trim() === "" ? (
+                      <div style={{ color: "var(--color-text-muted)" }}>工作区为空</div>
+                    ) : (
+                      <MarkdownContent>{workspaceMd}</MarkdownContent>
+                    )}
+                  </div>
+                )}
               </div>
             )}
 
