@@ -132,16 +132,23 @@ function resolveArtifactPath(ref: string, sharedDir: string, wsDir: string): str
 /** Extract `foo.md` / `foo.json` / etc. file references out of a free-form
  *  acceptance criteria string, so we can check whether the agent produced them
  *  even if it didn't populate handoff.artifacts properly. Only recognises
- *  common extensions to avoid flagging prose that happens to contain dots. */
-const CRITERIA_FILE_RE = /[\w\u4e00-\u9fff\-\.]+\.(?:md|json|ts|tsx|js|jsx|py|sh|yaml|yml|txt|csv|html|css|sql)\b/g;
+ *  common extensions to avoid flagging prose that happens to contain dots.
+ *
+ *  Filename character class is **ASCII-only** (`\w`, `-`, `.`, `/`). The old
+ *  pattern included `\u4e00-\u9fff` which made the match greedily swallow
+ *  preceding Chinese context \u2014 e.g. "shared\u76ee\u5f55\u5b58\u5728robot_v1.md" was returned as
+ *  the literal filename instead of "robot_v1.md", and the file lookup
+ *  trivially failed. Filenames in this codebase are conventionally ASCII;
+ *  Chinese-named outputs are vanishingly rare and worth deferring. */
+const CRITERIA_FILE_RE = /(?:^|[^\w/.\-])([\w/\-]+\.(?:md|json|ts|tsx|js|jsx|py|sh|yaml|yml|txt|csv|html|css|sql))\b/g;
 
 function extractFileRefsFromCriteria(text?: string): string[] {
   if (!text) return [];
-  const matches = text.match(CRITERIA_FILE_RE) ?? [];
-  // De-dupe and strip leading `./`
+  // .matchAll exposes the captured group, the bare regex would include the
+  // boundary character we use to anchor the start. Use group 1 only.
   const seen = new Set<string>();
-  for (const m of matches) {
-    const cleaned = m.replace(/^\.\//, "");
+  for (const m of text.matchAll(CRITERIA_FILE_RE)) {
+    const cleaned = m[1].replace(/^\.\//, "");
     seen.add(cleaned);
   }
   return [...seen];

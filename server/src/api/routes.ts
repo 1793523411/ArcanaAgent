@@ -1842,7 +1842,7 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 
 请严格按照以下 JSON 格式返回（不要包含任何其他文字，只返回 JSON）：
 {
-  "name": "Agent 名称（简短，2-4个字）",
+  "name": "Agent 名称（4-8个字，要是完整有意义的角色名，例如「性能优化专家」「数据分析师」，不要给出截断的片段）",
   "description": "一句话描述该 Agent 的核心职责",
   "icon": "一个合适的 emoji 图标",
   "color": "一个十六进制颜色值，如 #3B82F6",

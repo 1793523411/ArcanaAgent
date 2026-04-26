@@ -220,7 +220,7 @@ export interface TaskBid {
   relevantMemories: string[];
   biddedAt: string;
   scoreBreakdown?: ScoreBreakdown;
-  via?: "bidding" | "fallback" | "below_threshold";
+  via?: "bidding" | "suggested" | "fallback" | "below_threshold";
 }
 
 export interface GuildTask {

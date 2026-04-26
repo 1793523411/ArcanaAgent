@@ -407,6 +407,35 @@ export function autoBid(groupId: string, task: GuildTask): TaskBid | null {
 }
 
 function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
+  // Honor an explicit suggestedAgentId as a HARD assignment when the suggested
+  // agent is in the group and idle. The previous logic only used it as a
+  // fallback when no bid passed threshold, which meant a user explicitly
+  // routing a task to "Agent X" got overruled whenever a competing agent
+  // happened to score higher (e.g. two general-purpose agents competing for
+  // a Vue 3 question — both qualify, bidding picks at random, X is ignored).
+  // Explicit user/Lead intent should win. We still skip if the suggested
+  // agent is unavailable so the rest of the team isn't deadlocked.
+  if (fresh.suggestedAgentId) {
+    const rejectedSet = new Set(fresh._rejectedBy ?? []);
+    const groupAgents = getGroupAgents(groupId);
+    const target = groupAgents.find((a) => a.id === fresh.suggestedAgentId);
+    if (target && target.status === "idle" && !target.currentTaskId && !rejectedSet.has(target.id)) {
+      const directBid: TaskBid = {
+        agentId: target.id,
+        taskId: fresh.id,
+        confidence: 0.9,
+        reasoning: `指派分配：任务显式指定 \`suggestedAgentId\` = ${target.name}`,
+        estimatedComplexity: "medium",
+        relevantAssets: [],
+        relevantMemories: [],
+        biddedAt: new Date().toISOString(),
+        via: "suggested",
+      };
+      assignTask(groupId, fresh.id, target.id, directBid, capBids([directBid]));
+      return directBid;
+    }
+  }
+
   const bids = startBidding(groupId, fresh);
   const winner = selectWinner(bids);
 
