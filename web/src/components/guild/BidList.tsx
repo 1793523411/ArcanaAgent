@@ -119,13 +119,31 @@ function BidCard({
               title={`该 Agent 的最终得分 ${sb.final.toFixed(3)} 低于竞标门槛 ${sb.threshold.toFixed(3)}`}
             >未达门槛</span>
           )}
-          {sb?.llmScore != null && sb.llmScore >= 8 && (
-            <span
-              className="text-[9px] px-1 py-0.5 rounded"
-              style={{ background: "#ec489922", color: "#be185d" }}
-              title={`LLM 评分 ${sb.llmScore.toFixed(1)}/10 — 强匹配${sb.llmReason ? "：" + sb.llmReason : ""}`}
-            >LLM {sb.llmScore.toFixed(1)}/10</span>
-          )}
+          {sb && (() => {
+            // Surface which scoring path actually contributed the dominant
+            // semantic signal — LLM > embedding > token (the same priority
+            // bidding.ts uses when composing `core`). Lets users tell apart
+            // "LLM said 8/10" from "token overlap got lucky".
+            const source = sb.llmScore != null ? "LLM"
+              : sb.embedding != null ? "embedding"
+              : "token";
+            const tone = source === "LLM" ? { bg: "#ec489922", fg: "#be185d" }
+              : source === "embedding" ? { bg: "#3b82f622", fg: "#1d4ed8" }
+              : { bg: "var(--color-border)", fg: "var(--color-text-muted)" };
+            const label = source === "LLM" ? `LLM ${sb.llmScore!.toFixed(1)}/10`
+              : source === "embedding" ? `embed ${(sb.embedding! * 100).toFixed(0)}%`
+              : "token";
+            const tip = source === "LLM" ? `LLM 评分 ${sb.llmScore!.toFixed(1)}/10${sb.llmReason ? "：" + sb.llmReason : ""}`
+              : source === "embedding" ? `语义嵌入相似度 ${(sb.embedding! * 100).toFixed(1)}% — 已替代 token 匹配`
+              : "未拿到 LLM / embedding 评分，回退到 token 重叠匹配（精度较低）";
+            return (
+              <span
+                className="text-[9px] px-1 py-0.5 rounded"
+                style={{ background: tone.bg, color: tone.fg }}
+                title={tip}
+              >{label}</span>
+            );
+          })()}
           <span style={{ color: isBelow ? "var(--color-text-muted)" : "var(--color-accent)" }}>
             置信度 {Math.round(bid.confidence * 100)}%
           </span>

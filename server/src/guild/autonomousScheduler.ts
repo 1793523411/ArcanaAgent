@@ -27,7 +27,11 @@ const PRIORITY_RANK: Record<GuildTask["priority"], number> = {
   low: 1,
 };
 
-const RECONCILE_INTERVAL_MS = 20 * 1000;
+/** Pairs with IN_PROGRESS_GRACE_MS=30s in agentReconcile. With this 10s
+ *  cadence, a stuck task is detected within ~10-40s (one sweep + grace).
+ *  Previous 20s + 5s grace let stuck tasks live up to 25s; new 10s + 30s
+ *  is more responsive without churning the disk on healthy systems. */
+const RECONCILE_INTERVAL_MS = 10 * 1000;
 
 /** Per-group concurrency cap. Without this the scheduler will dispatch every
  *  eligible task at once — fine for a 3-agent demo, ruinous when the LLM is

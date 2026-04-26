@@ -281,8 +281,21 @@ export async function planRequirement(
   let raw = "";
   let parsed: PlannerResult | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    // Heartbeat while the LLM is in flight — Lead decomposition can take
+    // 30-60s on Doubao pro and the user previously stared at a frozen panel.
+    // Streams a "...仍在思考" tick every 5s so the live log shows movement
+    // without us having to plumb true token-level streaming through the
+    // LangChain adapter (deferred — heartbeat covers ~80% of the UX win).
+    let elapsed = 0;
+    const heartbeat = setInterval(() => {
+      elapsed += 5;
+      const tick = `\n  ⏳ Lead 仍在拆解... (${elapsed}s)\n`;
+      guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: tick });
+      logText(tick);
+    }, 5000);
     try {
       raw = await callPlanner(modelId, system, user);
+      clearInterval(heartbeat);
       const rawMsg = `\n--- LLM raw response (attempt ${attempt + 1}) ---\n${raw}\n`;
       guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: rawMsg });
       logText(rawMsg);
@@ -293,6 +306,7 @@ export async function planRequirement(
       guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: parseMsg });
       logText(parseMsg);
     } catch (e) {
+      clearInterval(heartbeat);
       serverLogger.error("[guild.planner] LLM call failed", { attempt, error: String(e) });
       const errMsg = `\n✖ LLM 调用失败 (attempt ${attempt + 1}): ${String(e)}\n`;
       guildEventBus.emit({ type: "agent_output", agentId: leadAgentId, taskId: requirement.id, content: errMsg });

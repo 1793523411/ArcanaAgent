@@ -107,6 +107,51 @@ export interface SaveMemoryParams {
 export function saveMemory(agentId: string, params: SaveMemoryParams): AgentMemory {
   const memories = loadIndex(agentId);
   const now = new Date().toISOString();
+
+  // Dedup: an experience with the same (type, title) is almost certainly a
+  // repeat of work the agent has done before — bump strength + refresh
+  // content/timestamp instead of accumulating near-identical rows that
+  // pollute future memory recall and bloat the prompt context. Only applies
+  // to experience memories where titles like "Completed: 写产品介绍" recur
+  // verbatim; knowledge/preference titles tend to be unique by design but
+  // we apply the same rule for consistency. Pinned existing memories are
+  // never overwritten.
+  const dupIdx = memories.findIndex(
+    (m) => m.type === params.type && m.title === params.title && !m.pinned,
+  );
+  if (dupIdx >= 0) {
+    const existing = memories[dupIdx];
+    existing.summary = params.summary ?? existing.summary;
+    existing.content = params.content;
+    existing.tags = Array.from(new Set([...(existing.tags ?? []), ...params.tags]));
+    existing.relatedAssets = params.relatedAssets ?? existing.relatedAssets;
+    existing.sourceTaskId = params.sourceTaskId ?? existing.sourceTaskId;
+    existing.groupId = params.groupId ?? existing.groupId;
+    existing.strength = (existing.strength ?? 1) + (params.strength ?? 1);
+    existing.updatedAt = now;
+    saveIndex(agentId, memories);
+    // Refresh markdown file so disk + index stay in sync.
+    const dir = memoryTypeDir(agentId, existing.type);
+    ensureDir(dir);
+    const filePath = join(dir, `${existing.id}.md`);
+    const front: string[] = [
+      `# ${existing.title}`,
+      ``,
+      existing.summary ? `> ${existing.summary}\n` : "",
+      existing.content,
+      ``,
+      `---`,
+      `Tags: ${existing.tags.join(", ")}`,
+      `Created: ${existing.createdAt}`,
+      `Updated: ${existing.updatedAt} (reinforced ×${existing.strength})`,
+    ];
+    if (existing.sourceTaskId) front.push(`Source task: ${existing.sourceTaskId}`);
+    if (existing.groupId) front.push(`Group: ${existing.groupId}`);
+    writeFileSync(filePath, front.filter(Boolean).join("\n") + "\n");
+    guildEventBus.emit({ type: "agent_memory_settled", agentId, memoryId: existing.id });
+    return existing;
+  }
+
   const memory: AgentMemory = {
     id: genId("mem"),
     type: params.type,

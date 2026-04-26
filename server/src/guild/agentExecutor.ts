@@ -703,6 +703,16 @@ export async function executeAgentTask(
     stats.totalWorkTimeMs += durationMs;
     const total = stats.tasksCompleted + stats.tasksFailed;
     stats.successRate = total > 0 ? stats.tasksCompleted / total : 1;
+    // Running mean of winning-bid confidence across all settled tasks. The
+    // older code initialised this to 0 and never updated it, so the UI's
+    // "平均置信度" tile sat at 0% no matter how many tasks an agent shipped.
+    // Pull the winner's confidence from the task's bids array — that's the
+    // canonical record of what the bidder thought before execution started.
+    const winnerBid = task.bids?.find((b) => b.agentId === agentId);
+    if (winnerBid && total > 0) {
+      const prev = stats.avgConfidence ?? 0;
+      stats.avgConfidence = (prev * (total - 1) + winnerBid.confidence) / total;
+    }
     stats.lastActiveAt = new Date().toISOString();
     updateAgentStats(agentId, stats);
     statsCounted = true;

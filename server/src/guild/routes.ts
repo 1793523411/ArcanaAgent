@@ -818,6 +818,7 @@ export function deleteTask(req: Request, res: Response): void {
     // because the subtasks were never resolved.
     const cascade = req.query.cascade === "true" || req.query.cascade === "1";
     const cascadedIds: string[] = [];
+    const failedIds: string[] = [];
     if (cascade) {
       const visited = new Set<string>();
       const queue: string[] = [taskId];
@@ -837,7 +838,10 @@ export function deleteTask(req: Request, res: Response): void {
           if (c.status === "open" || c.status === "in_progress" || c.status === "bidding" || c.status === "planning" || c.status === "blocked") {
             cancelTask(groupId, c.id);
           }
+          // Track removal failures explicitly so silent IO errors / race
+          // conditions surface in the API response instead of being swallowed.
           if (removeTask(groupId, c.id)) cascadedIds.push(c.id);
+          else failedIds.push(c.id);
         }
       }
     }
@@ -851,7 +855,7 @@ export function deleteTask(req: Request, res: Response): void {
     }
     const ok = removeTask(groupId, taskId);
     if (!ok) { res.status(404).json({ error: "Task not found" }); return; }
-    res.json({ success: true, cascadedIds });
+    res.json({ success: true, cascadedIds, failedIds });
   } catch (e) {
     sendServerError(res, e);
   }
