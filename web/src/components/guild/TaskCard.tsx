@@ -53,10 +53,18 @@ const KIND_COLOR: Record<NonNullable<GuildTask["kind"]>, string> = {
   pipeline: "#14b8a6",
 };
 
-/** Extra decoration for the "soft" statuses that aren't really done or running. */
+/** Color accent per status. The "已完成" board column actually contains
+ *  three terminal states (completed / failed / cancelled) — without a per-card
+ *  visual distinction users couldn't tell apart "this finished cleanly" from
+ *  "this was cascade-cancelled because a sibling failed". Green / red / gray
+ *  borders + a tiny status pill in the header solve this without splitting
+ *  the column itself (which would shuffle existing UI muscle-memory). */
 const STATUS_ACCENT: Partial<Record<GuildTask["status"], { border: string; bg: string; label: string }>> = {
   planning: { border: "#8b5cf6", bg: "rgba(139,92,246,0.08)", label: "规划中" },
   blocked: { border: "#f59e0b", bg: "rgba(245,158,11,0.08)", label: "阻塞中" },
+  completed: { border: "#22c55e", bg: "rgba(34,197,94,0.06)", label: "已完成" },
+  failed: { border: "#ef4444", bg: "rgba(239,68,68,0.08)", label: "失败" },
+  cancelled: { border: "#9ca3af", bg: "rgba(156,163,175,0.08)", label: "已取消" },
 };
 
 interface Props {
@@ -120,9 +128,12 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
         </div>
 
         {statusAccent && (
-          <div className="text-[10px] mt-1" style={{ color: statusAccent.border }}>
+          <span
+            className="inline-block text-[10px] mt-1 px-1.5 py-0.5 rounded-full font-medium"
+            style={{ background: statusAccent.bg, color: statusAccent.border, border: `1px solid ${statusAccent.border}40` }}
+          >
             {statusAccent.label}
-          </div>
+          </span>
         )}
 
         {blockedByDeps && (
