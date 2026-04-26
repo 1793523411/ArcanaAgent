@@ -108,6 +108,15 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
             {task.title}
           </span>
           <div className="flex items-center gap-1.5 shrink-0">
+            {statusAccent && (
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium"
+                style={{ background: statusAccent.bg, color: statusAccent.border, border: `1px solid ${statusAccent.border}40` }}
+                title={`状态：${statusAccent.label}`}
+              >
+                {statusAccent.label}
+              </span>
+            )}
             {kind !== "adhoc" && (
               <span
                 className="text-[10px] px-1.5 py-0.5 rounded-full shrink-0 font-medium"
@@ -126,15 +135,6 @@ export default function TaskCard({ task, agents, onClick, selected, sideAction, 
             {sideAction}
           </div>
         </div>
-
-        {statusAccent && (
-          <span
-            className="inline-block text-[10px] mt-1 px-1.5 py-0.5 rounded-full font-medium"
-            style={{ background: statusAccent.bg, color: statusAccent.border, border: `1px solid ${statusAccent.border}40` }}
-          >
-            {statusAccent.label}
-          </span>
-        )}
 
         {blockedByDeps && (
           <div
