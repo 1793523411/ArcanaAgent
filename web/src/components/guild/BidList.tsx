@@ -112,6 +112,13 @@ function BidCard({
               title="未达竞标门槛，通过兜底策略分配"
             >兜底</span>
           )}
+          {bid.via === "suggested" && (
+            <span
+              className="text-[9px] px-1 py-0.5 rounded"
+              style={{ background: "#a855f722", color: "#9333ea" }}
+              title="任务显式指定了 suggestedAgentId，跳过竞标直接派发"
+            >👉 指派</span>
+          )}
           {isBelow && sb && (
             <span
               className="text-[9px] px-1 py-0.5 rounded"

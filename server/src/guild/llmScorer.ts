@@ -16,12 +16,25 @@
 import type { GuildAgent, GuildTask } from "./types.js";
 import { serverLogger } from "../lib/logger.js";
 import { getLLM } from "../llm/index.js";
+import { loadUserConfig } from "../config/userConfig.js";
 import { HumanMessage, SystemMessage } from "@langchain/core/messages";
 
 // ─── Model selection ─────────────────────────────────────────────
-// Use deepseek-chat (non-reasoning, fast) as the default lightweight scorer.
-// Falls back to the system default if this model is unavailable.
-const LLM_SCORER_MODEL = "deepseek:deepseek-chat";
+/** Pick the LLM the user is already paying for. The previous hardcoded
+ *  `deepseek:deepseek-chat` made round-trips to a non-Doubao provider on
+ *  every bidding round even when the operator's whole stack was configured
+ *  for Doubao — quietly leaking spend to a different account and breaking
+ *  "I want everything to use Doubao" expectations. Override via env for
+ *  ops experiments. */
+function pickScorerModel(): string {
+  const override = process.env.GUILD_LLM_SCORER_MODEL;
+  if (override) return override;
+  try {
+    const cfg = loadUserConfig();
+    if (cfg.modelId) return cfg.modelId;
+  } catch { /* fall through */ }
+  return "volcengine:doubao-seed-2-0-mini-260215";
+}
 
 // ─── Cache ───────────────────────────────────────────────────────
 export interface LlmScoreResult {
@@ -68,7 +81,7 @@ score 含义：0=完全不匹配，5=一般匹配，10=非常契合。不要返�
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const llm = getLLM(LLM_SCORER_MODEL);
+    const llm = getLLM(pickScorerModel());
     const messages = [
       new SystemMessage(systemPrompt),
       new HumanMessage(userPrompt),
@@ -147,7 +160,7 @@ export async function warmLlmScores(
   serverLogger.info("[llmScorer] warming scores", {
     taskId: task.id,
     agentCount: uncached.length,
-    model: LLM_SCORER_MODEL,
+    model: pickScorerModel(),
   });
 
   // Run all agent evaluations in parallel (each has its own 10s timeout)

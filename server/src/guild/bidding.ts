@@ -415,11 +415,19 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
   // a Vue 3 question — both qualify, bidding picks at random, X is ignored).
   // Explicit user/Lead intent should win. We still skip if the suggested
   // agent is unavailable so the rest of the team isn't deadlocked.
+  let suggestedSkipReason: string | null = null;
   if (fresh.suggestedAgentId) {
     const rejectedSet = new Set(fresh._rejectedBy ?? []);
     const groupAgents = getGroupAgents(groupId);
     const target = groupAgents.find((a) => a.id === fresh.suggestedAgentId);
-    if (target && target.status === "idle" && !target.currentTaskId && !rejectedSet.has(target.id)) {
+    if (!target) {
+      suggestedSkipReason = `指定的 agent ${fresh.suggestedAgentId} 不在小组里`;
+    } else if (rejectedSet.has(target.id)) {
+      suggestedSkipReason = `指定的 ${target.name} 之前已拒绝该任务`;
+    } else if (target.status !== "idle" || target.currentTaskId) {
+      suggestedSkipReason = `指定的 ${target.name} 正忙（${target.status}），回退竞标`;
+    }
+    if (target && !suggestedSkipReason) {
       const directBid: TaskBid = {
         agentId: target.id,
         taskId: fresh.id,
@@ -440,6 +448,12 @@ function autoBidInner(groupId: string, fresh: GuildTask): TaskBid | null {
   const winner = selectWinner(bids);
 
   if (winner) {
+    // If we deliberately skipped a suggested agent, prepend the reason to the
+    // winner's reasoning so the UI shows "you asked for X but Y took it" rather
+    // than silently substituting agents.
+    if (suggestedSkipReason) {
+      winner.reasoning = `（${suggestedSkipReason}）${winner.reasoning}`;
+    }
     assignTask(groupId, fresh.id, winner.agentId, winner, capBids(bids));
     return winner;
   }
