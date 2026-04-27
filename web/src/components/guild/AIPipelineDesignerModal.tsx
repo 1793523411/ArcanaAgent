@@ -1,12 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { GuildAgent } from "../../types/guild";
+import type { GuildAgent, PipelineStepSpec } from "../../types/guild";
 import type { PipelinePlan, AgentPlanItem } from "../../api/guild";
 import { generatePipelinePlan, applyPipelinePlan, listGuildAgents } from "../../api/guild";
 import { friendlyError, trapTabInDialog } from "../../lib/guildErrors";
+import PipelineCanvas from "./PipelineCanvas";
+import AssertionsEditor from "./AssertionsEditor";
 
 interface Props {
   onDone: (templateId: string) => void;
   onClose: () => void;
+  /** Active group context — the AI-generated template is bound to this
+   *  group so it shows up in the same group's picker without manual fixup.
+   *  Undefined = create as global template. */
+  currentGroupId?: string;
 }
 
 type Phase = "prompt" | "loading" | "preview" | "applying";
@@ -20,7 +26,7 @@ const ACTION_META: Record<AgentPlanItem["action"], { label: string; color: strin
 };
 
 /** Keyboard of agent plan items — key is planKey ("K0", "K1"...) */
-export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
+export default function AIPipelineDesignerModal({ onDone, onClose, currentGroupId }: Props) {
   const [phase, setPhase] = useState<Phase>("prompt");
   const [description, setDescription] = useState("");
   const [plan, setPlan] = useState<PipelinePlan | null>(null);
@@ -127,7 +133,13 @@ export default function AIPipelineDesignerModal({ onDone, onClose }: Props) {
     setPhase("applying");
     setError(null);
     try {
-      const { template } = await applyPipelinePlan(plan);
+      // Stamp the active group onto the template so it lands in the same
+      // group's picker instead of becoming a global by accident. The user
+      // can re-scope later via the manual editor's group selector.
+      const planWithGroup: PipelinePlan = currentGroupId
+        ? { ...plan, template: { ...plan.template, groupId: currentGroupId } }
+        : plan;
+      const { template } = await applyPipelinePlan(planWithGroup);
       if (!mountedRef.current) return;
       onDone(template.id);
     } catch (e) {
@@ -368,6 +380,23 @@ function PipelinePreview({
 }) {
   const tpl = plan.template;
   const [showAdvanced, setShowAdvanced] = useState(false);
+  // Steps view toggle — list = inline-editable rows (title/description/
+  // assertions), graph = read-write DAG canvas with drag-edge support so the
+  // user can also adjust dependencies. Default to graph because the visual
+  // topology was the #1 missing piece in AI preview before this; users can
+  // still flip to list to bulk-edit titles. Selection in graph mirrors into
+  // the inline editor block below the canvas.
+  const [stepView, setStepView] = useState<"list" | "graph">("graph");
+  const [canvasSelected, setCanvasSelected] = useState<number | null>(null);
+
+  // Update a single step at `idx` with a partial patch. Used by StepRow's
+  // assertion editor and by the canvas selection's expanded StepRow.
+  const patchStep = (idx: number, patch: Partial<PipelineStepSpec>) => {
+    const next = [...tpl.steps];
+    next[idx] = { ...next[idx], ...patch };
+    onPatchTemplate({ steps: next });
+  };
+
   return (
     <div className={`space-y-4 ${disabled ? "opacity-50 pointer-events-none" : ""}`}>
       {plan.reasoning && (
@@ -442,28 +471,96 @@ function PipelinePreview({
         </div>
       </div>
 
-      {/* Steps — title & description inline-editable; dependency / branching
-          logic still lives in the canvas view (left as a progressive-disclosure). */}
+      {/* Steps — list mode is inline-editable rows (title/desc/assertions);
+          graph mode renders the DAG via the shared PipelineCanvas with full
+          drag-edge support so users can tweak dependencies the AI proposed. */}
       <div>
-        <div className="text-xs font-semibold mb-1.5" style={{ color: "var(--color-text-muted)" }}>
-          步骤 ({tpl.steps.length}) — 依赖关系与分支逻辑可在画布中调整
+        <div className="flex items-baseline justify-between mb-1.5">
+          <div className="text-xs font-semibold" style={{ color: "var(--color-text-muted)" }}>
+            步骤 ({tpl.steps.length})
+          </div>
+          <div
+            className="inline-flex rounded overflow-hidden text-[10px]"
+            style={{ border: "1px solid var(--color-border)" }}
+          >
+            {(["list", "graph"] as const).map((v) => {
+              const active = stepView === v;
+              return (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => setStepView(v)}
+                  className="px-2 py-0.5"
+                  style={{
+                    background: active ? "var(--color-accent)" : "transparent",
+                    color: active ? "white" : "var(--color-text-muted)",
+                    borderRight: v === "list" ? "1px solid var(--color-border)" : "none",
+                  }}
+                >
+                  {v === "list" ? "列表" : "图"}
+                </button>
+              );
+            })}
+          </div>
         </div>
-        <div className="space-y-1">
-          {tpl.steps.map((s, i) => (
-            <StepRow
-              key={i}
-              step={s}
-              index={i}
-              allAgents={plan.agents}
-              existing={agents}
-              onPatch={(patch) => {
-                const next = [...tpl.steps];
-                next[i] = { ...next[i], ...patch };
-                onPatchTemplate({ steps: next });
-              }}
-            />
-          ))}
-        </div>
+        {stepView === "graph" ? (
+          <div className="space-y-2">
+            {/* Canvas height is bounded so the modal scroll position stays
+                usable when the rest of the preview also has content above
+                and below this block. */}
+            <div
+              className="rounded-lg overflow-hidden"
+              style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)", height: 320 }}
+            >
+              <PipelineCanvas
+                steps={tpl.steps}
+                selectedIndex={canvasSelected}
+                onSelect={setCanvasSelected}
+                onChangeSteps={(steps) => onPatchTemplate({ steps })}
+                onAddStep={() => {
+                  const next: PipelineStepSpec[] = [
+                    ...tpl.steps,
+                    { title: "", description: "", dependsOn: [] },
+                  ];
+                  onPatchTemplate({ steps: next });
+                  setCanvasSelected(next.length - 1);
+                }}
+              />
+            </div>
+            {canvasSelected !== null && tpl.steps[canvasSelected] && (
+              <div
+                className="rounded-lg p-2"
+                style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
+              >
+                <div className="text-[10px] mb-1" style={{ color: "var(--color-text-muted)" }}>
+                  编辑 Step [{canvasSelected}]
+                </div>
+                <StepRow
+                  key={canvasSelected}
+                  step={tpl.steps[canvasSelected]}
+                  index={canvasSelected}
+                  allAgents={plan.agents}
+                  existing={agents}
+                  onPatch={(patch) => patchStep(canvasSelected, patch)}
+                  defaultAssertionsOpen
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-1">
+            {tpl.steps.map((s, i) => (
+              <StepRow
+                key={i}
+                step={s}
+                index={i}
+                allAgents={plan.agents}
+                existing={agents}
+                onPatch={(patch) => patchStep(i, patch)}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Outputs */}
@@ -581,21 +678,19 @@ function AgentRow({
 }
 
 function StepRow({
-  step, index, allAgents, existing, onPatch,
+  step, index, allAgents, existing, onPatch, defaultAssertionsOpen,
 }: {
-  step: {
-    title: string;
-    description: string;
-    suggestedAgentId?: string;
-    dependsOn?: number[];
-    kind?: string;
-    acceptanceAssertions?: import("../../types/guild").AcceptanceAssertion[];
-  };
+  step: PipelineStepSpec;
   index: number;
   allAgents: (AgentPlanItem & { planKey: string })[];
   existing: GuildAgent[];
-  onPatch: (patch: { title?: string; description?: string }) => void;
+  onPatch: (patch: Partial<PipelineStepSpec>) => void;
+  /** When set, the assertions editor expands by default — used by the
+   *  canvas-mode selection panel where there's already screen real estate
+   *  reserved for the selected step. */
+  defaultAssertionsOpen?: boolean;
 }) {
+  const [assertionsOpen, setAssertionsOpen] = useState(!!defaultAssertionsOpen);
   const sid = step.suggestedAgentId;
   let agentLabel: string | null = null;
   if (sid?.startsWith("plan:")) {
@@ -611,49 +706,73 @@ function StepRow({
     agentLabel = existing.find(a => a.id === sid)?.name ?? sid;
   }
 
+  const assertionCount = step.acceptanceAssertions?.length ?? 0;
+
   return (
-    <div className="rounded px-2 py-1 text-xs flex items-start gap-2" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
-      <span className="font-mono shrink-0 pt-0.5" style={{ color: "var(--color-text-muted)" }}>[{index}]</span>
-      <div className="flex-1 min-w-0">
-        <div className="flex items-center gap-1.5 flex-wrap">
-          <input
-            className="flex-1 min-w-0 bg-transparent font-medium focus:outline-none focus:bg-[var(--color-surface)] rounded px-1"
-            style={{ color: "var(--color-text)" }}
-            value={step.title}
-            placeholder="(未命名)"
-            onChange={(e) => onPatch({ title: e.target.value })}
-          />
-          {step.kind && step.kind !== "task" && (
-            <span className="text-[10px] px-1 rounded shrink-0" style={{ background: step.kind === "branch" ? "#8b5cf622" : "#f59e0b22", color: step.kind === "branch" ? "#8b5cf6" : "#f59e0b" }}>
-              {step.kind}
-            </span>
-          )}
-          {(step.dependsOn ?? []).length > 0 && (
-            <span className="text-[10px] shrink-0" style={{ color: "var(--color-text-muted)" }}>← {step.dependsOn!.join(",")}</span>
-          )}
-          {(step.acceptanceAssertions?.length ?? 0) > 0 && (
-            <span
+    <div className="rounded px-2 py-1 text-xs flex flex-col gap-1" style={{ background: "var(--color-bg)", border: "1px solid var(--color-border)" }}>
+      <div className="flex items-start gap-2">
+        <span className="font-mono shrink-0 pt-0.5" style={{ color: "var(--color-text-muted)" }}>[{index}]</span>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-1.5 flex-wrap">
+            <input
+              className="flex-1 min-w-0 bg-transparent font-medium focus:outline-none focus:bg-[var(--color-surface)] rounded px-1"
+              style={{ color: "var(--color-text)" }}
+              value={step.title}
+              placeholder="(未命名)"
+              onChange={(e) => onPatch({ title: e.target.value })}
+            />
+            {step.kind && step.kind !== "task" && (
+              <span className="text-[10px] px-1 rounded shrink-0" style={{ background: step.kind === "branch" ? "#8b5cf622" : "#f59e0b22", color: step.kind === "branch" ? "#8b5cf6" : "#f59e0b" }}>
+                {step.kind}
+              </span>
+            )}
+            {(step.dependsOn ?? []).length > 0 && (
+              <span className="text-[10px] shrink-0" style={{ color: "var(--color-text-muted)" }}>← {step.dependsOn!.join(",")}</span>
+            )}
+            <button
+              type="button"
               className="text-[10px] shrink-0 px-1 py-0.5 rounded"
-              style={{ background: "#dcfce7", color: "#166534" }}
-              title={`Harness 会机器校验 ${step.acceptanceAssertions!.length} 条验收断言`}
+              style={{
+                background: assertionCount > 0 ? "#dcfce7" : "var(--color-surface)",
+                color: assertionCount > 0 ? "#166534" : "var(--color-text-muted)",
+                border: assertionsOpen ? "1px solid #166534" : "1px solid var(--color-border)",
+              }}
+              title={
+                assertionCount > 0
+                  ? `Harness 会机器校验 ${assertionCount} 条验收断言 — 点击编辑`
+                  : "点击添加机器校验断言（file_exists / file_contains）"
+              }
+              onClick={() => setAssertionsOpen((v) => !v)}
             >
-              🛡 {step.acceptanceAssertions!.length}
-            </span>
-          )}
-          {agentLabel && (
-            <span className="text-[10px] ml-auto px-1.5 py-0.5 rounded shrink-0" style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}>
-              🤖 {agentLabel}
-            </span>
-          )}
+              🛡 {assertionCount > 0 ? assertionCount : "+"}
+            </button>
+            {agentLabel && (
+              <span className="text-[10px] ml-auto px-1.5 py-0.5 rounded shrink-0" style={{ background: "var(--color-accent-alpha)", color: "var(--color-accent)" }}>
+                🤖 {agentLabel}
+              </span>
+            )}
+          </div>
+          <input
+            className="w-full mt-0.5 bg-transparent text-[10px] focus:outline-none focus:bg-[var(--color-surface)] rounded px-1"
+            style={{ color: "var(--color-text-muted)" }}
+            value={step.description}
+            placeholder="步骤描述"
+            onChange={(e) => onPatch({ description: e.target.value })}
+          />
         </div>
-        <input
-          className="w-full mt-0.5 bg-transparent text-[10px] focus:outline-none focus:bg-[var(--color-surface)] rounded px-1"
-          style={{ color: "var(--color-text-muted)" }}
-          value={step.description}
-          placeholder="步骤描述"
-          onChange={(e) => onPatch({ description: e.target.value })}
-        />
       </div>
+      {assertionsOpen && (
+        // Indent matches the [index] gutter so the editor reads as a child of
+        // this row, not a sibling. Padding-top separates from the title line.
+        <div className="pl-7 pt-1">
+          <AssertionsEditor
+            assertions={step.acceptanceAssertions}
+            onChange={(next) => onPatch({ acceptanceAssertions: next })}
+            title="本步骤的验收断言"
+            hint="完成时由 harness 验证；失败时按 retry 策略打回 agent"
+          />
+        </div>
+      )}
     </div>
   );
 }

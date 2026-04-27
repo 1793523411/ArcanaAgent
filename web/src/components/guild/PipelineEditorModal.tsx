@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { PipelineTemplate, PipelineStepSpec, PipelineInputSpec, PipelineRetryPolicy, PipelineStepKind, PipelineArtifactSpec, PipelineArtifactKind, AcceptanceAssertion } from "../../types/guild";
+import type { PipelineTemplate, PipelineStepSpec, PipelineInputSpec, PipelineRetryPolicy, PipelineStepKind, PipelineArtifactSpec, PipelineArtifactKind } from "../../types/guild";
 import {
   listPipelines,
   createPipeline,
@@ -9,28 +9,26 @@ import {
 import PipelineCanvas from "./PipelineCanvas";
 import ConfirmDialog from "./ConfirmDialog";
 import AIPipelineDesignerModal from "./AIPipelineDesignerModal";
+import AssertionsEditor from "./AssertionsEditor";
 import { trapTabInDialog } from "../../lib/guildErrors";
 
 interface Props {
   open: boolean;
   onClose: () => void;
   onChange?: () => void;
+  /** Current active group — new templates default to this scope. AI-generated
+   *  templates also adopt it. Falsy = global default. */
+  currentGroupId?: string;
+  /** Group catalog — used to render the group picker so a template can be
+   *  scoped to any group, not just the current one. */
+  groups?: { id: string; name: string }[];
 }
 
 type Draft = PipelineTemplate;
 
 const BLANK: Draft = { id: "", name: "", description: "", inputs: [], steps: [] };
 
-/** Short UI-only id for React `key`s on dynamic lists. crypto.randomUUID
- *  isn't available in some embedded WebViews — fall back to Math.random. */
-function uid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
-  }
-  return `uid-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-export default function PipelineEditorModal({ open, onClose, onChange }: Props) {
+export default function PipelineEditorModal({ open, onClose, onChange, currentGroupId, groups }: Props) {
   const [list, setList] = useState<PipelineTemplate[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(BLANK);
@@ -42,6 +40,25 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
   const [canvasSelected, setCanvasSelected] = useState<number | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [aiOpen, setAiOpen] = useState(false);
+  // Per-section collapse state for the left list. Lets users hide globals
+  // when they only care about the current group's templates (or vice-versa)
+  // without losing the section structure. Persisted across modal opens via
+  // localStorage so the default isn't constantly re-collapsing.
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => {
+    try {
+      const raw = localStorage.getItem("guild.pipelineEditor.collapsedSections");
+      return new Set(raw ? JSON.parse(raw) as string[] : []);
+    } catch { return new Set(); }
+  });
+  const toggleSection = (key: string) => {
+    setCollapsedSections((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      try { localStorage.setItem("guild.pipelineEditor.collapsedSections", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
 
   const refresh = async () => {
     try {
@@ -86,7 +103,14 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
 
   const openNew = () => {
     setSelectedId(null);
-    setDraft({ ...BLANK, steps: [{ title: "", description: "", dependsOn: [] }] });
+    // New templates default to the current group's scope. Setting groupId
+    // here means a freshly-created template auto-shows in the picker for
+    // the same group instead of being orphaned as a global by accident.
+    setDraft({
+      ...BLANK,
+      groupId: currentGroupId,
+      steps: [{ title: "", description: "", dependsOn: [] }],
+    });
     setIsNew(true);
     setError(null);
     setCanvasSelected(null);
@@ -195,23 +219,148 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
                 暂无流水线模板
               </div>
             )}
-            {list.map((t) => (
-              <button
-                key={t.id}
-                onClick={() => openExisting(t)}
-                className="w-full text-left px-3 py-2 border-b"
-                style={{
-                  borderColor: "var(--color-border)",
-                  background: selectedId === t.id && !isNew ? "var(--color-accent-alpha)" : "transparent",
-                  color: selectedId === t.id && !isNew ? "var(--color-accent)" : "var(--color-text)",
-                }}
-              >
-                <div className="truncate">{t.name}</div>
-                <div className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
-                  {t.id} · {t.steps.length} 步
-                </div>
-              </button>
-            ))}
+            {(() => {
+              // Group templates by groupId, then render: current group first
+              // (so it's at the top of the panel when the user is mid-task),
+              // followed by globals, followed by other groups. Empty buckets
+              // are skipped so we don't render a header with nothing under it.
+              const buckets = new Map<string, PipelineTemplate[]>();
+              for (const t of list) {
+                const key = t.groupId ?? "__global__";
+                const arr = buckets.get(key) ?? [];
+                arr.push(t);
+                buckets.set(key, arr);
+              }
+              const groupName = (gid: string) => groups?.find((g) => g.id === gid)?.name ?? gid;
+              type Section = {
+                key: string;
+                label: string;
+                kind: "current" | "global" | "other";
+                items: PipelineTemplate[];
+              };
+              const ordered: Section[] = [];
+              if (currentGroupId && buckets.has(currentGroupId)) {
+                ordered.push({
+                  key: currentGroupId,
+                  label: groupName(currentGroupId),
+                  kind: "current",
+                  items: buckets.get(currentGroupId)!,
+                });
+                buckets.delete(currentGroupId);
+              }
+              if (buckets.has("__global__")) {
+                ordered.push({
+                  key: "__global__",
+                  label: "全局模板",
+                  kind: "global",
+                  items: buckets.get("__global__")!,
+                });
+                buckets.delete("__global__");
+              }
+              for (const [gid, items] of buckets) {
+                ordered.push({ key: gid, label: groupName(gid), kind: "other", items });
+              }
+              const KIND_STYLE: Record<Section["kind"], { icon: string; accent: string; tint: string; pillBg: string; pillFg: string; subtitle: string }> = {
+                current: {
+                  icon: "👥",
+                  accent: "var(--color-accent)",
+                  tint: "var(--color-accent-alpha)",
+                  pillBg: "var(--color-accent)",
+                  pillFg: "white",
+                  subtitle: "当前小组专属",
+                },
+                global: {
+                  icon: "🌐",
+                  accent: "#94a3b8",
+                  tint: "transparent",
+                  pillBg: "var(--color-border)",
+                  pillFg: "var(--color-text-muted)",
+                  subtitle: "所有小组可用",
+                },
+                other: {
+                  icon: "📁",
+                  accent: "#cbd5e1",
+                  tint: "transparent",
+                  pillBg: "var(--color-border)",
+                  pillFg: "var(--color-text-muted)",
+                  subtitle: "其它小组",
+                },
+              };
+              return ordered.map((section) => {
+                const style = KIND_STYLE[section.kind];
+                const collapsed = collapsedSections.has(section.key);
+                return (
+                  <div key={section.key} className="mb-1">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection(section.key)}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-[var(--color-surface-hover)] sticky top-0 z-[1]"
+                      style={{
+                        background: collapsed ? "var(--color-bg)" : style.tint,
+                        borderBottom: `1px solid ${style.accent}`,
+                        borderLeft: section.kind === "current" ? `3px solid ${style.accent}` : "3px solid transparent",
+                      }}
+                      aria-expanded={!collapsed}
+                    >
+                      <span
+                        className="inline-block transition-transform shrink-0 text-[10px]"
+                        style={{ transform: collapsed ? "rotate(-90deg)" : "rotate(0deg)", color: "var(--color-text-muted)" }}
+                      >
+                        ▼
+                      </span>
+                      <span className="text-base shrink-0" aria-hidden="true">{style.icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-semibold truncate" style={{ color: "var(--color-text)" }}>
+                          {section.label}
+                        </div>
+                        <div className="text-[10px] truncate" style={{ color: "var(--color-text-muted)" }}>
+                          {style.subtitle}
+                        </div>
+                      </div>
+                      <span
+                        className="text-[10px] font-mono px-1.5 py-0.5 rounded-full shrink-0"
+                        style={{ background: style.pillBg, color: style.pillFg, minWidth: 22, textAlign: "center" }}
+                      >
+                        {section.items.length}
+                      </span>
+                    </button>
+                    {!collapsed && section.items.map((t) => {
+                      const active = selectedId === t.id && !isNew;
+                      return (
+                        <button
+                          key={t.id}
+                          onClick={() => openExisting(t)}
+                          className="w-full text-left pl-5 pr-3 py-2 border-b transition-colors hover:bg-[var(--color-surface-hover)]"
+                          style={{
+                            borderColor: "var(--color-border)",
+                            background: active ? "var(--color-accent-alpha)" : "transparent",
+                            color: active ? "var(--color-accent)" : "var(--color-text)",
+                            // Section-kind tint on the left edge so even when
+                            // multiple sections are expanded, scanning a single
+                            // row tells the user "this is current-group" vs
+                            // "this is global" without rebuying the header.
+                            borderLeft: `3px solid ${active ? style.accent : "transparent"}`,
+                          }}
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            {section.kind === "global" && (
+                              <span className="text-[10px] shrink-0" aria-hidden="true" title="全局模板">🌐</span>
+                            )}
+                            {section.kind === "other" && (
+                              <span className="text-[10px] shrink-0" aria-hidden="true" title={`属于 ${section.label}`}>📁</span>
+                            )}
+                            <span className="truncate text-sm">{t.name}</span>
+                          </div>
+                          <div className="text-[10px] truncate mt-0.5" style={{ color: active ? "var(--color-accent)" : "var(--color-text-muted)", opacity: active ? 0.85 : 1 }}>
+                            {t.id} · {t.steps.length} 步
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              });
+            })()}
           </div>
         </div>
 
@@ -396,6 +545,32 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
                   onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 />
               </Field>
+              <Field label="所属小组" hint="未选 = 全局模板（所有小组都能用）">
+                <select
+                  className={inputCls}
+                  value={draft.groupId ?? ""}
+                  onChange={(e) => setDraft({
+                    ...draft,
+                    // Empty selection persists as undefined so the JSON file
+                    // doesn't grow a `"groupId": ""` field that means "global"
+                    // but reads like "broken reference".
+                    groupId: e.target.value === "" ? undefined : e.target.value,
+                  })}
+                >
+                  <option value="">🌐 全局（所有小组可用）</option>
+                  {(groups ?? []).map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}{currentGroupId === g.id ? "（当前）" : ""}
+                    </option>
+                  ))}
+                  {/* If the template references a group that's no longer in
+                      the catalog (deleted? not loaded yet?), surface it so
+                      saving doesn't silently rewrite to global. */}
+                  {draft.groupId && !(groups ?? []).some((g) => g.id === draft.groupId) && (
+                    <option value={draft.groupId}>{draft.groupId}（未知小组）</option>
+                  )}
+                </select>
+              </Field>
 
               <SectionHeader
                 title="Inputs"
@@ -558,6 +733,7 @@ export default function PipelineEditorModal({ open, onClose, onChange }: Props) 
       />
       {aiOpen && (
         <AIPipelineDesignerModal
+          currentGroupId={currentGroupId}
           onDone={async (templateId) => {
             setAiOpen(false);
             await refresh();
@@ -1341,153 +1517,5 @@ function OutputsEditor({
   );
 }
 
-// ─── Acceptance assertions editor ─────────────────────────────
-
-function AssertionsEditor({
-  assertions,
-  onChange,
-}: {
-  assertions: AcceptanceAssertion[] | undefined;
-  onChange: (next: AcceptanceAssertion[] | undefined) => void;
-}) {
-  const list = assertions ?? [];
-  // Stable per-row UI ids — array index is unsafe as a React key here because
-  // deleting row i causes downstream rows to inherit the deleted row's
-  // controlled-input state, briefly displaying the wrong values.
-  const [ids, setIds] = useState<string[]>(() => list.map(() => uid()));
-  // Resync if the parent swapped the assertion array out (different step
-  // selected). Length-based: if the parent edits in place via our handlers,
-  // ids stay stable; if the array is replaced wholesale, we rebuild.
-  useEffect(() => {
-    if (ids.length !== list.length) {
-      setIds(list.map(() => uid()));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [list.length]);
-  const patch = (i: number, next: AcceptanceAssertion) => {
-    const copy = list.slice();
-    copy[i] = next;
-    onChange(copy);
-  };
-  const add = () => {
-    setIds((prev) => [...prev, uid()]);
-    onChange([...list, { type: "file_exists", ref: "" }]);
-  };
-  const remove = (i: number) => {
-    setIds((prev) => prev.filter((_, j) => j !== i));
-    const copy = list.filter((_, j) => j !== i);
-    onChange(copy.length === 0 ? undefined : copy);
-  };
-  const changeType = (i: number, type: AcceptanceAssertion["type"]) => {
-    const cur = list[i];
-    if (cur.type === type) return;
-    if (type === "file_exists") {
-      patch(i, { type: "file_exists", ref: cur.ref, description: cur.description });
-    } else {
-      patch(i, { type: "file_contains", ref: cur.ref, pattern: "", regex: false, description: cur.description });
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex items-center justify-between">
-        <div className="flex flex-col">
-          <span className="text-xs font-medium flex items-center gap-1.5" style={{ color: "var(--color-text)" }}>
-            🛡 验收断言（可选）
-          </span>
-          <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
-            Harness 机器校验；agent 声称完成后不过这些就不算完成
-          </span>
-        </div>
-        <button
-          className="text-xs px-2 py-0.5 rounded"
-          style={{ border: "1px solid var(--color-border)", color: "var(--color-text)" }}
-          onClick={add}
-          type="button"
-        >+ 添加</button>
-      </div>
-      {list.length === 0 && (
-        <div
-          className="text-xs italic px-3 py-2 rounded"
-          style={{ color: "var(--color-text-muted)", background: "var(--color-bg)", border: "1px dashed var(--color-border)" }}
-        >
-          未声明断言（agent 完成即完成，不做机器校验）
-        </div>
-      )}
-      {list.map((a, i) => (
-        <div
-          key={ids[i] ?? `__fallback-${i}`}
-          className="flex flex-col gap-2 p-3 rounded-lg"
-          style={{ border: "1px solid var(--color-border)", background: "var(--color-bg)" }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="inline-flex rounded overflow-hidden text-xs" style={{ border: "1px solid var(--color-border)" }}>
-              {(["file_exists", "file_contains"] as const).map((t) => {
-                const active = a.type === t;
-                return (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => changeType(i, t)}
-                    className="px-2 py-0.5"
-                    style={{
-                      background: active ? "#dcfce7" : "transparent",
-                      color: active ? "#166534" : "var(--color-text-muted)",
-                      fontWeight: active ? 600 : 400,
-                      borderRight: t === "file_exists" ? "1px solid var(--color-border)" : "none",
-                    }}
-                  >
-                    {t === "file_exists" ? "文件存在" : "文件包含"}
-                  </button>
-                );
-              })}
-            </div>
-            <button
-              className="w-6 h-6 rounded flex items-center justify-center text-xs"
-              type="button"
-              title="删除此断言"
-              style={{ border: "1px solid #fca5a5", color: "#dc2626" }}
-              onClick={() => remove(i)}
-            >✕</button>
-          </div>
-          <Field label="ref" hint="文件路径，支持 ${var}">
-            <input
-              className={inputCls}
-              placeholder="e.g. ${filename}.md"
-              value={a.ref}
-              onChange={(e) => patch(i, { ...a, ref: e.target.value })}
-            />
-          </Field>
-          {a.type === "file_contains" && (
-            <>
-              <Field label="pattern" hint={a.regex ? "正则表达式" : "子串"}>
-                <input
-                  className={inputCls}
-                  placeholder={a.regex ? '"price"\\\\s*:\\\\s*\\\\d+' : "## 结论"}
-                  value={a.pattern}
-                  onChange={(e) => patch(i, { ...a, pattern: e.target.value })}
-                />
-              </Field>
-              <label className="flex items-center gap-1.5 text-xs cursor-pointer" style={{ color: "var(--color-text-muted)" }}>
-                <input
-                  type="checkbox"
-                  checked={!!a.regex}
-                  onChange={(e) => patch(i, { ...a, regex: e.target.checked })}
-                />
-                按正则匹配（RegExp）
-              </label>
-            </>
-          )}
-          <Field label="description" hint="（可选）说明这条断言的意图">
-            <input
-              className={inputCls}
-              placeholder="e.g. 博客必须包含结论章节"
-              value={a.description ?? ""}
-              onChange={(e) => patch(i, { ...a, description: e.target.value || undefined })}
-            />
-          </Field>
-        </div>
-      ))}
-    </div>
-  );
-}
+// AssertionsEditor moved to AssertionsEditor.tsx — shared with the AI
+// pipeline designer so users can edit assertions during AI preview too.

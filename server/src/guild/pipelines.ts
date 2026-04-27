@@ -105,6 +105,10 @@ export interface PipelineTemplate {
   steps: PipelineStepSpec[];
   /** Pipeline-level final deliverables. Automatically treated as `isFinal: true`. */
   outputs?: PipelineArtifactSpec[];
+  /** Optional owning group. When set, the template is scoped to this group
+   *  in the picker UI; undefined = global (visible everywhere). Validated
+   *  against the same id pattern as group ids when present. */
+  groupId?: string;
 }
 
 export interface ExpandPipelineOutcome {

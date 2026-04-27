@@ -80,6 +80,11 @@ export interface PipelineTemplate {
   steps: PipelineStepSpec[];
   /** Pipeline-level final deliverables. Automatically treated as isFinal=true. */
   outputs?: PipelineArtifactSpec[];
+  /** Optional owning group — when set, the template only shows up for tasks
+   *  in this group plus the group's own editor. Undefined means "global"
+   *  (visible to every group). Older templates without this field are
+   *  treated as global for backwards compat. */
+  groupId?: string;
 }
 
 export type DeclaredOutputStatus = "pending" | "produced" | "missing";

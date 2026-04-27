@@ -18,6 +18,12 @@ interface Props {
   loading?: boolean;
   placeholder?: string;
   showPriority?: boolean;
+  /** Current group context — used to filter the pipeline picker so users
+   *  only see templates that belong here (plus globals). Templates created
+   *  inline via the editor inherit this id by default. */
+  currentGroupId?: string;
+  /** All known groups, surfaced in the editor's group picker. */
+  groups?: { id: string; name: string }[];
 }
 
 const PRIORITY_OPTIONS: Array<{ value: TaskPriority; label: string; icon: string }> = [
@@ -28,7 +34,7 @@ const PRIORITY_OPTIONS: Array<{ value: TaskPriority; label: string; icon: string
 ];
 
 export default function InstructionInput({
-  onSubmit, onSubmitPipeline, loading, placeholder, showPriority,
+  onSubmit, onSubmitPipeline, loading, placeholder, showPriority, currentGroupId, groups,
 }: Props) {
   const [mode, setMode] = useState<Mode>("text");
   const [text, setText] = useState("");
@@ -50,14 +56,22 @@ export default function InstructionInput({
   const [pipelineInputs, setPipelineInputs] = useState<Record<string, string>>({});
   const [editorOpen, setEditorOpen] = useState(false);
 
+  // Templates visible to *this* group: globals (no groupId) + ones explicitly
+  // bound to currentGroupId. We compute it lazily off `pipelines` so changes
+  // to currentGroupId don't trigger a network refetch.
+  const visiblePipelines = pipelines.filter(
+    (p) => !p.groupId || p.groupId === currentGroupId,
+  );
+
   const reloadPipelines = () => {
     listPipelines()
       .then((tpls) => {
         setPipelines(tpls);
-        if (tpls.length > 0 && !tpls.find((p) => p.id === pipelineId)) {
-          setPipelineId(tpls[0].id);
-          setPipelineInputs(defaultInputs(tpls[0]));
-        } else if (tpls.length === 0) {
+        const visible = tpls.filter((p) => !p.groupId || p.groupId === currentGroupId);
+        if (visible.length > 0 && !visible.find((p) => p.id === pipelineId)) {
+          setPipelineId(visible[0].id);
+          setPipelineInputs(defaultInputs(visible[0]));
+        } else if (visible.length === 0) {
           setPipelineId("");
           setPipelineInputs({});
         }
@@ -73,6 +87,22 @@ export default function InstructionInput({
   }, [mode, pipelinesLoaded]);
 
   const selectedPipeline = pipelines.find((p) => p.id === pipelineId) ?? null;
+
+  // When the active group changes (or pipelines are loaded with a stale
+  // pipelineId from a previous group), reset to the first visible template
+  // so the user doesn't see "selected: <something hidden>" weirdness.
+  useEffect(() => {
+    if (!pipelinesLoaded) return;
+    if (selectedPipeline && (!selectedPipeline.groupId || selectedPipeline.groupId === currentGroupId)) return;
+    if (visiblePipelines.length > 0) {
+      setPipelineId(visiblePipelines[0].id);
+      setPipelineInputs(defaultInputs(visiblePipelines[0]));
+    } else {
+      setPipelineId("");
+      setPipelineInputs({});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentGroupId, pipelinesLoaded, pipelines]);
 
   const handleSelectPipeline = (id: string) => {
     setPipelineId(id);
@@ -102,10 +132,21 @@ export default function InstructionInput({
     setPipelineInputs(defaultInputs(selectedPipeline));
   };
 
-  const pipelineSendDisabled =
-    loading ||
-    !selectedPipeline ||
-    missingRequired(selectedPipeline, pipelineInputs).length > 0;
+  const pipelineMissing = selectedPipeline ? missingRequired(selectedPipeline, pipelineInputs) : [];
+  const pipelineSendDisabled = loading || !selectedPipeline || pipelineMissing.length > 0;
+  // Surface the disabled reason as a string the button title + an inline
+  // hint can both reuse — without this users see a greyed button and don't
+  // know whether it's loading, no template, or a missing required input.
+  const pipelineDisabledReason = (() => {
+    if (loading) return "正在创建…";
+    if (!selectedPipeline) return "请先选择一个流水线模板";
+    if (pipelineMissing.length === 0) return "";
+    const labels = pipelineMissing.map((name) => {
+      const spec = selectedPipeline.inputs?.find((i) => i.name === name);
+      return spec?.label ?? name;
+    });
+    return `缺少必填项：${labels.join("、")}`;
+  })();
 
   return (
     <div
@@ -144,14 +185,18 @@ export default function InstructionInput({
         open={editorOpen}
         onClose={() => setEditorOpen(false)}
         onChange={reloadPipelines}
+        currentGroupId={currentGroupId}
+        groups={groups}
       />
 
       {!collapsed && (<>
       {mode === "pipeline" && (
         <div className="flex flex-col gap-2">
-          {pipelines.length === 0 && pipelinesLoaded ? (
+          {visiblePipelines.length === 0 && pipelinesLoaded ? (
             <div className="text-[11px] px-2 py-1 rounded" style={{ color: "var(--color-text-muted)", background: "var(--color-bg)" }}>
-              暂无流水线模板。将 JSON 放到 <code>data/guild/pipelines/</code> 即可注册。
+              {pipelines.length === 0
+                ? "暂无流水线模板。将 JSON 放到 data/guild/pipelines/ 或点「管理流水线模板」新建。"
+                : "当前小组没有可用的流水线模板（共有 " + pipelines.length + " 个，但都属于其他小组）。点「管理流水线模板」新建或调整归属。"}
             </div>
           ) : (
             <>
@@ -161,33 +206,47 @@ export default function InstructionInput({
                 disabled={loading}
                 title="选择流水线模板"
                 leadingLabel="模板"
-                options={pipelines.map((p) => ({ value: p.id, label: <span>{p.name}</span> }))}
+                options={visiblePipelines.map((p) => ({
+                  value: p.id,
+                  // Globals get a 🌐 prefix so users can tell at a glance which
+                  // templates are this-group-only vs cross-group.
+                  label: <span>{!p.groupId ? "🌐 " : ""}{p.name}</span>,
+                }))}
               />
               {selectedPipeline?.description && (
                 <div className="text-[11px]" style={{ color: "var(--color-text-muted)" }}>
                   {selectedPipeline.description}（{selectedPipeline.steps.length} 步）
                 </div>
               )}
-              {selectedPipeline?.inputs?.map((spec) => (
-                <label key={spec.name} className="flex flex-col gap-1 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
-                  <span>
-                    {spec.label ?? spec.name}
-                    {spec.required && <span style={{ color: "var(--color-accent)" }}> *</span>}
-                  </span>
-                  <input
-                    className="px-2 py-1 rounded text-sm"
-                    style={{
-                      background: "var(--color-bg)",
-                      border: "1px solid var(--color-border)",
-                      color: "var(--color-text)",
-                    }}
-                    value={pipelineInputs[spec.name] ?? ""}
-                    onChange={(e) => setPipelineInputs({ ...pipelineInputs, [spec.name]: e.target.value })}
-                    placeholder={spec.default ?? ""}
-                    disabled={loading}
-                  />
-                </label>
-              ))}
+              {selectedPipeline?.inputs?.map((spec) => {
+                // Highlight missing required inputs with a red border so the
+                // user can locate the field that's blocking submission without
+                // having to scan the asterisks. Calmer style once filled.
+                const isMissing = pipelineMissing.includes(spec.name);
+                return (
+                  <label key={spec.name} className="flex flex-col gap-1 text-[11px]" style={{ color: "var(--color-text-muted)" }}>
+                    <span>
+                      {spec.label ?? spec.name}
+                      {spec.required && <span style={{ color: "var(--color-accent)" }}> *</span>}
+                      {isMissing && (
+                        <span className="ml-1 text-[10px]" style={{ color: "var(--color-error-text, #dc2626)" }}>必填</span>
+                      )}
+                    </span>
+                    <input
+                      className="px-2 py-1 rounded text-sm"
+                      style={{
+                        background: "var(--color-bg)",
+                        border: `1px solid ${isMissing ? "#dc2626" : "var(--color-border)"}`,
+                        color: "var(--color-text)",
+                      }}
+                      value={pipelineInputs[spec.name] ?? ""}
+                      onChange={(e) => setPipelineInputs({ ...pipelineInputs, [spec.name]: e.target.value })}
+                      placeholder={spec.default ?? ""}
+                      disabled={loading}
+                    />
+                  </label>
+                );
+              })}
             </>
           )}
         </div>
@@ -258,11 +317,16 @@ export default function InstructionInput({
           </label>
         )}
         <div className="flex-1" />
+        {mode === "pipeline" && pipelineSendDisabled && pipelineDisabledReason && (
+          <span className="text-[11px]" style={{ color: "#dc2626" }}>
+            ⚠ {pipelineDisabledReason}
+          </span>
+        )}
         <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
           {text.length > 0 ? `${text.length} 字` : ""}
         </span>
         <button
-          className="px-4 py-1.5 rounded-lg text-sm text-white shrink-0 transition-colors"
+          className="px-4 py-1.5 rounded-lg text-sm text-white shrink-0 transition-colors disabled:cursor-not-allowed"
           style={{
             background:
               (mode === "text" ? loading || !text.trim() : pipelineSendDisabled)
@@ -271,6 +335,11 @@ export default function InstructionInput({
           }}
           onClick={handleSend}
           disabled={mode === "text" ? loading || !text.trim() : pipelineSendDisabled}
+          title={
+            mode === "pipeline"
+              ? (pipelineSendDisabled ? pipelineDisabledReason : "按当前模板和参数创建任务")
+              : (loading ? "正在发送…" : !text.trim() ? "请输入指令" : "发送指令")
+          }
         >
           {loading ? "发送中…" : mode === "pipeline" ? "按流水线模板创建" : "发送"}
         </button>

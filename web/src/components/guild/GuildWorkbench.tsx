@@ -229,9 +229,19 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
       const result = await guild.autoBid(guild.selectedGroupId, taskId);
       if (!result.assigned) {
         showToast(result.message ?? "没有 Agent 达到竞标门槛，请检查小组成员和资产配置", "info");
-      } else {
-        showToast("已自动分配给最合适的 Agent", "success");
+        return;
       }
+      // Surface the winner by name + the routing path (suggested/fallback/
+      // bidding) so the user knows *why* this agent got it. Falls back to
+      // a bare id if the agent has been deleted between bid and toast.
+      const winnerId = result.bid?.agentId;
+      const winner = winnerId ? guild.agents.find((a) => a.id === winnerId) : undefined;
+      const name = winner ? `${winner.icon} ${winner.name}` : (winnerId ?? "agent");
+      const via = result.bid?.via;
+      const routeLabel = via === "suggested" ? "（指派）"
+        : via === "fallback" ? "（兜底）"
+        : "";
+      showToast(`已分配给 ${name}${routeLabel}`, "success");
     } catch (e) {
       showToast(`竞标失败: ${e}`, "error");
     }
@@ -479,6 +489,8 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                   tasks={mergedTasks}
                   agents={mergedAgents}
                   groupAgentIds={guild.selectedGroup?.agents ?? []}
+                  currentGroupId={guild.selectedGroupId ?? undefined}
+                  groups={guild.groups.map((g) => ({ id: g.id, name: g.name }))}
                   selectedTaskId={selectedDetail?.type === "task" ? selectedDetail.id : null}
                   onSelectTask={(id) => setSelectedDetail({ type: "task", id })}
                   onCreateTask={handleCreateTask}
@@ -545,6 +557,7 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
                 agents={mergedAgents}
                 tasks={mergedTasks}
                 agentOutputs={stream.agentOutputs}
+                artifactStrategy={guild.selectedGroup?.artifactStrategy}
                 staleTaskIds={stream.staleTaskIds}
                 onClose={() => setSelectedDetail(null)}
                 onCollapse={() => setDetailCollapsed(true)}

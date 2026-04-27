@@ -8,6 +8,11 @@ interface Props {
   tasks: GuildTask[];
   agents: GuildAgent[];
   groupAgentIds: string[];
+  /** Current active group id — forwarded to InstructionInput so the pipeline
+   *  picker filters by group, and so newly-created templates land here. */
+  currentGroupId?: string;
+  /** All groups — needed for the pipeline editor's "所属小组" selector. */
+  groups?: { id: string; name: string }[];
   selectedTaskId: string | null;
   onSelectTask: (id: string) => void;
   onCreateTask: (text: string, priority: GuildTask["priority"], kind: NonNullable<GuildTask["kind"]>) => void;
@@ -17,7 +22,7 @@ interface Props {
     priority: GuildTask["priority"];
     title?: string;
   }) => void;
-  onAutoBid: (taskId: string) => void;
+  onAutoBid: (taskId: string) => Promise<void> | void;
   onDeleteTask: (taskId: string) => void;
   onAssignTask: (taskId: string, agentId: string) => Promise<void> | void;
   onStopTask?: (taskId: string) => Promise<void> | void;
@@ -31,7 +36,7 @@ const COLUMNS: { key: GuildTask["status"][]; label: string }[] = [
 ];
 
 export default function TaskBoard({
-  tasks, agents, groupAgentIds, selectedTaskId,
+  tasks, agents, groupAgentIds, currentGroupId, groups, selectedTaskId,
   onSelectTask, onCreateTask, onCreateTaskFromPipeline, onAutoBid, onDeleteTask, onAssignTask, onStopTask, creating,
 }: Props) {
   const [assigningTask, setAssigningTask] = useState<string | null>(null);
@@ -91,7 +96,7 @@ export default function TaskBoard({
             )}
           </div>
         </div>
-        <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority />
+        <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority currentGroupId={currentGroupId} groups={groups} />
       </div>
     );
   }
@@ -178,7 +183,7 @@ export default function TaskBoard({
           );
         })}
       </div>
-      <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority />
+      <InstructionInput onSubmit={onCreateTask} onSubmitPipeline={onCreateTaskFromPipeline} loading={creating} showPriority currentGroupId={currentGroupId} groups={groups} />
     </div>
     <ConfirmDialog
       open={!!deletingTask}
@@ -229,10 +234,15 @@ function ActionButtons({
 }: {
   task: GuildTask; idleGroupAgents: GuildAgent[];
   assigningTask: string | null; setAssigningTask: (id: string | null) => void;
-  onAutoBid: (id: string) => void; onAssignTask: (id: string, agentId: string) => Promise<void> | void;
+  onAutoBid: (id: string) => Promise<void> | void; onAssignTask: (id: string, agentId: string) => Promise<void> | void;
   handleDeleteClick: (id: string) => void;
 }) {
   const [assigningAgentId, setAssigningAgentId] = useState<string | null>(null);
+  // Track in-flight autoBid so the button locks and shows "评估中…" — without
+  // this, an LLM-scored bidding round (5-10s) looks like the click did nothing
+  // and users smash the button repeatedly. The server-side in-flight lock
+  // already silently no-ops repeats; this surfaces that truth in the UI.
+  const [bidding, setBidding] = useState(false);
   if (task.status !== "open" && task.status !== "bidding") return null;
   return (
     <div className="flex gap-1 mt-1 px-1">
@@ -275,8 +285,29 @@ function ActionButtons({
         </div>
       ) : (
         <>
-          <button className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]" style={{ color: "var(--color-accent)" }} onClick={() => onAutoBid(task.id)}>⚡ 竞标</button>
-          <button className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)]" style={{ color: "var(--color-text-muted)" }} onClick={() => setAssigningTask(task.id)}>👤 指派</button>
+          <button
+            className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] disabled:opacity-60 disabled:cursor-not-allowed"
+            style={{ color: "var(--color-accent)" }}
+            disabled={bidding}
+            title={bidding ? "正在评估候选 Agent…" : "让所有空闲 Agent 自动竞标这个任务"}
+            onClick={async () => {
+              if (bidding) return;
+              setBidding(true);
+              try {
+                await onAutoBid(task.id);
+              } finally {
+                setBidding(false);
+              }
+            }}
+          >
+            {bidding ? "⏳ 评估中…" : "⚡ 竞标"}
+          </button>
+          <button
+            className="text-[10px] px-2 py-1 rounded hover:bg-[var(--color-surface-hover)] disabled:opacity-60 disabled:cursor-not-allowed"
+            style={{ color: "var(--color-text-muted)" }}
+            disabled={bidding}
+            onClick={() => setAssigningTask(task.id)}
+          >👤 指派</button>
           <button
             className="w-6 h-6 ml-auto rounded-md border transition-colors flex items-center justify-center text-[11px] hover:text-red-500 hover:border-red-500"
             style={{
@@ -304,7 +335,7 @@ interface CompletedColumnProps {
   agents: GuildAgent[];
   selectedTaskId: string | null;
   onSelectTask: (id: string) => void;
-  onAutoBid: (id: string) => void;
+  onAutoBid: (id: string) => Promise<void> | void;
   onAssignTask: (id: string, agentId: string) => void;
   blockedByDepsSet: Set<string>;
   assigningTask: string | null;
