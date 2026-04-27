@@ -1,4 +1,6 @@
 import type { Request, Response } from "express";
+import * as nodeFs from "fs";
+import * as nodePath from "path";
 import {
   getGuild, updateGuild,
   createGroup, getGroup, listGroups, updateGroup, archiveGroup, deleteGroup,
@@ -359,6 +361,28 @@ export function postGroupTask(req: Request, res: Response): void {
     // accepting them here would let a caller smuggle in tasks that bypass
     // the scheduler (e.g. initialStatus="blocked") or hijack parent trees.
     const kind = req.body.kind === "requirement" ? "requirement" : undefined;
+    // Sanitize retryPolicy from caller — bound `max` to a sensible range and
+    // pin onExhausted to known values. Without this a caller could ship
+    // {max: 9999} and a permanently-stuck task would re-bid forever.
+    const rawRetry = req.body.retryPolicy;
+    let retryPolicy;
+    if (rawRetry && typeof rawRetry === "object") {
+      const max = typeof rawRetry.max === "number" && Number.isInteger(rawRetry.max)
+        ? Math.max(1, Math.min(10, rawRetry.max))
+        : undefined;
+      const onExhausted = ["fail", "skip", "fallback"].includes(rawRetry.onExhausted)
+        ? rawRetry.onExhausted as "fail" | "skip" | "fallback"
+        : undefined;
+      const backoffMs = typeof rawRetry.backoffMs === "number"
+        ? Math.max(0, Math.min(600000, rawRetry.backoffMs))
+        : undefined;
+      const preferSameAgent = rawRetry.preferSameAgent === true ? true : undefined;
+      if (max !== undefined) {
+        // Skip the fallback object — only pipeline-template path needs it,
+        // and unsanitized fallbacks could smuggle weird CreateTaskParams.
+        retryPolicy = { max, onExhausted, backoffMs, preferSameAgent };
+      }
+    }
     const task = createTask(groupId, {
       title,
       description,
@@ -369,6 +393,7 @@ export function postGroupTask(req: Request, res: Response): void {
       suggestedAgentId: typeof req.body.suggestedAgentId === "string" ? req.body.suggestedAgentId : undefined,
       acceptanceCriteria: typeof req.body.acceptanceCriteria === "string" ? req.body.acceptanceCriteria : undefined,
       acceptanceAssertions: sanitizeAssertions(req.body.acceptanceAssertions),
+      retryPolicy,
       createdBy: typeof req.body.createdBy === "string" ? req.body.createdBy : undefined,
     });
     // Dispatch is handled solely by GuildAutonomousScheduler (task_created → scheduleGroup)
@@ -1230,6 +1255,67 @@ export function getGroupSharedFile(req: Request, res: Response): void {
   const result = safeReadFile(getGroupSharedDir(p(req.params.id)), filePath);
   if (!result) { res.status(404).json({ error: "File not found" }); return; }
   res.json(result);
+}
+
+// Stream raw bytes from group shared dir — used by markdown <img> tags so
+// relative `./images/foo.png` references can resolve to a directly-fetchable
+// URL. The /file JSON endpoint above wraps content for the editor; <img>
+// needs the actual binary stream with a proper Content-Type, hence this
+// dedicated route. Path-traversal protection mirrors safeReadFile.
+export function getGroupSharedRaw(req: Request, res: Response): void {
+  const filePath = getStringQuery(req, "path");
+  if (!filePath) { res.status(400).json({ error: "path required" }); return; }
+  const rootDir = getGroupSharedDir(p(req.params.id));
+  serveRawFile(res, rootDir, filePath);
+}
+
+const RAW_MIME: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".svg": "image/svg+xml",
+  ".pdf": "application/pdf",
+  ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".txt": "text/plain; charset=utf-8",
+  ".md": "text/markdown; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".csv": "text/csv; charset=utf-8",
+  ".mp4": "video/mp4",
+  ".mp3": "audio/mpeg",
+};
+
+function serveRawFile(res: Response, rootDir: string, relPath: string): void {
+  const { resolve: resolvePath } = nodePath;
+  const { existsSync, statSync, realpathSync, createReadStream } = nodeFs;
+  const absRoot = resolvePath(rootDir);
+  const absFile = resolvePath(rootDir, relPath);
+  // Path traversal protection — match safeReadFile's defense.
+  if (!absFile.startsWith(absRoot + "/") && absFile !== absRoot) {
+    res.status(400).json({ error: "path traversal blocked" });
+    return;
+  }
+  if (!existsSync(absFile)) { res.status(404).end(); return; }
+  try {
+    const realRoot = realpathSync(absRoot);
+    const realAbs = realpathSync(absFile);
+    if (!realAbs.startsWith(realRoot + "/") && realAbs !== realRoot) {
+      res.status(400).json({ error: "symlink escape blocked" });
+      return;
+    }
+    const st = statSync(realAbs);
+    if (!st.isFile()) { res.status(404).end(); return; }
+    const ext = relPath.toLowerCase().slice(relPath.lastIndexOf("."));
+    const mime = RAW_MIME[ext] ?? "application/octet-stream";
+    res.setHeader("Content-Type", mime);
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Content-Length", String(st.size));
+    createReadStream(realAbs).pipe(res);
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 }
 
 // Read manifest from group shared

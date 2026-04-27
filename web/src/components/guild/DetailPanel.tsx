@@ -5,6 +5,7 @@ import MarkdownContent from "../MarkdownContent";
 import ConfirmDialog from "./ConfirmDialog";
 import AgentMemoryPanel from "./AgentMemoryPanel";
 import DeliverablesPanel from "./DeliverablesPanel";
+import FilePreviewModal from "./FilePreviewModal";
 import BidList from "./BidList";
 import Chevron from "./Chevron";
 import { getTaskWorkspaceRaw, updateAgentAsset, clearTaskRejections, forkGuildAgent } from "../../api/guild";
@@ -17,6 +18,10 @@ interface Props {
   agents: GuildAgent[];
   tasks?: GuildTask[];
   agentOutputs: Record<string, string>;
+  /** Current group's artifact strategy — used to resolve where a declared
+   *  output's bytes live in the shared dir. Collaborative: ref directly.
+   *  Isolated: per-task subdir (`<producingTaskId>/<ref>`). */
+  artifactStrategy?: "isolated" | "collaborative";
   /** Ids of in_progress tasks that haven't emitted an SSE event recently. */
   staleTaskIds?: Set<string>;
   onClose: () => void;
@@ -98,7 +103,7 @@ function isSafeHttpUrl(ref: string): boolean {
   }
 }
 
-export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onAgentForked, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
+export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks, agentOutputs, artifactStrategy, staleTaskIds, onClose, onCollapse, onEditAgent, onDeleteAgent, onReleaseAgent, onAgentForked, onViewLog, onSelectTask, onOpenWorkspace, onAgentUpdated }: Props) {
   const [expandedResult, setExpandedResult] = useState(false);
   const [expandedWorkspace, setExpandedWorkspace] = useState(false);
   const [expandedDAG, setExpandedDAG] = useState(false);
@@ -121,6 +126,10 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
   const [editingAssetId, setEditingAssetId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<{ name: string; uri: string; description: string; tags: string }>({ name: "", uri: "", description: "", tags: "" });
   const [savingAsset, setSavingAsset] = useState(false);
+  // File preview modal — opened from DeliverablesPanel produced refs and
+  // resolved against the group's shared dir (collaborative mode) or the
+  // producing task's per-task subdir (isolated mode).
+  const [previewPath, setPreviewPath] = useState<{ path: string; title: string } | null>(null);
 
   // Fetch workspace markdown whenever a requirement task is selected.
   // Subtasks carry their parent's workspaceRef, so we resolve the viewer
@@ -804,6 +813,23 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
                 outputs={selectedTask.declaredOutputs}
                 title={selectedTask.kind === "pipeline" ? "最终交付产物" : "步骤产出"}
                 dense={selectedTask.kind !== "pipeline"}
+                onPreview={(output) => {
+                  // Only file refs have on-disk content to fetch. URL/commit
+                  // kinds open in a new tab via standard anchor behavior.
+                  if (output.kind === "url") {
+                    window.open(output.ref, "_blank", "noopener");
+                    return;
+                  }
+                  if (output.kind !== "file") return;
+                  // Isolated mode places artifacts under <producingTaskId>/<ref>.
+                  // producedBy.taskId is more reliable than selectedTask.id
+                  // because pipeline parents inherit children's outputs.
+                  const taskIdForPath = output.producedBy?.taskId ?? selectedTask?.id;
+                  const path = artifactStrategy === "isolated" && taskIdForPath
+                    ? `${taskIdForPath}/${output.ref}`
+                    : output.ref;
+                  setPreviewPath({ path, title: output.label ? `${output.ref} — ${output.label}` : output.ref });
+                }}
               />
             )}
 
@@ -1174,6 +1200,14 @@ export default function DetailPanel({ selectedAgent, selectedTask, agents, tasks
           </>
         )}
       </div>
+      {previewPath && selectedTask && (
+        <FilePreviewModal
+          groupId={selectedTask.groupId}
+          path={previewPath.path}
+          title={previewPath.title}
+          onClose={() => setPreviewPath(null)}
+        />
+      )}
     </div>
   );
 }

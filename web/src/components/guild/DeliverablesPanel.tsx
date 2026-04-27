@@ -5,6 +5,12 @@ interface Props {
   title?: string;
   /** When true, compact single-line rendering suitable for subtask inline display. */
   dense?: boolean;
+  /** When provided, produced refs become clickable. Caller is responsible for
+   *  opening the appropriate viewer (file, url, etc). Pending/missing rows
+   *  stay non-interactive — there's nothing to preview yet. The full output
+   *  is passed (rather than just ref) so the caller can read `producedBy` to
+   *  resolve isolated-mode per-task subdirs. */
+  onPreview?: (output: TaskDeclaredOutput) => void;
 }
 
 const STATUS_ICON: Record<NonNullable<TaskDeclaredOutput["status"]>, { icon: string; color: string; label: string }> = {
@@ -20,7 +26,7 @@ const KIND_LABEL: Record<TaskDeclaredOutput["kind"], string> = {
   commit: "提交",
 };
 
-export default function DeliverablesPanel({ outputs, title = "交付产物", dense }: Props) {
+export default function DeliverablesPanel({ outputs, title = "交付产物", dense, onPreview }: Props) {
   if (!outputs || outputs.length === 0) return null;
 
   const producedCount = outputs.filter((o) => o.status === "produced").length;
@@ -66,17 +72,34 @@ export default function DeliverablesPanel({ outputs, title = "交付产物", den
                     ⭐ 终稿
                   </span>
                 )}
-                <span
-                  className="font-mono text-xs px-1.5 py-0.5 rounded"
-                  style={{
-                    background: "var(--color-surface)",
-                    color: "var(--color-text)",
-                    border: "1px solid var(--color-border)",
-                  }}
-                  title={o.description || ""}
-                >
-                  {o.ref}
-                </span>
+                {onPreview && status === "produced" ? (
+                  <button
+                    type="button"
+                    className="font-mono text-xs px-1.5 py-0.5 rounded transition-colors"
+                    style={{
+                      background: "var(--color-surface)",
+                      color: "var(--color-accent)",
+                      border: "1px solid var(--color-accent)",
+                      cursor: "pointer",
+                    }}
+                    title={o.description ? `${o.description}（点击查看）` : "点击查看产物"}
+                    onClick={(e) => { e.stopPropagation(); onPreview(o); }}
+                  >
+                    {o.ref}
+                  </button>
+                ) : (
+                  <span
+                    className="font-mono text-xs px-1.5 py-0.5 rounded"
+                    style={{
+                      background: "var(--color-surface)",
+                      color: "var(--color-text)",
+                      border: "1px solid var(--color-border)",
+                    }}
+                    title={o.description || ""}
+                  >
+                    {o.ref}
+                  </span>
+                )}
                 <span className="text-[10px]" style={{ color: "var(--color-text-muted)" }}>
                   {KIND_LABEL[o.kind]}
                 </span>

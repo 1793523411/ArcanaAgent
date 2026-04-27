@@ -525,6 +525,23 @@ export async function getGroupSharedFile(groupId: string, path: string): Promise
   return r.json();
 }
 
+/** URL for raw bytes of a shared file. Use this for `<img src=…>` and inline
+ *  iframes/anchors — the JSON `/file` endpoint above wraps payloads, while
+ *  this one streams binary with the right Content-Type. Uses encodeURI per
+ *  segment so non-ASCII filenames (e.g. CJK) survive unaltered through
+ *  whatever URL-rewriting middleware sits between us and the server. */
+export function getGroupSharedRawUrl(groupId: string, path: string): string {
+  // encodeURIComponent over the whole `path` collapses `/` → `%2F`, which
+  // some proxies / serializers handle differently from a literal slash and
+  // can end up double-encoded in the rendered DOM. Encoding each segment
+  // individually keeps the slash intact and is what browsers expect.
+  const encoded = path
+    .split("/")
+    .map((s) => encodeURIComponent(s))
+    .join("/");
+  return `${BASE}/guild/groups/${groupId}/shared/raw?path=${encoded}`;
+}
+
 export async function getGroupSharedManifest(groupId: string): Promise<Record<string, ArtifactManifestEntry>> {
   const r = await fetch(`${BASE}/guild/groups/${groupId}/shared/manifest`);
   if (!r.ok) throw new Error(await r.text());

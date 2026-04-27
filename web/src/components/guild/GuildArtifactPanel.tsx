@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import type { GuildTask, GuildAgent, ArtifactStrategy, ArtifactManifestEntry } from "../../types/guild";
 import {
-  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest,
+  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest, getGroupSharedRawUrl,
   getAgentWorkspaceTree, getAgentWorkspaceFile,
   getAgentMemoryTree, getAgentMemoryFile,
 } from "../../api/guild";
@@ -62,6 +62,13 @@ export default function GuildArtifactPanel({ tasks, agents, groupId, artifactStr
   // Stable fetch functions — only recreated when IDs change
   const sharedTreeFetcher = useCallback(() => getGroupSharedTree(groupId!), [groupId]);
   const sharedFileFetcher = useCallback((path: string) => getGroupSharedFile(groupId!, path), [groupId]);
+  // Lets a markdown <img src="./images/foo.png"> in the shared viewer resolve
+  // to a real fetchable URL — without this, the data dir is private to the
+  // server process and the browser can't load the image.
+  const sharedAssetResolver = useCallback(
+    (path: string) => getGroupSharedRawUrl(groupId!, path),
+    [groupId],
+  );
   const workspaceTreeFetcher = useCallback(() => getAgentWorkspaceTree(effectiveAgentId!), [effectiveAgentId]);
   const workspaceFileFetcher = useCallback((path: string) => getAgentWorkspaceFile(effectiveAgentId!, path), [effectiveAgentId]);
   const memoryTreeFetcher = useCallback(() => getAgentMemoryTree(effectiveAgentId!), [effectiveAgentId]);
@@ -158,6 +165,7 @@ export default function GuildArtifactPanel({ tasks, agents, groupId, artifactStr
           <FileTreeBrowser
             fetchTree={sharedTreeFetcher}
             fetchFile={sharedFileFetcher}
+            resolveAssetUrl={sharedAssetResolver}
             refreshKey={groupId}
             emptyIcon={"\uD83D\uDC65"}
             emptyTitle={"暂无共享产物"}

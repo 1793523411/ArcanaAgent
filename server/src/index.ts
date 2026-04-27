@@ -92,7 +92,7 @@ import {
   getTaskWorkspace, getGuildArtifactFile,
   getAgentWorkspaceTree, getAgentWorkspaceFile,
   getAgentMemoryTree, getAgentMemoryFile,
-  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest,
+  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest, getGroupSharedRaw,
 } from "./guild/routes.js";
 import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
 import { listGroups, reconcileRequirementRollups } from "./guild/index.js";
@@ -241,6 +241,7 @@ app.get("/api/guild/agents/:id/memory/tree", getAgentMemoryTree);
 app.get("/api/guild/agents/:id/memory/file", getAgentMemoryFile);
 app.get("/api/guild/groups/:id/shared/tree", getGroupSharedTree);
 app.get("/api/guild/groups/:id/shared/file", getGroupSharedFile);
+app.get("/api/guild/groups/:id/shared/raw", getGroupSharedRaw);
 app.get("/api/guild/groups/:id/shared/manifest", getGroupSharedManifest);
 app.get("/api/guild/file", getGuildArtifactFile);
 

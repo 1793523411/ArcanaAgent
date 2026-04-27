@@ -10,6 +10,10 @@ interface Props {
   fetchTree: () => Promise<FileTreeNode[]>;
   /** Fetch a file's content by relative path */
   fetchFile: (path: string) => Promise<FileReadResult>;
+  /** Build an absolute URL for a relative ref **resolved against the
+   *  currently-viewed file's directory** — used as `transformImageUrl` on
+   *  rendered markdown so `![](./images/x.png)` actually shows the image. */
+  resolveAssetUrl?: (relativePath: string) => string;
   /** Refresh key — change to trigger re-fetch */
   refreshKey?: string;
   /** Empty state message */
@@ -50,7 +54,34 @@ function countFiles(nodes: FileTreeNode[]): number {
   return count;
 }
 
-export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, emptyIcon, emptyTitle, emptyDesc }: Props) {
+/** Resolve a markdown image src relative to the file's directory.
+ *  - http(s) / data: / absolute paths → return as-is
+ *  - everything else → join with the directory of `currentFilePath` and
+ *    normalize away `./` and `..`.
+ *
+ *  Decodes URL-encoded segments first because mdast→hast pre-encodes image
+ *  src for HTML safety: a markdown ref like `./images/中文.png` reaches us
+ *  as `./images/%E4%B8%AD%E6%96%87.png`. If we re-encoded that, the `%`
+ *  would itself become `%25` and the server would 404.
+ *
+ *  Exported for unit testing; not part of the FileTreeBrowser public API. */
+function resolveRelativePath(currentFilePath: string, src: string): string {
+  if (/^(?:[a-z]+:|\/\/|data:|\/)/i.test(src)) return src;
+  let decoded = src;
+  try { decoded = decodeURIComponent(src); } catch { /* keep raw */ }
+  const slash = currentFilePath.lastIndexOf("/");
+  const baseDir = slash >= 0 ? currentFilePath.slice(0, slash) : "";
+  const segments = (baseDir ? baseDir.split("/") : []).concat(decoded.split("/"));
+  const out: string[] = [];
+  for (const seg of segments) {
+    if (!seg || seg === ".") continue;
+    if (seg === "..") { out.pop(); continue; }
+    out.push(seg);
+  }
+  return out.join("/");
+}
+
+export default function FileTreeBrowser({ fetchTree, fetchFile, resolveAssetUrl, refreshKey, emptyIcon, emptyTitle, emptyDesc }: Props) {
   const [tree, setTree] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -270,7 +301,17 @@ export default function FileTreeBrowser({ fetchTree, fetchFile, refreshKey, empt
                 sandbox="allow-scripts"
               />
             ) : ext === ".md" ? (
-              <div className="p-4"><MarkdownContent>{fileContent.content}</MarkdownContent></div>
+              <div className="p-4">
+                <MarkdownContent
+                  transformImageUrl={
+                    resolveAssetUrl
+                      ? (src) => resolveAssetUrl(resolveRelativePath(selectedFile, src))
+                      : undefined
+                  }
+                >
+                  {fileContent.content}
+                </MarkdownContent>
+              </div>
             ) : CODE_EXTS.has(ext) ? (
               <div className="p-4"><MarkdownContent>{`\`\`\`${LANG_MAP[ext] ?? ""}\n${fileContent.content}\n\`\`\``}</MarkdownContent></div>
             ) : (
