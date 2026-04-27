@@ -131,18 +131,39 @@ export function updateTask(
     | "kind" | "parentTaskId" | "subtaskIds" | "suggestedSkills"
     | "suggestedAgentId" | "acceptanceCriteria" | "workspaceRef" | "handoff"
     | "retryCount" | "retryAt" | "skippedReason" | "_rejectedBy" | "dependsOn"
-    | "declaredOutputs"
+    | "declaredOutputs" | "lastFailure"
   >>
 ): GuildTask | null {
   const tasks = loadTasks(groupId);
   const idx = tasks.findIndex((t) => t.id === taskId);
   if (idx < 0) return null;
-  const prevStatus = tasks[idx].status;
+  const prev = tasks[idx];
+  const prevStatus = prev.status;
+  // Track whether any non-status field changed too — used to decide if we
+  // need to broadcast a generic task_updated event. Without this, downstream
+  // mutations like declaredOutputs (set by syncPipelineOutputsAfterCompletion)
+  // or bids (set by capBids in autoBid stalls) silently update on disk but
+  // never reach SSE subscribers, leaving the UI showing stale "0/2 产物" or
+  // empty bid lists until the next status flip.
+  let nonStatusChanged = false;
+  // Cast through `unknown` so the per-key index lookup is allowed without
+  // TS demanding GuildTask have a string-indexed signature (it doesn't, by
+  // design — the field shape is closed). The runtime semantics are still
+  // safe because we only ever read keys that exist on `updates`.
+  const prevAny = prev as unknown as Record<string, unknown>;
+  const updAny = updates as unknown as Record<string, unknown>;
+  for (const k of Object.keys(updates)) {
+    if (k === "status") continue;
+    const before = JSON.stringify(prevAny[k]);
+    const after = JSON.stringify(updAny[k]);
+    if (before !== after) { nonStatusChanged = true; break; }
+  }
   Object.assign(tasks[idx], updates);
   saveTasks(groupId, tasks);
   // Broadcast generic update so reconcile / status flips reach the SSE clients
   // even when no specific event (assigned/completed/etc) is emitted by the caller.
-  if (updates.status !== undefined && updates.status !== prevStatus) {
+  const statusChanged = updates.status !== undefined && updates.status !== prevStatus;
+  if (statusChanged || nonStatusChanged) {
     guildEventBus.emit({ type: "task_updated", task: tasks[idx] });
   }
   return tasks[idx];
@@ -178,29 +199,21 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
 
   // Harness-level verification: if the task declares machine-runnable
   // acceptanceAssertions, run them BEFORE accepting completion. Failed
-  // assertions transition the task to "failed" with the specific failure
-  // listed — the agent's self-report that it finished doesn't override the
-  // harness's deterministic check.
+  // assertions route through failTask so the retryPolicy fires (push back
+  // to agent) instead of immediately dead-ending the task. The agent's
+  // self-report doesn't override the harness's deterministic check.
   if (existing?.acceptanceAssertions && existing.acceptanceAssertions.length > 0) {
     const cwd = resolveTaskWorkingDir(groupId, taskId);
     const verdict = runAcceptanceAssertions(existing.acceptanceAssertions, cwd);
     if (!verdict.ok) {
       const reason = formatFailures(verdict.failures);
-      const failedResult: TaskResult = {
-        ...result,
-        summary: result.summary ? `${result.summary}\n\n${reason}` : reason,
-        agentNotes: result.agentNotes,
-      };
-      const failed = updateTask(groupId, taskId, {
-        status: "failed",
-        completedAt: new Date().toISOString(),
-        result: failedResult,
+      // Preserve agent narrative on the failure path so retry context (and
+      // terminal-failure UI) can show what the previous attempt produced.
+      const failureSummary = result.summary ? `${result.summary}\n\n${reason}` : reason;
+      return failTask(groupId, taskId, agentId, failureSummary, {
+        failedAssertions: verdict.failures.map((f) => f.assertion),
+        agentResult: result,
       });
-      if (failed) {
-        guildEventBus.emit({ type: "task_failed", taskId, agentId, error: reason });
-        rollupParentRequirement(groupId, failed);
-      }
-      return failed;
     }
   }
 
@@ -209,6 +222,9 @@ export function completeTask(groupId: string, taskId: string, agentId: string, r
     status: "completed",
     completedAt: now,
     result,
+    // Clear any stale lastFailure left from a previous retry — once we
+    // successfully complete, the prior failure is no longer load-bearing.
+    lastFailure: undefined,
   });
   if (task) {
     // Reconcile pipeline declaredOutputs against this task's handoff
@@ -277,16 +293,40 @@ function rollupParentRequirement(groupId: string, child: GuildTask): void {
   }
 }
 
-export function failTask(groupId: string, taskId: string, agentId: string, error: string): GuildTask | null {
+export function failTask(
+  groupId: string,
+  taskId: string,
+  agentId: string,
+  error: string,
+  opts?: {
+    /** Specific assertions that failed — set by completeTask's verification
+     *  path so the retried agent can see exactly which checks tripped. */
+    failedAssertions?: import("./types.js").AcceptanceAssertion[];
+    /** Agent-claimed result preserved on terminal failure so the UI keeps
+     *  the agent's narrative instead of just `Failed: ${error}`. Ignored on
+     *  retry paths because retry clears result by design. */
+    agentResult?: TaskResult;
+  },
+): GuildTask | null {
   const existing = getTask(groupId, taskId);
   if (existing && isTerminalStatus(existing.status)) return existing;
+
+  // Build the lastFailure record once; reused on both retry and terminal
+  // paths so the UI / next-attempt prompt always have structured context.
+  const tries = existing?.retryCount ?? 0;
+  const lastFailure: NonNullable<GuildTask["lastFailure"]> = {
+    reason: error,
+    failedAt: new Date().toISOString(),
+    failedAssertions: opts?.failedAssertions,
+    attemptedBy: agentId,
+    attempt: tries + 1,
+  };
 
   // Retry handling: if the task has a retry policy and has budget left,
   // reopen it instead of finalizing. Honors backoffMs via retryAt gate and
   // clears _rejectedBy unless the policy pins the same agent.
   if (existing?.retryPolicy) {
     const policy = existing.retryPolicy;
-    const tries = existing.retryCount ?? 0;
     if (tries < policy.max) {
       const retryAt = policy.backoffMs && policy.backoffMs > 0
         ? new Date(Date.now() + policy.backoffMs).toISOString()
@@ -298,6 +338,7 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
         assignedAgentId: undefined,
         startedAt: undefined,
         result: undefined,
+        lastFailure,
         _rejectedBy: policy.preferSameAgent ? existing._rejectedBy ?? [] : [],
       });
       if (task) {
@@ -363,10 +404,18 @@ export function failTask(groupId: string, taskId: string, agentId: string, error
   }
 
   const now = new Date().toISOString();
+  // When the agent supplied a TaskResult (verification path), keep its
+  // handoff/notes and use the already-combined `error` string as summary —
+  // it carries both the agent's narrative AND the failure reason.
+  // Otherwise fall back to the generic "Failed: <error>" marker.
+  const failResult: TaskResult = opts?.agentResult
+    ? { ...opts.agentResult, summary: error }
+    : { summary: `Failed: ${error}` };
   const task = updateTask(groupId, taskId, {
     status: "failed",
     completedAt: now,
-    result: { summary: `Failed: ${error}` },
+    result: failResult,
+    lastFailure,
   });
   if (task) {
     safeSyncPipelineOutputs(groupId, taskId, "fail");
@@ -558,6 +607,13 @@ export function findOutputConflicts(groupId: string, candidate: GuildTask): Guil
   const tasks = loadTasks(groupId);
   return tasks.filter((t) => {
     if (t.id === candidate.id) return false;
+    // Skip parent-kind containers: their declaredOutputs are an *aggregation*
+    // of children's outputs (rolled up by aggregateParentOutputs), so a child
+    // with overlapping refs isn't conflicting with another writer — it's just
+    // overlapping with its own ancestor's bookkeeping. Without this guard, the
+    // last subtask of a pipeline gets locked out of bidding because its parent
+    // is still in_progress and "owns" the same final-deliverable refs.
+    if (t.kind === "pipeline" || t.kind === "requirement") return false;
     if (t.status !== "open" && t.status !== "in_progress") return false;
     if (!t.declaredOutputs || t.declaredOutputs.length === 0) return false;
     return t.declaredOutputs.some((o) => candidateRefs.has(o.ref));

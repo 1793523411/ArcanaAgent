@@ -320,6 +320,31 @@ function buildGuildAgentPrompt(
     sections.push(`Acceptance: ${task.acceptanceCriteria}`);
   }
 
+  // Retry feedback — when the harness rejected the previous attempt, the
+  // agent must see *why* before retrying. Without this, retries just repeat
+  // the same broken submission. Lives between Description and Workspace so
+  // the agent reads task → why-it-failed → where-to-write in order.
+  if (task.lastFailure && (task.retryCount ?? 0) > 0) {
+    const lf = task.lastFailure;
+    sections.push(`\n## ⚠️ Previous Attempt Failed (this is retry ${(task.retryCount ?? 1)} of ${task.retryPolicy?.max ?? "?"})`);
+    sections.push(`上一轮交付被 harness 验收驳回。**先读完这里的失败原因，再开始新一轮工作 — 不要重复同样的产物**：`);
+    sections.push("```");
+    sections.push(lf.reason);
+    sections.push("```");
+    if (lf.failedAssertions && lf.failedAssertions.length > 0) {
+      sections.push(`\n**未通过的机器校验断言**（必须在本轮全部满足）：`);
+      for (const a of lf.failedAssertions) {
+        if (a.type === "file_exists") {
+          sections.push(`- 文件必须存在：\`${a.ref}\`${a.description ? ` — ${a.description}` : ""}`);
+        } else {
+          const matchKind = a.regex ? "正则" : "子串";
+          sections.push(`- 文件 \`${a.ref}\` 必须${matchKind}匹配：\`${a.pattern}\`${a.description ? ` — ${a.description}` : ""}`);
+        }
+      }
+    }
+    sections.push(`\n建议先排查上轮失败的具体原因（路径写错？没真正落盘？正则不匹配？），再动手；如果你判断这个任务不属于你的领域，请在 Handoff 中明确说"哪部分需要谁"，让 Lead 改派，不要硬交。`);
+  }
+
   // Workspace paths — tell the agent where to write files
   sections.push(`\n## Your Workspace`);
   sections.push(`- 你的私有工作空间: \`${wsDir}\` — 在这里创建和编辑工作文件`);

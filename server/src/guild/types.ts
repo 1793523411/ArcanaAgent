@@ -257,6 +257,22 @@ export interface GuildTask {
   retryCount?: number;
   /** ISO timestamp — scheduler/bidding skip this task until now >= retryAt. */
   retryAt?: string;
+  /** Reason the most recent attempt failed. Surfaced back to the agent on
+   *  retry so it can fix the issue rather than repeat it. Cleared once a
+   *  retry succeeds; preserved (read-only) on terminal failure for UI. */
+  lastFailure?: {
+    reason: string;
+    failedAt: string;
+    /** Specific assertions that failed, when the failure was harness-driven.
+     *  Empty/undefined for runtime errors (agent crash, tool exception, etc). */
+    failedAssertions?: AcceptanceAssertion[];
+    /** Agent that produced the failed attempt — useful when preferSameAgent
+     *  is set so the same agent's retry context is unambiguous. */
+    attemptedBy?: string;
+    /** Attempt index this record describes (1-based; matches the retryCount
+     *  value at the moment of failure, before increment). */
+    attempt?: number;
+  };
   /** Populated when the task was resolved via skip/fallback/branch-miss. */
   skippedReason?: string;
   /** Artifact contracts declared by the pipeline template. On pipeline parents
