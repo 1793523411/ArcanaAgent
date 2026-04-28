@@ -725,7 +725,12 @@ export async function executeAgentTask(
     // non-critical post-complete steps below (handoff append, settleExperience)
     // still leaves correct counters. `statsCounted` then guards the catch
     // block from double-mutating.
-    const stats = agent.stats;
+    // Re-read the agent here — `agent` was captured at function entry, possibly
+    // many minutes ago, and a parallel execution for the *same* agent could have
+    // already mutated stats on disk. Mutating the stale snapshot would silently
+    // overwrite the parallel run's tasksCompleted / successRate update.
+    const freshAgent = getAgent(agentId);
+    const stats = freshAgent?.stats ?? agent.stats;
     if (assertionFailed) {
       stats.tasksFailed = (stats.tasksFailed ?? 0) + 1;
     } else {
@@ -810,7 +815,10 @@ export async function executeAgentTask(
     // Update stats — skip if the success path already counted this task
     // (rare but possible when code after completeTask throws).
     if (!statsCounted) {
-      const stats = agent.stats;
+      // Re-read agent so a parallel execution's stat update doesn't get
+      // clobbered by a mutation on this run's stale in-memory snapshot.
+      const freshAgent = getAgent(agentId);
+      const stats = freshAgent?.stats ?? agent.stats;
       stats.tasksFailed = (stats.tasksFailed ?? 0) + 1;
       stats.totalWorkTimeMs += durationMs;
       stats.lastActiveAt = new Date().toISOString();

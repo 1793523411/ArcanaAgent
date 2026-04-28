@@ -118,10 +118,6 @@ export function getGroupTasks(groupId: string, statusFilter?: TaskStatus[]): Gui
   return tasks.filter((t) => statusFilter.includes(t.status));
 }
 
-export function getOpenTasks(groupId: string): GuildTask[] {
-  return getGroupTasks(groupId, ["open"]);
-}
-
 export function updateTask(
   groupId: string,
   taskId: string,

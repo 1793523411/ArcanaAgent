@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, mkdirSync } from "fs";
 import { join, resolve } from "path";
 import { getAgent } from "./guildManager.js";
+import { atomicWriteFileSync } from "./atomicFs.js";
 import type { GuildSchedulerLogEntry } from "./types.js";
 
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
@@ -60,7 +61,7 @@ export function getSchedulerLog(groupId: string): GuildSchedulerLogEntry[] {
 
 function saveLog(groupId: string, entries: GuildSchedulerLogEntry[]): void {
   ensureGroupDir(groupId);
-  writeFileSync(logPath(groupId), JSON.stringify({ entries }, null, 2));
+  atomicWriteFileSync(logPath(groupId), JSON.stringify({ entries }, null, 2));
 }
 
 export function appendSchedulerDispatched(
@@ -112,7 +113,7 @@ export function clearSchedulerLog(groupId: string): void {
   const p = logPath(groupId);
   if (!existsSync(p)) return;
   try {
-    writeFileSync(p, JSON.stringify({ entries: [] }, null, 2));
+    atomicWriteFileSync(p, JSON.stringify({ entries: [] }, null, 2));
   } catch {
     // ignore
   }

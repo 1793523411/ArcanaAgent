@@ -341,7 +341,7 @@ export default function InstructionInput({
               : (loading ? "正在发送…" : !text.trim() ? "请输入指令" : "发送指令")
           }
         >
-          {loading ? "发送中…" : mode === "pipeline" ? "按流水线模板创建" : "发送"}
+          {loading ? "发送中…" : mode === "pipeline" ? "下发流水线" : "发送"}
         </button>
       </div>
       </>)}

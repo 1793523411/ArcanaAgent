@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useGuild } from "../../hooks/useGuild";
 import { useGuildStream } from "../../hooks/useGuildStream";
@@ -38,11 +38,24 @@ export default function GuildWorkbench({ onClose, initialGroupId }: Props) {
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [showGroupAssets, setShowGroupAssets] = useState(false);
   const [toast, setToast] = useState<{ text: string; type: "info" | "error" | "success" } | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
 
   const showToast = (text: string, type: "info" | "error" | "success" = "info") => {
     setToast({ text, type });
-    setTimeout(() => setToast(null), 3000);
+    // Replace any in-flight timer so a rapid second toast doesn't get cleared
+    // by the previous one's stale timeout, and so unmount can cancel cleanly.
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => {
+      setToast(null);
+      toastTimerRef.current = null;
+    }, 3000);
   };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current);
+    };
+  }, []);
 
   // Set initial group from URL hash
   useEffect(() => {

@@ -92,6 +92,18 @@ export function useGuildStream(groupId: string | null) {
   const esRef = useRef<EventSource | null>(null);
   const agentsRef = useRef<GuildAgent[]>([]);
   agentsRef.current = agents;
+  // tasksRef / executionsRef mirror the latest state so handlers and async
+  // callbacks read fresh values instead of closure-captured snapshots. The
+  // mirror assignment must happen on every render so reads that occur after
+  // a state update see the new value within the same React commit.
+  const tasksRef = useRef<GuildTask[]>([]);
+  tasksRef.current = tasks;
+  const taskExecutionsRef = useRef<Record<string, TaskExecution>>({});
+  taskExecutionsRef.current = taskExecutions;
+  // Tracks which task ids have a getTaskExecutionLog fetch in flight so the
+  // auto-load effect doesn't double-fetch under StrictMode's double-mount or
+  // when status changes fire the effect repeatedly while a load is pending.
+  const loadingLogsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!groupId) {
@@ -289,27 +301,32 @@ export function useGuildStream(groupId: string | null) {
         const agentId = data.agentId ?? data.assignedAgentId;
         if (!taskId || !agentId) return;
         const now = new Date().toISOString();
-        setTasks((prev) => {
-          const updated = prev.map((t) =>
+        // Resolve the title via a ref instead of nesting setTaskExecutions
+        // inside setTasks's updater. Calling setState from inside another
+        // setState's updater is unsafe — updaters must be pure (StrictMode
+        // double-invokes them, which would emit duplicate execution entries
+        // and tear ordering with concurrent rendering).
+        const titleFromIncoming = typeof data.title === "string" ? data.title : undefined;
+        const titleFromState = tasksRef.current.find((t) => t.id === taskId)?.title;
+        const taskTitle = titleFromIncoming ?? titleFromState ?? taskId;
+        setTasks((prev) =>
+          prev.map((t) =>
             t.id === taskId
               ? { ...t, ...data, status: "in_progress" as const, assignedAgentId: agentId, startedAt: now }
-              : t
-          );
-          // Initialize task execution with task title
-          const task = updated.find((t) => t.id === taskId);
-          setTaskExecutions((execs) => ({
-            ...execs,
-            [taskId]: {
-              taskId,
-              taskTitle: task?.title ?? taskId,
-              agentId,
-              events: [],
-              status: "working",
-              startedAt: now,
-            },
-          }));
-          return updated;
-        });
+              : t,
+          ),
+        );
+        setTaskExecutions((execs) => ({
+          ...execs,
+          [taskId]: {
+            taskId,
+            taskTitle,
+            agentId,
+            events: [],
+            status: "working",
+            startedAt: now,
+          },
+        }));
       } catch {
         // ignore
       }
@@ -491,13 +508,17 @@ export function useGuildStream(groupId: string | null) {
   // Load historical execution log from server
   const loadTaskLog = useCallback(async (taskId: string) => {
     if (!groupId) return;
-    // Already have live data for this task
-    if (taskExecutions[taskId]) return;
+    // Read via refs so we don't see stale snapshots after rapid status flips
+    // or under StrictMode's double-mount. Without this, the auto-load effect
+    // can permanently skip a task whose execution entry was created after the
+    // callback was instantiated.
+    if (taskExecutionsRef.current[taskId]) return;
+    if (loadingLogsRef.current.has(taskId)) return;
+    loadingLogsRef.current.add(taskId);
     try {
       const log = await getTaskExecutionLog(groupId, taskId);
       if (!log || !log.startedAt) return;
-      // Find task title from tasks state
-      const task = tasks.find((t) => t.id === taskId);
+      const task = tasksRef.current.find((t) => t.id === taskId);
       setTaskExecutions((prev) => ({
         ...prev,
         [taskId]: {
@@ -512,8 +533,10 @@ export function useGuildStream(groupId: string | null) {
       }));
     } catch {
       // no log available
+    } finally {
+      loadingLogsRef.current.delete(taskId);
     }
-  }, [groupId, tasks]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [groupId]);
 
   // Remove a task execution from the panel
   const removeTaskExecution = useCallback((taskId: string) => {
@@ -539,12 +562,8 @@ export function useGuildStream(groupId: string | null) {
   // arrives (see appendEvent). Runs every 5s; threshold 8s — picks up "quiet"
   // reasoning without crying wolf on every small pause.
   //
-  // We read `tasks` through a ref instead of putting it in the deps array —
-  // otherwise every SSE event (which changes `tasks`) would tear down and
-  // rebuild the interval, and the 5s timer would never actually elapse on an
-  // active group.
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
+  // Reads `tasks` through `tasksRef` (declared at the top of the hook) so the
+  // 5s interval doesn't get torn down on every SSE event.
   useEffect(() => {
     const STALE_THRESHOLD_MS = 8000;
     const timer = window.setInterval(() => {
@@ -566,22 +585,32 @@ export function useGuildStream(groupId: string | null) {
     return () => window.clearInterval(timer);
   }, []);
 
-  // Auto-load logs for in-progress tasks on initial state
+  // Auto-load logs for in-progress and recently-finished tasks. Keying on
+  // `tasks.length` alone misses status flips (in_progress→completed without
+  // any length change) so the just-completed log never auto-loads. Derive a
+  // stable signature from id+status so we re-run on transitions but not on
+  // every unrelated `tasks` mutation.
+  const inProgressKey = tasks
+    .filter((t) => t.status === "in_progress" || t.status === "completed" || t.status === "failed")
+    .map((t) => `${t.id}:${t.status}`)
+    .sort()
+    .join(",");
   useEffect(() => {
     if (!groupId) return;
-    const inProgress = tasks.filter((t) => t.status === "in_progress" || t.status === "completed" || t.status === "failed");
-    // Only auto-load working tasks and the last 3 completed/failed
+    const inProgress = tasksRef.current.filter(
+      (t) => t.status === "in_progress" || t.status === "completed" || t.status === "failed",
+    );
     const working = inProgress.filter((t) => t.status === "in_progress");
     const recent = inProgress
       .filter((t) => t.status !== "in_progress")
       .sort((a, b) => (b.completedAt ?? "").localeCompare(a.completedAt ?? ""))
       .slice(0, 3);
     for (const t of [...working, ...recent]) {
-      if (!taskExecutions[t.id]) {
+      if (!taskExecutionsRef.current[t.id]) {
         loadTaskLog(t.id);
       }
     }
-  }, [groupId, tasks.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [groupId, inProgressKey, loadTaskLog]);
 
   return {
     tasks,

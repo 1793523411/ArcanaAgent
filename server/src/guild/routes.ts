@@ -37,7 +37,7 @@ import {
   type PipelinePlan,
   type AgentPlanItem,
 } from "./aiDesigner.js";
-import type { GuildAgent, CreateAgentParams } from "./types.js";
+import type { GuildAgent, CreateAgentParams, TaskPriority } from "./types.js";
 import { sanitizeAssertions } from "./verification.js";
 import { createHash } from "node:crypto";
 
@@ -53,6 +53,17 @@ function p(val: string | string[] | undefined): string {
 function getStringQuery(req: Request, name: string): string {
   const v = req.query[name];
   return typeof v === "string" ? v : "";
+}
+
+const VALID_PRIORITIES: ReadonlySet<TaskPriority> = new Set(["low", "medium", "high", "urgent"]);
+
+/** Coerce caller-provided priority to a known enum value or `undefined` so
+ *  downstream PRIORITY_RANK lookups never produce NaN comparisons in the
+ *  scheduler sort. */
+function validPriority(value: unknown): TaskPriority | undefined {
+  return typeof value === "string" && VALID_PRIORITIES.has(value as TaskPriority)
+    ? (value as TaskPriority)
+    : undefined;
 }
 
 /** Generic 500 response that logs the full error server-side but returns
@@ -386,7 +397,7 @@ export function postGroupTask(req: Request, res: Response): void {
     const task = createTask(groupId, {
       title,
       description,
-      priority: req.body.priority,
+      priority: validPriority(req.body.priority),
       dependsOn: Array.isArray(req.body.dependsOn) ? req.body.dependsOn : undefined,
       kind,
       suggestedSkills: Array.isArray(req.body.suggestedSkills) ? req.body.suggestedSkills : undefined,
@@ -801,7 +812,8 @@ export function putTask(req: Request, res: Response): void {
     const updates: Record<string, unknown> = {};
     if (typeof req.body.title === "string") updates.title = req.body.title;
     if (typeof req.body.description === "string") updates.description = req.body.description;
-    if (typeof req.body.priority === "string") updates.priority = req.body.priority;
+    const incomingPriority = validPriority(req.body.priority);
+    if (incomingPriority) updates.priority = incomingPriority;
     if (typeof req.body.status === "string") {
       // Side-effect-bearing transitions must go through dedicated endpoints:
       //   completed → completeTask (runs acceptanceAssertions)
@@ -1448,18 +1460,24 @@ export function getGroupStream(req: Request, res: Response): void {
           break;
         case "agent_updated": {
           const agent = getAgent(event.agentId);
+          // Agent deleted entirely — drop from tracking set so we stop
+          // forwarding null-bodied agent_updated events forever.
+          if (!agent) {
+            groupAgentIds.delete(event.agentId);
+            break;
+          }
           // Agent migrated out of this group — drop it from our tracking set
           // and stop forwarding. Without this, an agent that leaves the group
           // via an agent-only update (no accompanying group_updated) keeps
           // leaking events to this SSE stream forever.
-          if (agent && agent.groupId !== groupId) {
+          if (agent.groupId !== groupId) {
             groupAgentIds.delete(event.agentId);
             break;
           }
           // Membership may have just changed (e.g. agent joined this group); fall back to live lookup.
-          if (!groupAgentIds.has(event.agentId) && agent?.groupId !== groupId) break;
-          if (agent) groupAgentIds.add(agent.id);
-          send("agent_updated", agent ?? { agentId: event.agentId });
+          if (!groupAgentIds.has(event.agentId) && agent.groupId !== groupId) break;
+          groupAgentIds.add(agent.id);
+          send("agent_updated", agent);
           break;
         }
       }

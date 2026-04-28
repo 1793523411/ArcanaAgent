@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "fs";
+import { readFileSync, mkdirSync, existsSync, readdirSync, rmSync } from "fs";
 import { join, resolve } from "path";
 import type {
   Guild, Group, GuildAgent, AgentAsset,
@@ -7,6 +7,7 @@ import type {
 import { guildEventBus } from "./eventBus.js";
 import { invalidateAgentEmbedding } from "./embeddingScorer.js";
 import { invalidateAgentLlmScores } from "./llmScorer.js";
+import { atomicWriteFileSync } from "./atomicFs.js";
 
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const GUILD_DIR = join(DATA_DIR, "guild");
@@ -23,7 +24,7 @@ function genId(prefix: string): string {
 }
 
 function writeJSON(path: string, data: unknown): void {
-  writeFileSync(path, JSON.stringify(data, null, 2));
+  atomicWriteFileSync(path, JSON.stringify(data, null, 2));
 }
 
 function readJSON<T>(path: string): T | null {

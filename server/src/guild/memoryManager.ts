@@ -2,6 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync } from "fs
 import { join, resolve } from "path";
 import type { AgentMemory, MemoryType, GuildTask, TaskResult } from "./types.js";
 import { guildEventBus } from "./eventBus.js";
+import { atomicWriteFileSync } from "./atomicFs.js";
 
 const DATA_DIR = resolve(process.env.DATA_DIR ?? join(process.cwd(), "data"));
 const GUILD_DIR = join(DATA_DIR, "guild");
@@ -81,7 +82,7 @@ function loadIndex(agentId: string): AgentMemory[] {
 function saveIndex(agentId: string, memories: AgentMemory[]): void {
   ensureDir(memoryBaseDir(agentId));
   const p = indexPath(agentId);
-  writeFileSync(p, JSON.stringify(memories, null, 2));
+  atomicWriteFileSync(p, JSON.stringify(memories, null, 2));
   try {
     indexCache.set(agentId, { mtimeMs: statSync(p).mtimeMs, memories });
   } catch {

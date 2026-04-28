@@ -1,5 +1,6 @@
-import { readFileSync, existsSync, readdirSync, writeFileSync, mkdirSync, unlinkSync } from "fs";
+import { readFileSync, existsSync, readdirSync, mkdirSync, unlinkSync } from "fs";
 import { join, resolve, basename } from "path";
+import { atomicWriteFileSync } from "./atomicFs.js";
 import type {
   GuildTask,
   CreateTaskParams,
@@ -359,7 +360,7 @@ export function savePipeline(
   if (!opts.allowOverwrite && !opts.expectedId && existsSync(path)) {
     return { ok: false, reason: `template "${tpl.id}" already exists` };
   }
-  writeFileSync(path, JSON.stringify(tpl, null, 2));
+  atomicWriteFileSync(path, JSON.stringify(tpl, null, 2));
   return { ok: true, template: tpl };
 }
 
