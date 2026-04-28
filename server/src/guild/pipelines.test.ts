@@ -1,0 +1,727 @@
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { mkdirSync, rmSync, writeFileSync } from "fs";
+import { cleanGuildDir } from "../test-setup.js";
+import { join } from "path";
+import { createGroup } from "./guildManager.js";
+import { createTask, getSubtasks, getTask, failTask, getGroupTasks, completeTask } from "./taskBoard.js";
+import { readWorkspace } from "./workspace.js";
+import {
+  listPipelines,
+  getPipeline,
+  substituteVars,
+  expandPipeline,
+  savePipeline,
+  deletePipeline,
+  validatePipeline,
+  reconcileDeclaredOutputs,
+  aggregateParentOutputs,
+  renderDeliverablesTable,
+  type PipelineTemplate,
+} from "./pipelines.js";
+import type { TaskHandoff } from "./types.js";
+
+const TEST_DATA_DIR = process.env.DATA_DIR!;
+const PIPELINES_DIR = join(TEST_DATA_DIR, "guild", "pipelines");
+
+const sample: PipelineTemplate = {
+  id: "test-pl",
+  name: "Test Pipeline",
+  description: "two-step chain",
+  inputs: [{ name: "url", required: true }, { name: "tag", default: "misc" }],
+  steps: [
+    { title: "Fetch ${url}", description: "grab the page at ${url}", dependsOn: [] },
+    {
+      title: "Process (${tag})",
+      description: "process output of step 0",
+      dependsOn: [0],
+      acceptanceCriteria: "tagged with ${tag}",
+    },
+  ],
+};
+
+describe("pipelines", () => {
+  beforeEach(() => {
+    cleanGuildDir();
+    mkdirSync(PIPELINES_DIR, { recursive: true });
+    writeFileSync(join(PIPELINES_DIR, "test-pl.json"), JSON.stringify(sample));
+  });
+  afterEach(() => {
+    cleanGuildDir();
+  });
+
+  it("substituteVars replaces known tokens and leaves unknown literal", () => {
+    expect(substituteVars("hi ${name}, ${other}", { name: "x" })).toBe("hi x, ${other}");
+  });
+
+  it("listPipelines / getPipeline read from data dir", () => {
+    const all = listPipelines();
+    expect(all.map((t) => t.id)).toContain("test-pl");
+    expect(getPipeline("test-pl")?.steps.length).toBe(2);
+    expect(getPipeline("nope")).toBeNull();
+  });
+
+  it("expandPipeline creates subtasks with substituted vars and DAG edges", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("test-pl")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: tpl.description ?? "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+      pipelineInputs: { url: "https://x.test" },
+    });
+
+    const outcome = expandPipeline(group.id, parent, tpl, { url: "https://x.test" });
+    expect(outcome.ok).toBe(true);
+    expect(outcome.subtaskIds?.length).toBe(2);
+
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs[0].title).toBe("Fetch https://x.test");
+    expect(subs[1].title).toBe("Process (misc)"); // default applied
+    expect(subs[1].acceptanceCriteria).toBe("tagged with misc");
+    expect(subs[1].dependsOn).toEqual([subs[0].id]);
+
+    const refreshed = getTask(group.id, parent.id)!;
+    expect(refreshed.subtaskIds?.length).toBe(2);
+    expect(refreshed.workspaceRef).toBeTruthy();
+  });
+
+  it("expandPipeline rejects when required inputs are missing", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("test-pl")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    const outcome = expandPipeline(group.id, parent, tpl, {});
+    expect(outcome.ok).toBe(false);
+    expect(outcome.reason).toMatch(/url/);
+    expect(getSubtasks(group.id, parent.id).length).toBe(0);
+  });
+
+  it("validatePipeline flags bad id, missing title, bad deps, undeclared vars", () => {
+    const bad: PipelineTemplate = {
+      id: "Bad ID!",
+      name: "",
+      inputs: [{ name: "ok" }],
+      steps: [
+        { title: "", description: "uses ${missing}", dependsOn: [] },
+        { title: "refs future", description: "x", dependsOn: [5] },
+      ],
+    };
+    const errs = validatePipeline(bad);
+    const paths = errs.map((e) => e.path);
+    expect(paths).toContain("id");
+    expect(paths).toContain("name");
+    expect(paths).toContain("steps[0].title");
+    expect(paths.some((p) => p.startsWith("steps[1].dependsOn"))).toBe(true);
+    expect(errs.some((e) => e.message.includes("missing"))).toBe(true);
+  });
+
+  it("savePipeline writes, refuses duplicate without overwrite, PUT overrides", () => {
+    const tpl: PipelineTemplate = {
+      id: "new-tpl",
+      name: "New",
+      steps: [{ title: "Step 1", description: "hi", dependsOn: [] }],
+    };
+    expect(savePipeline(tpl).ok).toBe(true);
+    expect(savePipeline(tpl).ok).toBe(false); // duplicate rejected
+    const updated: PipelineTemplate = { ...tpl, name: "Updated" };
+    const r = savePipeline(updated, { expectedId: "new-tpl", allowOverwrite: true });
+    expect(r.ok).toBe(true);
+    expect(getPipeline("new-tpl")?.name).toBe("Updated");
+  });
+
+  it("savePipeline rejects id mismatch on PUT", () => {
+    const tpl: PipelineTemplate = {
+      id: "a",
+      name: "A",
+      steps: [{ title: "s", description: "d", dependsOn: [] }],
+    };
+    const r = savePipeline(tpl, { expectedId: "b", allowOverwrite: true });
+    expect(r.ok).toBe(false);
+    expect(r.reason).toMatch(/mismatch/);
+  });
+
+  it("deletePipeline removes file", () => {
+    const tpl: PipelineTemplate = {
+      id: "tmp",
+      name: "Temp",
+      steps: [{ title: "s", description: "d", dependsOn: [] }],
+    };
+    savePipeline(tpl);
+    expect(getPipeline("tmp")).not.toBeNull();
+    expect(deletePipeline("tmp")).toBe(true);
+    expect(getPipeline("tmp")).toBeNull();
+    expect(deletePipeline("tmp")).toBe(false);
+  });
+
+  it("expandPipeline threads retry policy onto subtasks with var substitution", () => {
+    const withRetry: PipelineTemplate = {
+      id: "retry-pl",
+      name: "Retry",
+      inputs: [{ name: "who", default: "ops" }],
+      steps: [
+        {
+          title: "flaky",
+          description: "x",
+          dependsOn: [],
+          retry: {
+            max: 2,
+            backoffMs: 0,
+            onExhausted: "fallback",
+            fallback: { title: "ask ${who}", description: "manual", suggestedAgentId: "human" },
+          },
+        },
+      ],
+    };
+    savePipeline(withRetry);
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("retry-pl")!;
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, tpl, {});
+    const [sub] = getSubtasks(group.id, parent.id);
+    expect(sub.retryPolicy?.max).toBe(2);
+    expect(sub.retryPolicy?.onExhausted).toBe("fallback");
+    expect(sub.retryPolicy?.fallback?.title).toBe("ask ops"); // substituted
+  });
+
+  it("failTask retries until max then finalizes with onExhausted=fail", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const t = createTask(group.id, {
+      title: "flaky",
+      description: "",
+      kind: "subtask",
+      retryPolicy: { max: 2, backoffMs: 0, onExhausted: "fail" },
+    });
+    // First failure: retry #1, status goes back to open
+    let r = failTask(group.id, t.id, "a", "boom")!;
+    expect(r.status).toBe("open");
+    expect(r.retryCount).toBe(1);
+    // Second failure: retry #2, still open
+    r = failTask(group.id, t.id, "a", "boom")!;
+    expect(r.status).toBe("open");
+    expect(r.retryCount).toBe(2);
+    // Third failure: budget exhausted → failed
+    r = failTask(group.id, t.id, "a", "boom")!;
+    expect(r.status).toBe("failed");
+  });
+
+  it("failTask with onExhausted=skip cancels and records skippedReason", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const t = createTask(group.id, {
+      title: "skippable",
+      description: "",
+      kind: "subtask",
+      retryPolicy: { max: 1, onExhausted: "skip" },
+    });
+    failTask(group.id, t.id, "a", "err"); // retry 1
+    const r = failTask(group.id, t.id, "a", "err")!; // exhausted → skip
+    expect(r.status).toBe("cancelled");
+    expect(r.skippedReason).toMatch(/skipped/);
+  });
+
+  it("failTask cascades cancellation to downstream dependents", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const a = createTask(group.id, { title: "A", description: "", kind: "subtask" });
+    const b = createTask(group.id, { title: "B", description: "", kind: "subtask", dependsOn: [a.id] });
+    const c = createTask(group.id, { title: "C", description: "", kind: "subtask", dependsOn: [b.id] });
+    const aFinal = failTask(group.id, a.id, "x", "boom")!;
+    expect(aFinal.status).toBe("failed");
+    const bAfter = getTask(group.id, b.id)!;
+    const cAfter = getTask(group.id, c.id)!;
+    expect(bAfter.status).toBe("cancelled");
+    expect(cAfter.status).toBe("cancelled");
+    expect(bAfter.skippedReason).toMatch(/级联/);
+  });
+
+  it("failTask with onExhausted=fallback creates a replacement task and rewires deps", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const a = createTask(group.id, {
+      title: "A",
+      description: "",
+      kind: "subtask",
+      retryPolicy: {
+        max: 1,
+        onExhausted: "fallback",
+        fallback: { title: "A-fallback", description: "manual" },
+      },
+    });
+    const b = createTask(group.id, {
+      title: "B",
+      description: "",
+      kind: "subtask",
+      dependsOn: [a.id],
+    });
+    failTask(group.id, a.id, "x", "err"); // retry 1
+    const aFinal = failTask(group.id, a.id, "x", "err")!; // exhausted
+    expect(aFinal.status).toBe("cancelled");
+    const all = getGroupTasks(group.id);
+    const fallback = all.find((t) => t.title === "A-fallback");
+    expect(fallback).toBeDefined();
+    const bRefreshed = getTask(group.id, b.id)!;
+    expect(bRefreshed.dependsOn).toEqual([fallback!.id]);
+  });
+
+  it("expandPipeline honors compile-time branch kind", () => {
+    const branchTpl: PipelineTemplate = {
+      id: "branch-pl",
+      name: "Branch demo",
+      inputs: [{ name: "format", required: true }],
+      steps: [
+        { title: "prep", description: "always runs", dependsOn: [] },
+        {
+          kind: "branch",
+          title: "format-branch",
+          description: "pick parser",
+          when: { eq: ["${format}", "pdf"] },
+          dependsOn: [0],
+          then: [{ title: "OCR ${format}", description: "parse PDF", dependsOn: [] }],
+          else: [{ title: "HTML parse", description: "parse HTML", dependsOn: [] }],
+        },
+        { title: "summarize", description: "after branch", dependsOn: [1] },
+      ],
+    };
+    savePipeline(branchTpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("branch-pl")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    const outcome = expandPipeline(group.id, parent, tpl, { format: "pdf" });
+    expect(outcome.ok).toBe(true);
+    const subs = getSubtasks(group.id, parent.id);
+    // prep + OCR + summarize = 3; HTML parse not created
+    expect(subs.map((s) => s.title)).toEqual(["prep", "OCR pdf", "summarize"]);
+    // summarize depends on OCR (the last step of the chosen branch), not on "prep"
+    expect(subs[2].dependsOn).toEqual([subs[1].id]);
+    // OCR itself depends on prep (outerDeps of the branch)
+    expect(subs[1].dependsOn).toEqual([subs[0].id]);
+  });
+
+  it("expandPipeline fans out foreach over an input list with join", () => {
+    const feTpl: PipelineTemplate = {
+      id: "fe-pl",
+      name: "foreach demo",
+      inputs: [{ name: "kps", required: true }],
+      steps: [
+        {
+          kind: "foreach",
+          title: "per-kp",
+          description: "iterate",
+          items: "${kps}",
+          as: "kp",
+          body: [
+            { title: "gen ${kp}", description: "body step", dependsOn: [] },
+          ],
+          join: { title: "merge", description: "combine all", dependsOn: [] },
+        },
+      ],
+    };
+    savePipeline(feTpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("fe-pl")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    const outcome = expandPipeline(group.id, parent, tpl, { kps: "a,b,c" });
+    expect(outcome.ok).toBe(true);
+    const subs = getSubtasks(group.id, parent.id);
+    // 3 iterations + 1 join = 4
+    expect(subs.map((s) => s.title)).toEqual(["gen a", "gen b", "gen c", "merge"]);
+    // join depends on all 3 iterations
+    const joinTask = subs[3];
+    expect(joinTask.dependsOn?.sort()).toEqual([subs[0].id, subs[1].id, subs[2].id].sort());
+  });
+
+  it("expandPipeline foreach handles JSON-array input", () => {
+    const feTpl: PipelineTemplate = {
+      id: "fe-json",
+      name: "json foreach",
+      inputs: [{ name: "items", required: true }],
+      steps: [
+        {
+          kind: "foreach",
+          title: "loop",
+          description: "",
+          items: "${items}",
+          as: "x",
+          body: [{ title: "do ${x}", description: "", dependsOn: [] }],
+        },
+      ],
+    };
+    savePipeline(feTpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("fe-json")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    const outcome = expandPipeline(group.id, parent, tpl, {
+      items: JSON.stringify(["one", "two"]),
+    });
+    expect(outcome.ok).toBe(true);
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs.map((s) => s.title)).toEqual(["do one", "do two"]);
+  });
+
+  it("branch inside foreach body sees loop variable in when context", () => {
+    const tpl: PipelineTemplate = {
+      id: "fe-branch",
+      name: "fe branch",
+      inputs: [{ name: "items", required: true }],
+      steps: [
+        {
+          kind: "foreach",
+          title: "loop",
+          description: "",
+          items: "${items}",
+          as: "x",
+          body: [
+            {
+              kind: "branch",
+              title: "is-pdf",
+              description: "",
+              when: { eq: ["${x}", "pdf"] },
+              then: [{ title: "pdf ${x}", description: "", dependsOn: [] }],
+              else: [{ title: "other ${x}", description: "", dependsOn: [] }],
+            },
+          ],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    expandPipeline(group.id, parent, getPipeline("fe-branch")!, { items: "pdf,html" });
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs.map((s) => s.title)).toEqual(["pdf pdf", "other html"]);
+  });
+
+  it("exposes parent_* context vars to when/substitution", () => {
+    const tpl: PipelineTemplate = {
+      id: "parent-ctx",
+      name: "parent ctx",
+      steps: [
+        {
+          kind: "branch",
+          title: "urgent?",
+          description: "",
+          when: { eq: ["${parent_priority}", "urgent"] },
+          then: [{ title: "rush: ${parent_title}", description: "", dependsOn: [] }],
+          else: [{ title: "normal", description: "", dependsOn: [] }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "Ship it",
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+      priority: "urgent",
+    });
+    expandPipeline(group.id, parent, getPipeline("parent-ctx")!, {});
+    const subs = getSubtasks(group.id, parent.id);
+    expect(subs.map((s) => s.title)).toEqual(["rush: Ship it"]);
+  });
+
+  it("template-level outputs materialize onto parent as isFinal=true", () => {
+    const tpl: PipelineTemplate = {
+      id: "out-pl",
+      name: "Outputs",
+      inputs: [{ name: "slug", required: true }],
+      outputs: [
+        { ref: "${slug}.md", label: "终稿", description: "发布使用", kind: "file" },
+      ],
+      steps: [{ title: "draft", description: "", dependsOn: [] }],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("out-pl")!, { slug: "hello" });
+    const refreshed = getTask(group.id, parent.id)!;
+    expect(refreshed.declaredOutputs).toHaveLength(1);
+    expect(refreshed.declaredOutputs![0].ref).toBe("hello.md");
+    expect(refreshed.declaredOutputs![0].label).toBe("终稿");
+    expect(refreshed.declaredOutputs![0].isFinal).toBe(true);
+    expect(refreshed.declaredOutputs![0].status).toBe("pending");
+  });
+
+  it("step-level isFinal outputs bubble up to parent; non-final stay per-subtask", () => {
+    const tpl: PipelineTemplate = {
+      id: "mixed-out",
+      name: "mixed",
+      steps: [
+        {
+          title: "draft",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "draft.md", kind: "file" }], // intermediate
+        },
+        {
+          title: "final",
+          description: "",
+          dependsOn: [0],
+          outputs: [{ ref: "final.md", kind: "file", isFinal: true, label: "终稿" }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("mixed-out")!, {});
+    const refreshed = getTask(group.id, parent.id)!;
+    // Only the final output bubbles up to the parent
+    expect(refreshed.declaredOutputs?.map((o) => o.ref)).toEqual(["final.md"]);
+    const [draft, final] = getSubtasks(group.id, parent.id);
+    expect(draft.declaredOutputs?.map((o) => o.ref)).toEqual(["draft.md"]);
+    expect(final.declaredOutputs?.map((o) => o.ref)).toEqual(["final.md"]);
+  });
+
+  it("validatePipeline flags empty output refs and undeclared vars in refs", () => {
+    const bad: PipelineTemplate = {
+      id: "bad-out",
+      name: "bad",
+      inputs: [{ name: "ok" }],
+      outputs: [{ ref: "", kind: "file" } as any],
+      steps: [
+        {
+          title: "s",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "${nope}.md", kind: "file" }],
+        },
+      ],
+    };
+    const errs = validatePipeline(bad);
+    const paths = errs.map((e) => e.path);
+    expect(paths).toContain("outputs[0].ref");
+    expect(errs.some((e) => e.message.includes("nope"))).toBe(true);
+  });
+
+  it("reconcileDeclaredOutputs marks produced when handoff artifact matches by basename", () => {
+    const handoff: TaskHandoff = {
+      fromAgentId: "a",
+      summary: "done",
+      artifacts: [{ kind: "file", ref: "./shared/final.md" }],
+      createdAt: new Date().toISOString(),
+    };
+    const updated = reconcileDeclaredOutputs({
+      id: "task_1",
+      status: "completed",
+      assignedAgentId: "a",
+      result: { summary: "done", handoff },
+      completedAt: new Date().toISOString(),
+      declaredOutputs: [
+        { ref: "final.md", kind: "file", isFinal: true, status: "pending" },
+      ],
+    });
+    expect(updated?.[0].status).toBe("produced");
+    expect(updated?.[0].producedBy?.taskId).toBe("task_1");
+  });
+
+  it("reconcileDeclaredOutputs marks missing when task failed without artifact", () => {
+    const updated = reconcileDeclaredOutputs({
+      id: "task_2",
+      status: "failed",
+      declaredOutputs: [{ ref: "x.md", kind: "file", status: "pending" }],
+    });
+    expect(updated?.[0].status).toBe("missing");
+  });
+
+  it("aggregateParentOutputs rolls produced children up to parent", () => {
+    const parentOut = [{ ref: "final.md", kind: "file" as const, isFinal: true, status: "pending" as const }];
+    const child = {
+      id: "c1",
+      groupId: "g",
+      title: "c",
+      description: "",
+      status: "completed" as const,
+      priority: "medium" as const,
+      createdBy: "x",
+      createdAt: "",
+      declaredOutputs: [
+        {
+          ref: "final.md",
+          kind: "file" as const,
+          status: "produced" as const,
+          producedBy: { taskId: "c1", agentId: "a", at: "t" },
+        },
+      ],
+    };
+    const rolled = aggregateParentOutputs(parentOut, [child]);
+    expect(rolled?.[0].status).toBe("produced");
+    expect(rolled?.[0].producedBy?.taskId).toBe("c1");
+  });
+
+  it("completeTask + pipeline parent: handoff reconciles parent deliverables and workspace section", () => {
+    const tpl: PipelineTemplate = {
+      id: "e2e-out",
+      name: "e2e",
+      outputs: [{ ref: "final.md", kind: "file", label: "终稿" }],
+      steps: [
+        {
+          title: "write final",
+          description: "",
+          dependsOn: [],
+          outputs: [{ ref: "final.md", kind: "file", isFinal: true }],
+        },
+      ],
+    };
+    savePipeline(tpl);
+    const group = createGroup({ name: "G", description: "" });
+    const parent = createTask(group.id, { title: tpl.name, description: "", kind: "pipeline", pipelineId: tpl.id });
+    expandPipeline(group.id, parent, getPipeline("e2e-out")!, {});
+    const [sub] = getSubtasks(group.id, parent.id);
+
+    // Initially pending in workspace
+    let ws = readWorkspace(group.id, parent.id)!;
+    expect(ws.deliverables).toContain("final.md");
+    expect(ws.deliverables).toContain("⏳");
+
+    // Complete the child with a matching file artifact
+    completeTask(group.id, sub.id, "agent_x", {
+      summary: "done",
+      handoff: {
+        fromAgentId: "agent_x",
+        summary: "wrote final.md",
+        artifacts: [{ kind: "file", ref: "final.md" }],
+        createdAt: new Date().toISOString(),
+      },
+    });
+
+    const refreshedParent = getTask(group.id, parent.id)!;
+    expect(refreshedParent.declaredOutputs?.[0].status).toBe("produced");
+    expect(refreshedParent.declaredOutputs?.[0].producedBy?.agentId).toBe("agent_x");
+
+    ws = readWorkspace(group.id, parent.id)!;
+    expect(ws.deliverables).toContain("✅");
+    expect(ws.deliverables).toContain("agent_x");
+  });
+
+  it("renderDeliverablesTable handles empty and populated outputs", () => {
+    expect(renderDeliverablesTable(undefined)).toContain("_No declared deliverables._");
+    expect(renderDeliverablesTable([])).toContain("_No declared deliverables._");
+    const md = renderDeliverablesTable([
+      { ref: "x.md", kind: "file", isFinal: true, status: "pending", label: "Final" },
+    ]);
+    expect(md).toContain("⭐");
+    expect(md).toContain("⏳");
+    expect(md).toContain("x.md");
+  });
+
+  it("expandPipeline is idempotent", () => {
+    const group = createGroup({ name: "G", description: "d" });
+    const tpl = getPipeline("test-pl")!;
+    const parent = createTask(group.id, {
+      title: tpl.name,
+      description: "",
+      kind: "pipeline",
+      pipelineId: tpl.id,
+    });
+    const first = expandPipeline(group.id, parent, tpl, { url: "u" });
+    const second = expandPipeline(group.id, parent, tpl, { url: "u" });
+    expect(first.subtaskIds).toEqual(second.subtaskIds);
+    expect(getSubtasks(group.id, parent.id).length).toBe(2);
+  });
+
+  it("pipeline rollup treats assertion-failure as a failed subtask", async () => {
+    // Template with a single subtask whose acceptanceAssertions reference a
+    // file the agent won't actually produce. completeTask should detect the
+    // violation, flip the subtask to failed, and the pipeline parent should
+    // then roll up to failed too (not completed).
+    const tplAssertFail: PipelineTemplate = {
+      id: "assert-fail",
+      name: "Assert Fail",
+      inputs: [],
+      steps: [
+        {
+          title: "Produce nothing",
+          description: "deliberately leaves no output",
+          dependsOn: [],
+          acceptanceAssertions: [{ type: "file_exists", ref: "required.md" }],
+        },
+      ],
+    };
+    writeFileSync(join(PIPELINES_DIR, "assert-fail.json"), JSON.stringify(tplAssertFail));
+
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "run assert-fail",
+      description: "",
+      kind: "pipeline",
+      pipelineId: "assert-fail",
+    });
+    const outcome = expandPipeline(group.id, parent, tplAssertFail, {});
+    expect(outcome.ok).toBe(true);
+
+    const [sub] = getSubtasks(group.id, parent.id);
+    // Agent "finishes" but no file exists — assertion gate fails completion.
+    const { completeTask } = await import("./taskBoard.js");
+    const afterComplete = completeTask(group.id, sub.id, "agent_x", { summary: "claimed done" });
+    expect(afterComplete?.status).toBe("failed");
+    expect(afterComplete?.result?.summary).toMatch(/验收未通过/);
+
+    // Parent rollup: 1 subtask, 1 failed → parent flips to failed too.
+    const refreshedParent = getTask(group.id, parent.id);
+    expect(refreshedParent?.status).toBe("failed");
+  });
+
+  it("expandPipeline propagates acceptanceAssertions with ${var} interpolated", () => {
+    // Template whose step declares machine-checkable assertions referencing an input.
+    const tplWithAssertions: PipelineTemplate = {
+      id: "asserted",
+      name: "Asserted",
+      inputs: [{ name: "filename", required: true }],
+      steps: [
+        {
+          title: "Write ${filename}",
+          description: "produce the file",
+          dependsOn: [],
+          acceptanceAssertions: [
+            { type: "file_exists", ref: "${filename}.md" },
+            { type: "file_contains", ref: "${filename}.md", pattern: "## ${filename} 结论" },
+          ],
+        },
+      ],
+    };
+    writeFileSync(join(PIPELINES_DIR, "asserted.json"), JSON.stringify(tplWithAssertions));
+
+    const group = createGroup({ name: "G", description: "d" });
+    const parent = createTask(group.id, {
+      title: "run asserted",
+      description: "",
+      kind: "pipeline",
+      pipelineId: "asserted",
+    });
+    const outcome = expandPipeline(group.id, parent, tplWithAssertions, { filename: "report" });
+    expect(outcome.ok).toBe(true);
+
+    const [sub] = getSubtasks(group.id, parent.id);
+    expect(sub.acceptanceAssertions).toBeDefined();
+    expect(sub.acceptanceAssertions).toHaveLength(2);
+    expect(sub.acceptanceAssertions?.[0]).toMatchObject({ type: "file_exists", ref: "report.md" });
+    expect(sub.acceptanceAssertions?.[1]).toMatchObject({
+      type: "file_contains",
+      ref: "report.md",
+      pattern: "## report 结论",
+    });
+  });
+});

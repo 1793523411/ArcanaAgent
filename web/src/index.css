@@ -19,6 +19,9 @@
   --color-success-bg: rgba(16, 185, 129, 0.15);
   --color-success-border: rgba(16, 185, 129, 0.45);
   --color-success-text: #6ee7b7;
+  --color-warning-bg: rgba(245, 158, 11, 0.15);
+  --color-warning-border: rgba(245, 158, 11, 0.45);
+  --color-warning-text: #fcd34d;
   --font-sans: "DM Sans", ui-sans-serif, system-ui, sans-serif;
 }
 
@@ -42,6 +45,9 @@ html.theme-light {
   --color-success-bg: rgba(16, 185, 129, 0.12);
   --color-success-border: rgba(16, 185, 129, 0.45);
   --color-success-text: #166534;
+  --color-warning-bg: rgba(245, 158, 11, 0.12);
+  --color-warning-border: rgba(245, 158, 11, 0.45);
+  --color-warning-text: #92400e;
 }
 
 html {
@@ -80,8 +86,39 @@ textarea:focus-visible {
   outline-offset: 0;
 }
 
-button, a, [role="button"] {
+button, a, [role="button"], summary, label[for] {
   touch-action: manipulation;
+}
+
+/* Tailwind v4 reset removes the default pointer cursor on <button>. Restore it
+   globally so every interactive element shows the hand on hover, and opt out
+   only when actually disabled. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+[role="menuitem"]:not([aria-disabled="true"]),
+[role="menuitemcheckbox"]:not([aria-disabled="true"]),
+[role="menuitemradio"]:not([aria-disabled="true"]),
+[role="option"]:not([aria-disabled="true"]),
+[role="tab"]:not([aria-disabled="true"]),
+[role="switch"]:not([aria-disabled="true"]),
+[role="checkbox"]:not([aria-disabled="true"]),
+[role="radio"]:not([aria-disabled="true"]),
+[role="link"]:not([aria-disabled="true"]),
+summary,
+label[for],
+select:not(:disabled),
+input[type="checkbox"]:not(:disabled),
+input[type="radio"]:not(:disabled),
+input[type="submit"]:not(:disabled),
+input[type="button"]:not(:disabled),
+input[type="reset"]:not(:disabled),
+input[type="file"]:not(:disabled) {
+  cursor: pointer;
+}
+
+button:disabled,
+[role="button"][aria-disabled="true"] {
+  cursor: not-allowed;
 }
 
 /* Loading dots animation */

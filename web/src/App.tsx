@@ -7,6 +7,8 @@ import ShareCardModal from "./components/ShareCardModal";
 import TeamPanel from "./components/TeamPanel";
 import AgentTeamPanel from "./components/AgentTeamPanel";
 import ScheduledTasksPanel from "./components/ScheduledTasksPanel";
+import GuildWorkbench from "./components/guild/GuildWorkbench";
+import ProfilePage from "./components/ProfilePage";
 import { useConversations, useSendMessage, useConfig } from "./hooks";
 import { useToast } from "./components/Toast";
 import { filterVisibleArtifacts } from "./artifactFilters";
@@ -15,6 +17,8 @@ import type { ConversationMode, SubagentLog, StoredMessage } from "./types";
 export default function App() {
   const match = useMatch("/c/:conversationId");
   const conversationIdFromUrl = match?.params.conversationId;
+  const guildMatch = useMatch("/guild/:groupId?");
+  const profileMatch = useMatch("/profile");
   const navigate = useNavigate();
   const { toast } = useToast();
   const [showConfig, setShowConfig] = useState(false);
@@ -22,6 +26,7 @@ export default function App() {
   const [showScheduledTasks, setShowScheduledTasks] = useState(false);
   const [showAgentTeam, setShowAgentTeam] = useState(false);
   const [showModels, setShowModels] = useState(false);
+  const showGuild = guildMatch != null;
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
   const [showArtifacts, setShowArtifacts] = useState(false);
   const [showTeamPanel, setShowTeamPanel] = useState(false);
@@ -407,6 +412,7 @@ export default function App() {
         onOpenScheduledTasks={() => setShowScheduledTasks(true)}
         onOpenAgentTeam={() => setShowAgentTeam(true)}
         onOpenModels={() => setShowModels(true)}
+        onOpenGuild={() => navigate("/guild")}
         theme={theme}
         onToggleTheme={toggleTheme}
       />
@@ -615,6 +621,15 @@ export default function App() {
       )}
       {showAgentTeam && (
         <AgentTeamPanel onClose={() => setShowAgentTeam(false)} />
+      )}
+      {showGuild && (
+        <GuildWorkbench
+          onClose={() => navigate("/")}
+          initialGroupId={guildMatch?.params.groupId}
+        />
+      )}
+      {profileMatch && (
+        <ProfilePage />
       )}
       {showModels && (
         <ModelsPanel onClose={() => setShowModels(false)} onSaved={() => { setShowModels(false); }} />
