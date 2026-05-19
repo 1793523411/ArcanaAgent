@@ -1,6 +1,27 @@
 import { HumanMessage, AIMessage, SystemMessage, ToolMessage, BaseMessage } from "@langchain/core/messages";
+import type { AIMessageFields } from "@langchain/core/messages";
 import type { StoredMessage } from "../storage/index.js";
 import { readAttachmentBase64, getAttachmentAbsolutePath } from "../storage/index.js";
+
+export interface AIMessageWithReasoningFields extends AIMessageFields {
+  reasoningContent?: string;
+}
+
+function hasReasoningContent(reasoningContent: string | undefined): reasoningContent is string {
+  return typeof reasoningContent === "string" && reasoningContent.trim().length > 0;
+}
+
+export function createAIMessageWithReasoning(fields: AIMessageWithReasoningFields): AIMessage {
+  const { reasoningContent, ...messageFields } = fields;
+  if (!hasReasoningContent(reasoningContent)) return new AIMessage(messageFields);
+  return new AIMessage({
+    ...messageFields,
+    additional_kwargs: {
+      ...messageFields.additional_kwargs,
+      reasoning_content: reasoningContent,
+    },
+  });
+}
 
 function buildHumanContent(m: StoredMessage, convId?: string): string | Array<{ type: string; text?: string; image_url?: { url: string } }> {
   const attachments = m.attachments ?? [];
@@ -48,9 +69,10 @@ export function storedToLangChain(m: StoredMessage, convId?: string): BaseMessag
       name: tc.name,
       args: typeof tc.args === "string" ? (() => { try { return JSON.parse(tc.args); } catch { return tc.args; } })() : tc.args,
     }));
-    return new AIMessage({
+    return createAIMessageWithReasoning({
       content: m.content,
       tool_calls: toolCalls,
+      reasoningContent: m.reasoningContent,
     });
   }
   if (m.type === "tool") {

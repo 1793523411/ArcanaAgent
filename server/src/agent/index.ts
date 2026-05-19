@@ -10,6 +10,7 @@ import { buildPlanningPrelude, getLastHumanText } from "./planning.js";
 import { buildRuntimeTools, injectStreamAgent } from "./toolBuilder.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 import { isReadOnlyTool } from "../tools/index.js";
+import { createAIMessageWithReasoning } from "../lib/messages.js";
 import {
   getTextFromChunk,
   getTextFromMessage,
@@ -578,13 +579,14 @@ export async function* streamAgentWithTokens(
         if (content) updatePlanFromVisibleText(content, true);
 
         lastHadContent = !!(content && content.trim());
-        const aiMsg = new AIMessage({
+        const aiMsg = createAIMessageWithReasoning({
           content: content || " ",
           ...(toolCalls.length > 0 ? {
             tool_calls: toolCalls.map((tc: ToolCallResult) => ({
               id: tc.id, name: tc.name, args: safeParseArgs(tc.arguments),
             })),
           } : {}),
+          reasoningContent,
         });
         conversationMessages = [...conversationMessages, aiMsg];
         yield {
@@ -608,7 +610,10 @@ export async function* streamAgentWithTokens(
           // 如果最后一轮没有内容，强制生成总结
           if (!lastHadContent) {
             const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
-            const summaryMsg = new AIMessage({ content: finalContent || NO_VISIBLE_OUTPUT_MESSAGE });
+            const summaryMsg = createAIMessageWithReasoning({
+              content: finalContent || NO_VISIBLE_OUTPUT_MESSAGE,
+              reasoningContent: finalReasoning,
+            });
             yield {
               llmCall: {
                 messages: [summaryMsg],
@@ -684,7 +689,10 @@ export async function* streamAgentWithTokens(
 
       if (!lastHadContent) {
         const { content: finalContent, reasoningContent: finalReasoning, usage: finalUsage } = await streamFinalOnlyWithRetryByAdapter(conversationMessages, onReasoningToken!);
-        const summaryMsg = new AIMessage({ content: finalContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE) });
+        const summaryMsg = createAIMessageWithReasoning({
+          content: finalContent || (reachedMaxRounds ? MAX_TOOL_CALL_ROUNDS_MESSAGE : NO_VISIBLE_OUTPUT_MESSAGE),
+          reasoningContent: finalReasoning,
+        });
         yield {
           llmCall: {
             messages: [summaryMsg],
