@@ -34,8 +34,12 @@ import {
   createRuntimePlanSteps,
   summarizeToolEvidence,
   applyEvidenceToPlan,
+  applyTextProgressToPlan,
+  buildStepRegexCache,
   computeCurrentStep,
   forceCompletePlan,
+  detectModelGiveUp,
+  findFirstPendingStep,
 } from "./planTracker.js";
 import { HarnessMiddleware } from "./harness/middleware.js";
 import type { AgentExecutionOptions, StreamAgentOptions, PlanStreamEvent, SubagentStreamEvent } from "./riskDetection.js";
@@ -189,11 +193,22 @@ export async function* streamAgentWithTokens(
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
   let runtimePlanSteps = createRuntimePlanSteps(planningPrelude.planSteps ?? []);
   let planCurrentStep = computeCurrentStep(runtimePlanSteps);
+  // Precompile per-step regex once; replan paths must rebuild this when they swap planSteps.
+  let planStepRegexCache = buildStepRegexCache(planningPrelude.planSteps ?? []);
+  let lastPlanSignature = "";
+  let planCompletedEmitted = false;
+  // Throttle text-based progress checks: every visible-token callback would otherwise
+  // re-run len(steps) regexes against the entire accumulated answer (O(n²) for long
+  // streams). 256 chars of new text is a reasonable batch granularity for both
+  // checklist-style and prose-style answers.
+  const PLAN_TEXT_PROGRESS_MIN_DELTA = 256;
+  let lastPlanTextCheckLen = 0;
   // Harness middleware: eval, loop detection, replanning (null-check only when not configured)
   const harness = options?.harnessConfig
     ? new HarnessMiddleware(options.harnessConfig, adapter)
     : null;
   const emitCurrentPlan = (phase: "created" | "running" | "completed", toolName?: string) => {
+    if (phase === "completed") planCompletedEmitted = true;
     emitPlan({
       phase,
       steps: runtimePlanSteps,
@@ -201,10 +216,82 @@ export async function* streamAgentWithTokens(
       toolName,
     });
   };
+  const emitPlanIfChanged = (phase: "running", toolName?: string) => {
+    if (runtimePlanSteps.length === 0 || planCompletedEmitted) return;
+    const signature = JSON.stringify({
+      phase,
+      currentStep: planCurrentStep,
+      completed: runtimePlanSteps.map((step) => step.completed),
+      evidences: runtimePlanSteps.map((step) => step.evidences.length),
+      toolName,
+    });
+    if (signature === lastPlanSignature) return;
+    lastPlanSignature = signature;
+    emitCurrentPlan(phase, toolName);
+  };
+  const updatePlanFromVisibleText = (text: string, force = false) => {
+    if (runtimePlanSteps.length === 0 || planCompletedEmitted || !text.trim()) return;
+    // Throttle: only re-scan once at least PLAN_TEXT_PROGRESS_MIN_DELTA new chars
+    // have accumulated since the last check. `force=true` bypasses the throttle
+    // (used on stream-end flushes to catch a final marker).
+    if (!force && text.length - lastPlanTextCheckLen < PLAN_TEXT_PROGRESS_MIN_DELTA) return;
+    lastPlanTextCheckLen = text.length;
+    const nextSteps = applyTextProgressToPlan(runtimePlanSteps, text, planStepRegexCache);
+    if (nextSteps !== runtimePlanSteps) {
+      runtimePlanSteps = nextSteps;
+      planCurrentStep = computeCurrentStep(runtimePlanSteps);
+    }
+    emitPlanIfChanged("running");
+  };
+  const createVisibleTokenHandler = () => {
+    // Each adapter turn gets a fresh accumulator. The throttle threshold is per-turn
+    // because the regex cache is keyed on plan steps (which don't change mid-turn).
+    let visibleText = "";
+    lastPlanTextCheckLen = 0;
+    return (token: string) => {
+      if (!token) return;
+      onToken(token);
+      visibleText += token;
+      updatePlanFromVisibleText(visibleText);
+    };
+  };
   const emitPlan = (event: PlanStreamEvent) => {
     if (options?.planProgressEnabled && options.onPlanEvent) {
       options.onPlanEvent(event);
     }
+  };
+
+  // ── Give-up bridge: surface "model surrendered" as eval_fail to driver ──
+  //
+  // When the model finishes a turn with no tool calls AND there are still
+  // pending plan steps AND the final visible content matches a give-up
+  // pattern, treat it as an evaluator failure instead of silently
+  // `forceCompletePlan`-ing the rest. The harness driver picks this up and
+  // triggers an outer retry with a fresh "Try fundamentally different
+  // strategies" prompt; without it, the iteration appears clean and the
+  // driver exits early — exactly the user-reported bug.
+  //
+  // Returns `true` when the give-up signal fired (caller should then SKIP
+  // forceCompletePlan to avoid masking the failure).
+  const maybeEmitGiveUpEvalFailure = (finalContent: string): boolean => {
+    if (runtimePlanSteps.length === 0) return false;
+    const pendingIdx = findFirstPendingStep(runtimePlanSteps);
+    if (pendingIdx < 0) return false; // all steps already completed legitimately
+    const detection = detectModelGiveUp(finalContent);
+    if (!detection.hit) return false;
+    const pendingStep = runtimePlanSteps[pendingIdx];
+    const reason = `模型未完成 plan 即主动放弃（剩余步骤 "${pendingStep?.title ?? `#${pendingIdx + 1}`}" 未提供有效证据）。匹配片段："${detection.matched ?? ""}"`;
+    serverLogger.warn("[plan-give-up] model surrendered before plan completion", {
+      pendingIdx,
+      matched: detection.matched,
+      pendingTitle: pendingStep?.title,
+    });
+    options?.onHarnessEvent?.({
+      kind: "eval",
+      data: { stepIndex: pendingIdx, verdict: "fail", reason },
+      timestamp: new Date().toISOString(),
+    });
+    return true;
   };
   const stateMessages: BaseMessage[] = [
     ...messages,
@@ -217,6 +304,12 @@ export async function* streamAgentWithTokens(
     ? Math.max(MIN_CONVERSATION_TOKENS_CAP, Math.floor(baseCap * Math.pow(0.75, depth)))
     : baseCap;
   if (runtimePlanSteps.length > 0) {
+    lastPlanSignature = JSON.stringify({
+      phase: "created",
+      currentStep: planCurrentStep,
+      completed: runtimePlanSteps.map((step) => step.completed),
+      evidences: runtimePlanSteps.map((step) => step.evidences.length),
+    });
     emitCurrentPlan("created");
   }
   const useReasoningStream = adapter.supportsReasoningStream() && typeof onReasoningToken === "function";
@@ -226,7 +319,7 @@ export async function* streamAgentWithTokens(
     reasoningCb: (token: string) => void
   ): Promise<{ content: string; reasoningContent: string; usage?: import("../llm/streamWithReasoning.js").TokenUsage }> => {
     const pruned = pruneConversationIfNeeded(baseMessages, conversationTokenCap);
-    const first = await adapter.streamSingleTurn(pruned, onToken, reasoningCb, [], options?.abortSignal);
+    const first = await adapter.streamSingleTurn(pruned, createVisibleTokenHandler(), reasoningCb, [], options?.abortSignal);
     const firstContent = first.content?.trim() ?? "";
     if (firstContent) {
       return {
@@ -240,7 +333,7 @@ export async function* streamAgentWithTokens(
     for (let retry = 0; retry < 2; retry++) {
       const attempt = await adapter.streamSingleTurn(
         [...pruned, new HumanMessage(FINAL_ONLY_PROMPT)],
-        onToken,
+        createVisibleTokenHandler(),
         reasoningCb,
         [],
         options?.abortSignal
@@ -269,10 +362,11 @@ export async function* streamAgentWithTokens(
     const streamOnce = async (msgs: BaseMessage[]) => {
       const stream = await modelNoTools.stream(msgs);
       let content = "";
+      const visibleTokenHandler = createVisibleTokenHandler();
       for await (const chunk of stream) {
         const text = getTextFromChunk(chunk);
         if (text) {
-          onToken(text);
+          visibleTokenHandler(text);
           content += text;
         }
       }
@@ -443,9 +537,10 @@ export async function* streamAgentWithTokens(
 
         // ── Continue Site 1: model_error — retry with backoff/compression ──
         let turnResult: { content: string; reasoningContent: string; toolCalls: ToolCallResult[]; usage?: import("../llm/streamWithReasoning.js").TokenUsage };
+        const visibleTokenHandler = createVisibleTokenHandler();
         try {
           turnResult = await adapter.streamSingleTurn(
-            conversationMessages, onToken, onReasoningToken!, openAITools, options?.abortSignal
+            conversationMessages, visibleTokenHandler, onReasoningToken!, openAITools, options?.abortSignal
           );
           modelErrorCount = 0; // reset on success
         } catch (modelErr) {
@@ -475,6 +570,11 @@ export async function* streamAgentWithTokens(
         const { content, reasoningContent, toolCalls, usage: turnUsage } = turnResult;
         if (turnUsage) yield { usage: turnUsage };
 
+        // Final flush: re-scan the full turn content once (force=true) so that a
+        // checklist marker landing in the last <PLAN_TEXT_PROGRESS_MIN_DELTA chars
+        // of the stream is not missed due to throttling.
+        if (content) updatePlanFromVisibleText(content, true);
+
         lastHadContent = !!(content && content.trim());
         const aiMsg = new AIMessage({
           content: content || " ",
@@ -494,7 +594,11 @@ export async function* streamAgentWithTokens(
 
         // 如果没有工具调用，检查是否需要生成总结
         if (toolCalls.length === 0) {
-          if (runtimePlanSteps.length > 0) {
+          // Give-up bridge: if the model surrendered without finishing the plan,
+          // emit an eval_fail event for the harness driver and keep the pending
+          // steps marked as not-completed so the failure is visible upstream.
+          const gaveUp = maybeEmitGiveUpEvalFailure(content);
+          if (runtimePlanSteps.length > 0 && !gaveUp) {
             runtimePlanSteps = forceCompletePlan(runtimePlanSteps);
             planCurrentStep = computeCurrentStep(runtimePlanSteps);
           }
@@ -562,6 +666,10 @@ export async function* streamAgentWithTokens(
           if (mwResult.updatedPlanSteps) {
             runtimePlanSteps = mwResult.updatedPlanSteps;
             planCurrentStep = computeCurrentStep(runtimePlanSteps);
+            // Harness replan may add/remove/rename steps — rebuild the regex cache
+            // so text-progress detection stays aligned with the new step structure.
+            planStepRegexCache = buildStepRegexCache(runtimePlanSteps);
+            lastPlanTextCheckLen = 0;
             emitCurrentPlan("running");
           }
           if (mwResult.injectMessages?.length) {
@@ -651,6 +759,9 @@ export async function* streamAgentWithTokens(
     let accumulatedContent = "";
     let accumulatedReasoning = "";
     let lastUsage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
+    // Reset throttle state at the start of each round so the per-round accumulator
+    // and the global lastPlanTextCheckLen stay in sync.
+    lastPlanTextCheckLen = 0;
     try {
       const stream = await model.stream([systemMessage, ...state], streamSignal ? { signal: streamSignal } : undefined);
       for await (const chunk of stream) {
@@ -665,6 +776,7 @@ export async function* streamAgentWithTokens(
         if (text) {
           onToken(text);
           accumulatedContent += text;
+          updatePlanFromVisibleText(accumulatedContent);
         }
         const reasoningChunk = getReasoningFromChunk(chunk);
         if (reasoningChunk) {
@@ -686,6 +798,8 @@ export async function* streamAgentWithTokens(
         }
       }
       modelErrorCount2 = 0; // reset on success
+      // Final flush for any tail content that didn't cross the throttle threshold.
+      if (accumulatedContent) updatePlanFromVisibleText(accumulatedContent, true);
     } catch (modelErr) {
       modelErrorCount2++;
       serverLogger.warn(`[continue-site:model_error:fallback] Attempt ${modelErrorCount2}/${MAX_MODEL_ERRORS_FB}`, {
@@ -724,7 +838,11 @@ export async function* streamAgentWithTokens(
     const reasoning = accumulatedReasoning.trim() || getReasoningFromMessage(fullChunk);
     yield { llmCall: { messages: [finalMessage], ...(reasoning ? { reasoning } : {}) } };
     if (!shouldContinue(fullChunk)) {
-      if (runtimePlanSteps.length > 0) {
+      // Give-up bridge (fallback path): mirror the reasoning-path behaviour so
+      // LangChain-driven turns also surface model surrender to the driver.
+      const fallbackFinalContent = accumulatedContent || getTextFromMessage(fullChunk);
+      const gaveUp = maybeEmitGiveUpEvalFailure(fallbackFinalContent);
+      if (runtimePlanSteps.length > 0 && !gaveUp) {
         runtimePlanSteps = forceCompletePlan(runtimePlanSteps);
         planCurrentStep = computeCurrentStep(runtimePlanSteps);
       }
@@ -788,6 +906,8 @@ export async function* streamAgentWithTokens(
       if (mwResult.updatedPlanSteps) {
         runtimePlanSteps = mwResult.updatedPlanSteps;
         planCurrentStep = computeCurrentStep(runtimePlanSteps);
+        planStepRegexCache = buildStepRegexCache(runtimePlanSteps);
+        lastPlanTextCheckLen = 0;
         emitCurrentPlan("running");
       }
       if (mwResult.injectMessages?.length) {
