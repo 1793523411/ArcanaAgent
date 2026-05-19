@@ -26,6 +26,9 @@ interface ModelFormRow {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
+  reasoningMode: "" | "manual" | "adaptive";
+  reasoningEffort: "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningBudgetTokens: number;
   inputText: boolean;
   inputImage: boolean;
 }
@@ -47,6 +50,9 @@ function makeEmptyModelRow(): ModelFormRow {
     contextWindow: 8192,
     maxTokens: 4096,
     reasoning: false,
+    reasoningMode: "",
+    reasoningEffort: "high",
+    reasoningBudgetTokens: 8000,
     inputText: true,
     inputImage: false,
   };
@@ -77,6 +83,9 @@ function providerToForm(p: ProviderInfo): ProviderFormState {
       contextWindow: m.contextWindow,
       maxTokens: m.maxTokens,
       reasoning: m.reasoning ?? false,
+      reasoningMode: m.reasoningMode ?? "",
+      reasoningEffort: m.reasoningEffort ?? "high",
+      reasoningBudgetTokens: m.reasoningBudgetTokens ?? 8000,
       inputText: m.input?.includes("text") ?? true,
       inputImage: m.input?.includes("image") ?? false,
     })),
@@ -263,6 +272,21 @@ export default function ModelsPanel({ onClose, onSaved }: Props) {
         const input: string[] = [];
         if (m.inputText) input.push("text");
         if (m.inputImage) input.push("image");
+        const effectiveApi = (m.api.trim() || form.api).trim();
+        const isAnthropic = effectiveApi === "anthropic-messages";
+        // Only emit Anthropic thinking fields when:
+        //  - reasoning is enabled, AND
+        //  - the effective api is anthropic-messages
+        // This keeps OpenAI-compatible providers clean (those fields are no-ops
+        // server-side anyway) and avoids stale fields leaking back in when the
+        // user toggles reasoning off.
+        const anthropicReasoningFields = m.reasoning && isAnthropic
+          ? {
+              ...(m.reasoningMode ? { reasoningMode: m.reasoningMode } : {}),
+              reasoningEffort: m.reasoningEffort,
+              reasoningBudgetTokens: m.reasoningBudgetTokens,
+            }
+          : {};
         return {
           id: m.id.trim(),
           name: m.name.trim() || m.id.trim(),
@@ -270,6 +294,7 @@ export default function ModelsPanel({ onClose, onSaved }: Props) {
           contextWindow: m.contextWindow,
           maxTokens: m.maxTokens,
           reasoning: m.reasoning,
+          ...anthropicReasoningFields,
           input,
         };
       });
@@ -825,20 +850,79 @@ function ModelFormRowEditor({ row, providerApi, onChange, onRemove, canRemove }:
         </div>
       </div>
 
-      <div className="space-y-1">
-        <label className="text-[10px] font-medium text-[var(--color-text-muted)]">
-          API 类型（留空继承 Provider: {providerApi}）
-        </label>
-        <select
-          value={row.api}
-          onChange={(e) => onChange({ api: e.target.value })}
-          className="w-full sm:w-48 px-2.5 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40 focus:border-[var(--color-accent)]"
-        >
-          <option value="">继承 Provider</option>
-          <option value="openai-completions">openai-completions</option>
-          <option value="anthropic-messages">anthropic-messages</option>
-        </select>
-      </div>
+      {(() => {
+        const effectiveApi = (row.api || providerApi || "").trim();
+        const isAnthropic = effectiveApi === "anthropic-messages";
+        const showAnthropicReasoning = row.reasoning && isAnthropic;
+        const showManualBudget = showAnthropicReasoning && row.reasoningMode === "manual";
+        return (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+            <div className="space-y-1">
+              <label className="text-[10px] font-medium text-[var(--color-text-muted)]">
+                API 类型（留空继承 Provider: {providerApi}）
+              </label>
+              <select
+                value={row.api}
+                onChange={(e) => onChange({ api: e.target.value })}
+                className="w-full px-2.5 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40 focus:border-[var(--color-accent)]"
+              >
+                <option value="">继承 Provider</option>
+                <option value="openai-completions">openai-completions</option>
+                <option value="anthropic-messages">anthropic-messages</option>
+              </select>
+            </div>
+
+            {showAnthropicReasoning && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-[var(--color-text-muted)]">Thinking 模式</label>
+                  <select
+                    value={row.reasoningMode}
+                    onChange={(e) => onChange({ reasoningMode: e.target.value as ModelFormRow["reasoningMode"] })}
+                    className="w-full px-2.5 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40 focus:border-[var(--color-accent)]"
+                  >
+                    <option value="">自动</option>
+                    <option value="adaptive">adaptive</option>
+                    <option value="manual">manual</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-medium text-[var(--color-text-muted)]">Effort</label>
+                  <select
+                    value={row.reasoningEffort}
+                    onChange={(e) => onChange({ reasoningEffort: e.target.value as ModelFormRow["reasoningEffort"] })}
+                    className="w-full px-2.5 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40 focus:border-[var(--color-accent)]"
+                  >
+                    <option value="low">low</option>
+                    <option value="medium">medium</option>
+                    <option value="high">high</option>
+                    <option value="xhigh">xhigh</option>
+                    <option value="max">max</option>
+                  </select>
+                </div>
+                {showManualBudget && (
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-medium text-[var(--color-text-muted)]">
+                      Thinking Budget (tokens)
+                    </label>
+                    <input
+                      type="number"
+                      value={row.reasoningBudgetTokens}
+                      min={1024}
+                      step={1024}
+                      onChange={(e) => {
+                        const next = parseInt(e.target.value, 10);
+                        onChange({ reasoningBudgetTokens: Number.isFinite(next) && next > 0 ? next : 8000 });
+                      }}
+                      className="w-full px-2.5 py-1.5 rounded border border-[var(--color-border)] bg-[var(--color-surface)] text-xs text-[var(--color-text)] focus:outline-none focus:ring-2 focus:ring-[var(--color-accent)]/40 focus:border-[var(--color-accent)]"
+                    />
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })()}
 
       <div className="flex flex-wrap items-center gap-4">
         <label className="flex items-center gap-1.5 cursor-pointer text-xs text-[var(--color-text)]">

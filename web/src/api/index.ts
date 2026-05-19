@@ -196,6 +196,8 @@ export interface ModelInfo {
   maxTokens: number;
   supportsImage?: boolean;
   supportsReasoning?: boolean;
+  reasoningMode?: "manual" | "adaptive";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
 }
 
 export async function getModels(): Promise<ModelInfo[]> {
