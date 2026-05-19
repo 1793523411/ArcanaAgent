@@ -14,12 +14,29 @@
  * 更推荐的方向是反过来——给 Anthropic 也写类似的原生调用，全部脱离 LangChain。
  */
 import type { BaseMessage } from "@langchain/core/messages";
+import type { ModelReasoningConfig, ReasoningEffort } from "../config/models.js";
+
+export interface StreamReasoningOptions {
+  reasoning?: ModelReasoningConfig;
+}
+
+function mapDeepSeekReasoningEffort(effort: ReasoningEffort): "high" | "max" {
+  return effort === "max" || effort === "xhigh" ? "max" : "high";
+}
+
+function applyDeepSeekThinkingBody(body: Record<string, unknown>, reasoning: ModelReasoningConfig): void {
+  body.thinking = { type: reasoning.enabled ? "enabled" : "disabled" };
+  if (reasoning.enabled) {
+    body.reasoning_effort = mapDeepSeekReasoningEffort(reasoning.effort);
+  }
+}
 
 type OpenAIContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
 
 interface OpenAIMessage {
   role: string;
   content: OpenAIContent;
+  reasoning_content?: string;
   tool_call_id?: string;
   name?: string;
   tool_calls?: Array<{
@@ -42,9 +59,16 @@ function messageToOpenAI(m: BaseMessage): OpenAIMessage {
     msg.name = toolMsg.name;
   }
 
-  // assistant 消息序列化 tool_calls
+  // assistant 消息序列化 tool_calls / reasoning_content（DeepSeek 等 reasoning 模型在 tool 轮次必须回传）
   if (type === "ai") {
-    const aiMsg = m as { tool_calls?: Array<{ id?: string; name: string; args: unknown }> };
+    const aiMsg = m as {
+      tool_calls?: Array<{ id?: string; name: string; args: unknown }>;
+      additional_kwargs?: { reasoning_content?: string };
+    };
+    const reasoningFromKwargs = aiMsg.additional_kwargs?.reasoning_content;
+    if (typeof reasoningFromKwargs === "string" && reasoningFromKwargs.trim()) {
+      msg.reasoning_content = reasoningFromKwargs;
+    }
     if (aiMsg.tool_calls && aiMsg.tool_calls.length > 0) {
       msg.tool_calls = aiMsg.tool_calls.map((tc, idx) => ({
         id: tc.id || `call_${idx}`,
@@ -207,10 +231,13 @@ export async function streamChatCompletionsWithReasoning(
   onReasoningToken: (token: string) => void,
   tools?: Array<Record<string, unknown>>,
   temperature = 0,
-  abortSignal?: AbortSignal
+  abortSignal?: AbortSignal,
+  options?: StreamReasoningOptions
 ): Promise<StreamReasoningResult> {
   const openAIMessages = messages.map(messageToOpenAI);
   const url = baseUrl.replace(/\/$/, "") + "/chat/completions";
+  const reasoning = options?.reasoning;
+  const isDeepSeekApi = /api\.deepseek\.com/i.test(baseUrl);
 
   const body: Record<string, unknown> = {
     model: modelId,
@@ -219,6 +246,11 @@ export async function streamChatCompletionsWithReasoning(
     temperature,
     stream_options: { include_usage: true },
   };
+  // DeepSeek thinking 模式会忽略 temperature（官方文档说明），不需要特别 gate；
+  // 但 thinking toggle / reasoning_effort 必须显式声明，否则拿不到 effort 控制。
+  if (isDeepSeekApi && reasoning) {
+    applyDeepSeekThinkingBody(body, reasoning);
+  }
   if (tools && tools.length > 0) {
     body.tools = tools;
   }

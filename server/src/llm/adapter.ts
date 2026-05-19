@@ -81,11 +81,14 @@ class OpenAICompatibleAdapter implements ModelAdapter {
     tools?: Array<Record<string, unknown>>,
     abortSignal?: AbortSignal
   ): Promise<StreamReasoningResult> {
-    // reasoning 模型要求 temperature=1
+    // reasoning 模型要求 temperature=1；
+    // DeepSeek 的 thinking toggle / reasoning_effort 由 streamChatCompletionsWithReasoning
+    // 内部根据 baseUrl 判别后注入到 body 里。
     return streamChatCompletionsWithReasoning(
       this.baseUrl, this.apiKey, this.modelId, messages, onToken, onReasoningToken, tools,
       this.reasoning.enabled ? 1 : 0,
-      abortSignal
+      abortSignal,
+      { reasoning: this.reasoning }
     );
   }
 }

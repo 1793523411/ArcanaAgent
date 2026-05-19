@@ -108,6 +108,7 @@ arcana-agent open   # Opens in browser
 This file configures AI model providers. You can add multiple providers:
 
 - **volcengine**: VolcEngine/Doubao models
+- **deepseek**: [DeepSeek 官方 API](https://api.deepseek.com)（`deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-chat`、`deepseek-reasoner`）
 - **openai**: OpenAI models (GPT-4, GPT-3.5, etc.)
 - **anthropic**: Claude models (requires Anthropic-compatible endpoint)
 - **custom**: Any OpenAI-compatible API
@@ -169,6 +170,9 @@ DATA_DIR=/custom/path arcana-agent start
 
 # Volcengine API key (overrides models.json)
 VOLCENGINE_API_KEY=your-key arcana-agent start
+
+# DeepSeek API key (overrides models.json deepseek provider)
+DEEPSEEK_API_KEY=your-key arcana-agent start
 ```
 
 ## Editing Configuration While Running

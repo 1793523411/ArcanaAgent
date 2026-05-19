@@ -175,18 +175,46 @@ export function listModels(): ModelInfo[] {
   return out;
 }
 
+/**
+ * 判断 JSON 里的 apiKey 是不是"没真填"——空字符串或类似 YOUR_XXX_API_KEY 的占位符。
+ * 只有当 JSON 没真填时，才让 env var 顶上去。
+ * 这样 UI/JSON 改完 key 永远立即生效，env 只作为"未配置时的兜底"。
+ */
+function isPlaceholderApiKey(key: string | undefined): boolean {
+  if (!key) return true;
+  const trimmed = key.trim();
+  if (!trimmed) return true;
+  return /^YOUR[_-]?.*API[_-]?KEY/i.test(trimmed) || trimmed === "your-api-key-here";
+}
+
+function resolveProviderApiKey(providerName: string, providerCfg: ProviderConfig): string {
+  const jsonKey = providerCfg.apiKey;
+  if (!isPlaceholderApiKey(jsonKey)) {
+    return jsonKey;
+  }
+  if (providerName === "volcengine" && process.env.VOLCENGINE_API_KEY) {
+    return process.env.VOLCENGINE_API_KEY;
+  }
+  if (providerName === "deepseek" && process.env.DEEPSEEK_API_KEY) {
+    return process.env.DEEPSEEK_API_KEY;
+  }
+  return jsonKey;
+}
+
 export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: string; modelId: string; api: string } {
   const providers = readProviders();
   const resolved = resolveModel(modelId, providers);
   let model = resolved?.model;
   let providerCfg = resolved?.providerCfg;
+  let providerName = resolved?.providerName ?? "";
   if (!model || !providerCfg) {
     const volc = providers.volcengine as ProviderConfig | undefined;
     providerCfg = volc;
     model = volc?.models?.[0];
+    providerName = volc ? "volcengine" : "";
   }
   if (!model || !providerCfg) throw new Error("No model configured");
-  const apiKey = process.env.VOLCENGINE_API_KEY ?? providerCfg.apiKey;
+  const apiKey = resolveProviderApiKey(providerName, providerCfg);
   return {
     baseUrl: providerCfg.baseUrl,
     apiKey,
