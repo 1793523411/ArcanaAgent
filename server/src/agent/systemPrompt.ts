@@ -4,6 +4,7 @@ import { getAgentConfig, getTeamAgents } from "./roles.js";
 import { getTeamDef } from "../storage/teamDefs.js";
 import { loadUserConfig, type ExecutionEnhancementsConfig } from "../config/userConfig.js";
 import { buildEnhancementsPrompt } from "./harness/harnessPrompt.js";
+import { classifyConversationIntent, type IntentCategory } from "./planning.js";
 
 export type ConversationMode = "default" | "team";
 
@@ -14,6 +15,13 @@ export const BASE_SYSTEM_PROMPT = `You are a versatile, highly capable AI assist
 - **Be concise**: avoid filler, preambles like "Sure!" or "Of course!", and unnecessary verbosity. Get straight to the point.
 - **Format clearly**: use Markdown — code blocks with language tags, headers for structure, bullet points for lists, tables for comparisons.
 - **Show results**: after tool execution, summarize what happened and present outputs clearly. Don't just say "done" — show the key results.
+
+## Answer Shape (CRITICAL — applies to every visible reply)
+- **Lead with the answer.** For direct questions, puzzles, concept explanations, math problems, "为什么 / 怎么解释 / why / explain" requests: state the conclusion in 1–2 sentences first, THEN expand the reasoning. Never make the user scroll through a meta-framework ("first I'll clarify the problem, then introduce key observations, then…") before they reach the actual answer.
+- **Don't narrate your scaffolding.** Avoid filler section titles like "Step 1: 明确题目条件与约束", "Step 2: 引入关键观察维度", "Step 3: 推导结论". State the observation directly; don't announce that you're about to make one.
+- **No self-evaluation sections.** Never emit a user-facing "✅ 验收清单", "acceptance checklist", "completion checks", or "self-verification" block unless the user explicitly asked for one. Those are internal progress-tracking artifacts — keep them in your reasoning, not in the reply.
+- **Right-size the format.** Short answers stay prose. Reach for tables / flowcharts / multi-section headers only when the content actually benefits (genuine comparison, real branching logic, multi-stage process). One paragraph of prose beats a 5-row table that just restates the same paragraph.
+- **Plans are scaffolding, not output.** If the harness asked you to produce an internal plan, that plan stays internal. Your visible reply should focus on the result and supporting reasoning, not on the plan-execution checklist.
 
 ## Tool Usage Strategy
 You have access to built-in tools (run_command, read_file, write_file, edit_file, search_code, list_files, git_operations, test_runner, web_search, project_index, project_search, project_snapshot, etc.) and MCP tools from external servers (listed below if connected).
@@ -250,6 +258,45 @@ function buildEnvironmentSection(): string {
 - Platform: ${process.platform}`;
 }
 
+// Per-intent addendum — refines the generic "Answer Shape" section with
+// guidance specific to the kind of message the user just sent. Kept short
+// (1–3 lines each) so it doesn't bloat the system prompt for every turn.
+//
+// Why this exists on top of the global "Answer Shape" rules:
+//   - "Answer Shape" applies broadly ("lead with the answer", "no self-eval
+//     sections") but is generic.
+//   - The classifier lets us inject sharper, intent-specific language —
+//     e.g. for `puzzle` we want literally "one sentence answer first" instead
+//     of the more conservative "1–2 sentences", and we explicitly tell the
+//     model not to restate the puzzle (a very common slop pattern).
+//   - For `code_action` we say nothing extra because the existing planning
+//     flow + Answer Shape already cover it.
+//   - For `chat` we relax format strictness so the model doesn't insist on
+//     markdown headers for "你好" replies.
+function buildIntentAddendum(intent: IntentCategory): string {
+  switch (intent) {
+    case "chat":
+      return `\n\n## Intent: Casual Chat
+This message is a greeting or casual chit-chat. Reply in 1–3 short sentences, no Markdown headers, no bullet lists, no tables. Match the user's tone and brevity.`;
+    case "puzzle":
+      return `\n\n## Intent: Puzzle / Reasoning Problem
+This message is a puzzle, logic problem, or math/proof question. Output shape:
+1. **One sentence** stating the final answer (the bottom line — the user wants this first).
+2. 2–5 sentences explaining the key insight / why it works. Concrete, not meta.
+Avoid restating the puzzle. Avoid section titles like "题目分析 / 关键观察 / 结论". Just answer, then explain.`;
+    case "explain":
+      return `\n\n## Intent: Explain / Concept Question
+This message is asking for an explanation. Output shape:
+1. **1–2 sentence TL;DR / definition** (the user wants the punchline first).
+2. Expand with mechanism, example, or analogy if it actually adds clarity. Skip the expansion if the TL;DR is sufficient.
+Avoid meta-framework headers like "首先明确问题 / 然后展开分析 / 最后总结". Skip "好的，让我来解释一下" preambles — just explain.`;
+    case "code_action":
+    case "default":
+    default:
+      return "";
+  }
+}
+
 function buildClaudeCodeSection(): string {
   const config = loadUserConfig();
   if (!config.claudeCode?.enabled) return "";
@@ -276,7 +323,14 @@ You have access to the \`claude_code\` tool — a powerful AI coding agent power
 - The tool has a 10-minute timeout and max turns limit`;
 }
 
-export function buildSystemPrompt(skillContext?: string, conversationMode: ConversationMode = "default", teamId?: string, workspacePath?: string, enhancements?: ExecutionEnhancementsConfig): string {
+export function buildSystemPrompt(
+  skillContext?: string,
+  conversationMode: ConversationMode = "default",
+  teamId?: string,
+  workspacePath?: string,
+  enhancements?: ExecutionEnhancementsConfig,
+  latestUserText?: string,
+): string {
   const modePrompt = conversationMode === "team"
     ? buildTeamModePrompt(teamId ?? "default")
     : "";
@@ -289,7 +343,25 @@ export function buildSystemPrompt(skillContext?: string, conversationMode: Conve
   const indexSection = buildIndexStrategySection();
   const envSection = buildEnvironmentSection();
   const claudeCodeSection = buildClaudeCodeSection();
-  return BASE_SYSTEM_PROMPT + modePrompt + enhancementsPrompt + envSection + workspaceSection + indexSection + mcpSection + skillSection + claudeCodeSection;
+  // Intent addendum: skip in team-orchestrator mode so the coordinator's role
+  // prompt isn't overshadowed by chat/puzzle/explain styling rules — the
+  // orchestrator is delegating tool work, not personally writing the reply.
+  const intentSection =
+    latestUserText && conversationMode !== "team"
+      ? buildIntentAddendum(classifyConversationIntent(latestUserText))
+      : "";
+  return (
+    BASE_SYSTEM_PROMPT +
+    modePrompt +
+    enhancementsPrompt +
+    envSection +
+    workspaceSection +
+    indexSection +
+    intentSection +
+    mcpSection +
+    skillSection +
+    claudeCodeSection
+  );
 }
 
 export function buildSubagentSystemPrompt(agentId: string, skillContext?: string, workspacePath?: string): string {

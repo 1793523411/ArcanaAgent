@@ -6,7 +6,7 @@ import type { StructuredToolInterface } from "@langchain/core/tools";
 import type { ToolCallResult } from "../llm/adapter.js";
 import { getModelAdapter } from "../llm/adapter.js";
 import { serverLogger } from "../lib/logger.js";
-import { buildPlanningPrelude } from "./planning.js";
+import { buildPlanningPrelude, getLastHumanText } from "./planning.js";
 import { buildRuntimeTools, injectStreamAgent } from "./toolBuilder.js";
 import { buildSystemPrompt } from "./systemPrompt.js";
 import { isReadOnlyTool } from "../tools/index.js";
@@ -115,7 +115,8 @@ export async function runAgent(
   options?: AgentExecutionOptions
 ): Promise<BaseMessage[]> {
   const tools = buildRuntimeTools(options, { modelId, skillContext, options });
-  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements));
+  const latestUserText = getLastHumanText(messages);
+  const systemMessage = new SystemMessage(buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements, latestUserText));
   const adapter = getModelAdapter(modelId);
   const model = adapter.getLLM().bindTools(tools);
   const toolNode = new ToolNode(tools);
@@ -187,7 +188,8 @@ export async function* streamAgentWithTokens(
   skillContext?: string,
   options?: StreamAgentOptions
 ): AsyncGenerator<Record<string, { messages?: BaseMessage[]; reasoning?: string } | { prompt_tokens: number; completion_tokens: number; total_tokens: number } | { reason: StopReason }>, void, unknown> {
-  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements);
+  const latestUserText = getLastHumanText(messages);
+  const systemPromptText = options?.subagentSystemPromptOverride ?? buildSystemPrompt(skillContext, options?.conversationMode ?? "default", options?.teamId, options?.workspacePath, options?.enhancements, latestUserText);
   const systemMessage = new SystemMessage(systemPromptText);
   const adapter = getModelAdapter(modelId);
   const planningPrelude = await buildPlanningPrelude(adapter, systemMessage, messages, options?.planningEnabled ?? true);
