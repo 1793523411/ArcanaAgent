@@ -8,6 +8,7 @@ interface Props {
   onOpenScheduledTasks: () => void;
   onOpenAgentTeam: () => void;
   onOpenModels: () => void;
+  onOpenGuild: () => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
 }
@@ -18,6 +19,7 @@ export default function ToolSidebar({
   onOpenScheduledTasks,
   onOpenAgentTeam,
   onOpenModels,
+  onOpenGuild,
   theme,
   onToggleTheme,
 }: Props) {
@@ -103,6 +105,20 @@ export default function ToolSidebar({
         >
           <span>👥</span>
           {open && <span>Agent/Team</span>}
+        </button>
+        <button
+          type="button"
+          onClick={onOpenGuild}
+          aria-label="Guild 工作台"
+          title="Guild 工作台"
+          className={`
+            rounded-lg border border-[var(--color-border)] text-[var(--color-text)] cursor-pointer
+            hover:bg-[var(--color-surface-hover)] transition-colors flex items-center
+            ${open ? "w-full py-2 px-3 gap-2 justify-center text-[13px]" : "w-9 h-9 justify-center p-0 shrink-0 self-center"}
+          `}
+        >
+          <span>⚔️</span>
+          {open && <span>Guild</span>}
         </button>
         <button
           type="button"

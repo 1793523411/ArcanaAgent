@@ -39,6 +39,8 @@ export interface AgentExecutionOptions {
   abortSignal?: AbortSignal;
   /** 执行增强配置（用于生成 system prompt 中的增强指令） */
   enhancements?: ExecutionEnhancementsConfig;
+  /** 工具白名单（Guild Agent 等外部调用方使用）。["*"] 或 undefined = 全部工具。 */
+  allowedTools?: string[];
 }
 
 export interface StreamAgentOptions extends AgentExecutionOptions {
@@ -120,6 +122,22 @@ export function filterToolsByRole(tools: StructuredToolInterface[], agentId: str
   const config = getAgentConfig(agentId);
   if (!config || isAllToolsAllowed(config.allowedTools)) return tools;
   const allowed = new Set(config.allowedTools);
+  return tools.filter((t) => allowed.has(t.name));
+}
+
+/** Filter tools by an explicit allowlist (Guild Agent etc.).
+ *  - undefined → no filter (all tools, matches legacy callers that never set this)
+ *  - ["*"]     → no filter (explicit "all")
+ *  - []        → zero tools (agent explicitly denied every tool)
+ *  - [names…]  → only those names
+ */
+export function filterToolsByAllowedList(
+  tools: StructuredToolInterface[],
+  allowedTools?: string[],
+): StructuredToolInterface[] {
+  if (!allowedTools) return tools;
+  if (isAllToolsAllowed(allowedTools)) return tools;
+  const allowed = new Set(allowedTools);
   return tools.filter((t) => allowed.has(t.name));
 }
 

@@ -100,6 +100,7 @@ export interface StreamReasoningResult {
 }
 
 const FC_MARKER_BEGIN = "<|FunctionCallBegin|>";
+const SEED_MARKER_BEGIN = "<seed:tool_call>";
 
 /**
  * Parse text-based tool calls from model output that uses
@@ -132,6 +133,56 @@ function parseTextToolCalls(text: string): { toolCalls: ToolCallResult[]; cleane
   }
 
   const cleanedContent = text.replace(/<\|FunctionCallBegin\|>[\s\S]*?<\|FunctionCallEnd\|>/g, "").trim();
+  return { toolCalls, cleanedContent };
+}
+
+/**
+ * Parse tool calls from doubao-seed model's XML format:
+ * <seed:tool_call><function name="run_command">
+ *   <parameter name="command" string="true">value</parameter>
+ * </function></seed:tool_call>
+ */
+function parseSeedToolCalls(text: string): { toolCalls: ToolCallResult[]; cleanedContent: string } {
+  const toolCalls: ToolCallResult[] = [];
+  const blockRegex = /<seed:tool_call>([\s\S]*?)<\/seed:tool_call>/g;
+  let blockMatch;
+  let callIndex = 0;
+
+  while ((blockMatch = blockRegex.exec(text)) !== null) {
+    const block = blockMatch[1];
+    const fnMatch = block.match(/<function\s+name="([^"]+)">([\s\S]*?)<\/function>/);
+    if (!fnMatch) continue;
+
+    const fnName = fnMatch[1];
+    const paramsBlock = fnMatch[2];
+    const args: Record<string, unknown> = {};
+
+    const paramRegex = /<parameter\s+name="([^"]+)"(?:\s+string="([^"]*)")?>([\s\S]*?)<\/parameter>/g;
+    let paramMatch;
+    while ((paramMatch = paramRegex.exec(paramsBlock)) !== null) {
+      const pName = paramMatch[1];
+      const isString = paramMatch[2] !== "false";
+      const pValue = paramMatch[3];
+      if (isString) {
+        args[pName] = pValue;
+      } else {
+        // Try to parse as number/boolean/null, fallback to string
+        if (pValue === "true") args[pName] = true;
+        else if (pValue === "false") args[pName] = false;
+        else if (pValue === "null") args[pName] = null;
+        else if (!isNaN(Number(pValue))) args[pName] = Number(pValue);
+        else args[pName] = pValue;
+      }
+    }
+
+    toolCalls.push({
+      id: `seed_${Date.now()}_${callIndex++}`,
+      name: fnName,
+      arguments: JSON.stringify(args),
+    });
+  }
+
+  const cleanedContent = text.replace(/<seed:tool_call>[\s\S]*?<\/seed:tool_call>/g, "").trim();
   return { toolCalls, cleanedContent };
 }
 
@@ -253,7 +304,12 @@ export async function streamChatCompletionsWithReasoning(
 
             if (!suppressingMarker) {
               pendingFlush += delta.content;
-              const markerIdx = pendingFlush.indexOf(FC_MARKER_BEGIN);
+              // Check for both marker formats
+              const fcIdx = pendingFlush.indexOf(FC_MARKER_BEGIN);
+              const seedIdx = pendingFlush.indexOf(SEED_MARKER_BEGIN);
+              const markerIdx = fcIdx >= 0 && seedIdx >= 0
+                ? Math.min(fcIdx, seedIdx)
+                : fcIdx >= 0 ? fcIdx : seedIdx;
               if (markerIdx >= 0) {
                 // Flush content before the marker, then suppress everything after
                 const safe = pendingFlush.slice(0, markerIdx);
@@ -261,8 +317,11 @@ export async function streamChatCompletionsWithReasoning(
                 suppressingMarker = true;
                 pendingFlush = "";
               } else {
-                // Hold back trailing chars that could be start of a marker split across chunks
-                const holdBack = markerPrefixOverlap(pendingFlush, FC_MARKER_BEGIN);
+                // Hold back trailing chars that could be start of either marker split across chunks
+                const holdBack = Math.max(
+                  markerPrefixOverlap(pendingFlush, FC_MARKER_BEGIN),
+                  markerPrefixOverlap(pendingFlush, SEED_MARKER_BEGIN),
+                );
                 const safeLen = pendingFlush.length - holdBack;
                 if (safeLen > 0) {
                   onToken(pendingFlush.slice(0, safeLen));
@@ -299,13 +358,23 @@ export async function streamChatCompletionsWithReasoning(
 
   // --- Fallback: parse text-based tool call markers ---
   // If the model didn't use structured delta.tool_calls but instead emitted
-  // <|FunctionCallBegin|>...<|FunctionCallEnd|> markers in content, parse them.
-  if (toolCallAccum.size === 0 && content.includes(FC_MARKER_BEGIN)) {
-    const { toolCalls: textCalls, cleanedContent } = parseTextToolCalls(content);
-    if (textCalls.length > 0) {
-      content = cleanedContent;
-      for (let i = 0; i < textCalls.length; i++) {
-        toolCallAccum.set(i, textCalls[i]);
+  // markers in content as plain text, parse them.
+  if (toolCallAccum.size === 0) {
+    if (content.includes(FC_MARKER_BEGIN)) {
+      const { toolCalls: textCalls, cleanedContent } = parseTextToolCalls(content);
+      if (textCalls.length > 0) {
+        content = cleanedContent;
+        for (let i = 0; i < textCalls.length; i++) {
+          toolCallAccum.set(i, textCalls[i]);
+        }
+      }
+    } else if (content.includes(SEED_MARKER_BEGIN)) {
+      const { toolCalls: seedCalls, cleanedContent } = parseSeedToolCalls(content);
+      if (seedCalls.length > 0) {
+        content = cleanedContent;
+        for (let i = 0; i < seedCalls.length; i++) {
+          toolCallAccum.set(i, seedCalls[i]);
+        }
       }
     }
   }

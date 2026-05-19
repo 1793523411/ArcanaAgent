@@ -48,6 +48,7 @@ import { loadUserConfig, saveUserConfig, hasAnyEnhancement, type UserConfig, typ
 import { listToolIds } from "../tools/index.js";
 import { claudeCodeEmitter, type ClaudeCodeLogEvent } from "../tools/claude_code.js";
 import { listModels, loadModelConfig, listProviders, addProvider as addProviderConfig, updateProvider as updateProviderConfig, deleteProvider as deleteProviderConfig } from "../config/models.js";
+import { buildEndpointUrl } from "../guild/aiDesigner.js";
 import { validateModel, validateModels as validateModelsBatch, validateAllModels, loadValidationResults, clearProviderValidations } from "../llm/validate.js";
 import { listSkills, installSkillFromZip, deleteSkill, getSkillCatalogForAgent } from "../skills/manager.js";
 import { connectToMcpServers, getMcpStatus, restartMcpServer } from "../mcp/client.js";
@@ -1841,7 +1842,7 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 
 请严格按照以下 JSON 格式返回（不要包含任何其他文字，只返回 JSON）：
 {
-  "name": "Agent 名称（简短，2-4个字）",
+  "name": "Agent 名称（4-8个字，要是完整有意义的角色名，例如「性能优化专家」「数据分析师」，不要给出截断的片段）",
   "description": "一句话描述该 Agent 的核心职责",
   "icon": "一个合适的 emoji 图标",
   "color": "一个十六进制颜色值，如 #3B82F6",
@@ -1872,6 +1873,67 @@ const AGENT_GENERATE_PROMPT = `你是一个 AI Agent 定义生成器。用户会
 - 根据角色合理选择需要的工具（如研究员只需 read_file、search_code、list_files）
 - 颜色要有辨识度，不同角色用不同色系`;
 
+/** Direct fetch to the configured LLM. Bypasses LangChain on purpose:
+ *  LangChain's ChatAnthropic was injecting `top_p: -1` which polo rejects,
+ *  and its 6× retry loop turns a transient 4xx into a 30s+ stall. The Guild
+ *  AI Designer (server/src/guild/aiDesigner.ts) made the same switch already
+ *  — this brings the legacy single-agent generator in line so a future polo
+ *  upgrade doesn't break a code path we've already migrated elsewhere. */
+async function callLLMDirect(systemPrompt: string, userInput: string): Promise<string> {
+  const cfg = loadUserConfig();
+  const { baseUrl, apiKey, modelId, api } = loadModelConfig(cfg.modelId);
+  const url = buildEndpointUrl(baseUrl, api);
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+  let body: string;
+  if (api === "anthropic-messages") {
+    headers["x-api-key"] = apiKey;
+    headers["anthropic-version"] = "2023-06-01";
+    body = JSON.stringify({
+      model: modelId,
+      max_tokens: 4096,
+      temperature: 0,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userInput }],
+    });
+  } else {
+    headers.Authorization = `Bearer ${apiKey}`;
+    body = JSON.stringify({
+      model: modelId,
+      max_tokens: 4096,
+      temperature: 0,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userInput },
+      ],
+    });
+  }
+  const r = await fetch(url, { method: "POST", headers, body });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`LLM HTTP ${r.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await r.json()) as Record<string, unknown>;
+  if (api === "anthropic-messages") {
+    const blocks = Array.isArray(json.content) ? json.content : [];
+    return blocks
+      .map((b) => {
+        if (b && typeof b === "object" && (b as { type?: string }).type === "text") {
+          const t = (b as { text?: unknown }).text;
+          return typeof t === "string" ? t : "";
+        }
+        return "";
+      })
+      .join("");
+  }
+  const choices = Array.isArray(json.choices) ? json.choices : [];
+  const first = choices[0] as { message?: { content?: unknown } } | undefined;
+  const content = first?.message?.content;
+  return typeof content === "string" ? content : "";
+}
+
 export async function generateAgentFromDescription(req: Request, res: Response): Promise<void> {
   const body = req.body as { description?: string };
   const description = typeof body?.description === "string" ? body.description.trim() : "";
@@ -1881,18 +1943,7 @@ export async function generateAgentFromDescription(req: Request, res: Response):
   }
 
   try {
-    const config = loadUserConfig();
-    const llm = getLLM(config.modelId);
-    const response = await llm.invoke([
-      new SystemMessage(AGENT_GENERATE_PROMPT),
-      new HumanMessage(description),
-    ]);
-
-    const content = typeof response.content === "string"
-      ? response.content
-      : Array.isArray(response.content)
-        ? response.content.map((c) => ("type" in c && c.type === "text" && typeof c.text === "string") ? c.text : "").join("")
-        : String(response.content);
+    const content = await callLLMDirect(AGENT_GENERATE_PROMPT, description);
 
     // Extract JSON from response (handle markdown code blocks)
     const jsonMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/) ?? content.match(/(\{[\s\S]*\})/);
@@ -2118,3 +2169,4 @@ export function getSharedContent(req: Request, res: Response): void {
   }
   res.json(record);
 }
+

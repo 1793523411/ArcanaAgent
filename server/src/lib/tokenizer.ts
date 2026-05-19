@@ -1,6 +1,57 @@
 import type { StoredMessage } from "../storage/index.js";
 import type { BaseMessage } from "@langchain/core/messages";
 
+const CJK_RANGE = /[\u4e00-\u9fff\u3400-\u4dbf]/;
+
+/**
+ * Split text into tokens that work for both CJK and Latin text.
+ * CJK characters are yielded as bigrams (2-char sliding window) so that
+ * "项目管理" becomes ["项目", "目管", "管理"] — much better matching than
+ * single chars, without needing a dictionary-based segmenter.
+ * Latin words are split on whitespace/punctuation as before.
+ */
+export function splitTokens(text: string): string[] {
+  const tokens: string[] = [];
+  // First split on whitespace/punctuation to separate Latin words from CJK runs
+  const parts = text.split(/[\s,;.!?，。！？、；：""''（）【】\-_/\\]+/);
+  for (const part of parts) {
+    if (!part) continue;
+    // Check if this part contains CJK characters
+    if (CJK_RANGE.test(part)) {
+      // Extract CJK runs and generate bigrams
+      let cjkRun = "";
+      let latinRun = "";
+      for (const ch of part) {
+        if (CJK_RANGE.test(ch)) {
+          if (latinRun.length > 1) tokens.push(latinRun);
+          latinRun = "";
+          cjkRun += ch;
+        } else {
+          if (cjkRun.length > 0) {
+            // Emit bigrams from the CJK run
+            if (cjkRun.length === 1) tokens.push(cjkRun);
+            for (let i = 0; i < cjkRun.length - 1; i++) {
+              tokens.push(cjkRun[i] + cjkRun[i + 1]);
+            }
+            cjkRun = "";
+          }
+          latinRun += ch;
+        }
+      }
+      // Flush remaining
+      if (cjkRun.length === 1) tokens.push(cjkRun);
+      for (let i = 0; i < cjkRun.length - 1; i++) {
+        tokens.push(cjkRun[i] + cjkRun[i + 1]);
+      }
+      if (latinRun.length > 1) tokens.push(latinRun);
+    } else {
+      // Pure Latin/ASCII word
+      if (part.length > 2) tokens.push(part);
+    }
+  }
+  return tokens;
+}
+
 export function estimateTextTokens(text: string): number {
   if (!text) return 0;
   const len = text.length;

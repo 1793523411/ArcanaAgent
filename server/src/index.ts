@@ -73,6 +73,29 @@ import {
   getAllExecutions,
 } from "./scheduler/routes.js";
 import { schedulerManager } from "./scheduler/manager.js";
+import {
+  getGuildInfo, putGuildInfo,
+  getGroups, postGroup, getGroupById, putGroupById, deleteGroupById,
+  postGroupAgent, deleteGroupAgent, getGroupStream,
+  getAgents as getGuildAgents, postAgent, getAgentById as getGuildAgentById,
+  putAgentById as putGuildAgentById, deleteAgentById as deleteGuildAgentById,
+  getAgentMemories, getAgentStats, postAgentAsset, deleteAgentAsset,
+  getGroupTaskList, postGroupTask, putTask as putGuildTask, deleteTask as deleteGuildTask,
+  getPipelineList, getPipelineById, postGroupTaskFromPipeline,
+  postPipeline, putPipeline, deletePipelineById,
+  postGenerateGroupPlan, postApplyGroupPlan,
+  postGeneratePipelinePlan, postApplyPipelinePlan,
+  postForkAgent,
+  postAssignTask, postAutoBid, getTaskExecutionLog, deleteGroupSchedulerLog,
+  postReleaseAgent, postClearTaskRejections,
+  getGroupAssetList, postGroupAsset, deleteGroupAssetById, putGroupLead, updateAgentAsset, updateGroupAssetRoute,
+  getTaskWorkspace, getGuildArtifactFile,
+  getAgentWorkspaceTree, getAgentWorkspaceFile,
+  getAgentMemoryTree, getAgentMemoryFile,
+  getGroupSharedTree, getGroupSharedFile, getGroupSharedManifest, getGroupSharedRaw,
+} from "./guild/routes.js";
+import { guildAutonomousScheduler } from "./guild/autonomousScheduler.js";
+import { listGroups, reconcileRequirementRollups } from "./guild/index.js";
 
 const app = express();
 const port = Number(process.env.PORT) || 3001;
@@ -163,6 +186,65 @@ app.post("/api/scheduled-tasks/:id/execute", executeTaskNow);
 app.get("/api/scheduled-tasks/:id/executions", getTaskExecutions);
 app.get("/api/scheduled-executions", getAllExecutions);
 
+// Guild Mode API
+app.get("/api/guild", getGuildInfo);
+app.put("/api/guild", putGuildInfo);
+app.get("/api/guild/groups", getGroups);
+app.post("/api/guild/groups", postGroup);
+app.get("/api/guild/groups/:id", getGroupById);
+app.put("/api/guild/groups/:id", putGroupById);
+app.delete("/api/guild/groups/:id", deleteGroupById);
+app.post("/api/guild/groups/:id/agents", postGroupAgent);
+app.delete("/api/guild/groups/:id/agents/:agentId", deleteGroupAgent);
+app.get("/api/guild/groups/:groupId/stream", getGroupStream);
+app.get("/api/guild/groups/:groupId/tasks", getGroupTaskList);
+app.post("/api/guild/groups/:groupId/tasks", postGroupTask);
+app.post("/api/guild/groups/:groupId/tasks/from-pipeline", postGroupTaskFromPipeline);
+app.get("/api/guild/pipelines", getPipelineList);
+app.get("/api/guild/pipelines/:id", getPipelineById);
+app.post("/api/guild/pipelines", postPipeline);
+app.put("/api/guild/pipelines/:id", putPipeline);
+app.delete("/api/guild/pipelines/:id", deletePipelineById);
+// AI designers: propose a plan (pure JSON), then apply it in a second call.
+app.post("/api/guild/groups/generate", postGenerateGroupPlan);
+app.post("/api/guild/groups/apply-plan", postApplyGroupPlan);
+app.post("/api/guild/pipelines/generate", postGeneratePipelinePlan);
+app.post("/api/guild/pipelines/apply-plan", postApplyPipelinePlan);
+app.post("/api/guild/groups/:groupId/assign", postAssignTask);
+app.post("/api/guild/groups/:groupId/autobid", postAutoBid);
+app.get("/api/guild/groups/:groupId/tasks/:taskId/logs", getTaskExecutionLog);
+app.delete("/api/guild/groups/:groupId/scheduler-log", deleteGroupSchedulerLog);
+app.put("/api/guild/tasks/:id", putGuildTask);
+app.post("/api/guild/tasks/:id/clear-rejections", postClearTaskRejections);
+app.delete("/api/guild/tasks/:id", deleteGuildTask);
+app.get("/api/guild/agents", getGuildAgents);
+app.post("/api/guild/agents", postAgent);
+app.get("/api/guild/agents/:id", getGuildAgentById);
+app.put("/api/guild/agents/:id", putGuildAgentById);
+app.delete("/api/guild/agents/:id", deleteGuildAgentById);
+app.get("/api/guild/agents/:id/memories", getAgentMemories);
+app.get("/api/guild/agents/:id/stats", getAgentStats);
+app.post("/api/guild/agents/:id/assets", postAgentAsset);
+app.delete("/api/guild/agents/:id/assets/:assetId", deleteAgentAsset);
+app.patch("/api/guild/agents/:id/assets/:assetId", updateAgentAsset);
+app.patch("/api/guild/groups/:id/assets/:assetId", updateGroupAssetRoute);
+app.post("/api/guild/agents/:agentId/release", postReleaseAgent);
+app.post("/api/guild/agents/:id/fork", postForkAgent);
+app.get("/api/guild/groups/:id/assets", getGroupAssetList);
+app.post("/api/guild/groups/:id/assets", postGroupAsset);
+app.delete("/api/guild/groups/:id/assets/:assetId", deleteGroupAssetById);
+app.put("/api/guild/groups/:id/lead", putGroupLead);
+app.get("/api/guild/groups/:groupId/tasks/:taskId/workspace", getTaskWorkspace);
+app.get("/api/guild/agents/:id/workspace/tree", getAgentWorkspaceTree);
+app.get("/api/guild/agents/:id/workspace/file", getAgentWorkspaceFile);
+app.get("/api/guild/agents/:id/memory/tree", getAgentMemoryTree);
+app.get("/api/guild/agents/:id/memory/file", getAgentMemoryFile);
+app.get("/api/guild/groups/:id/shared/tree", getGroupSharedTree);
+app.get("/api/guild/groups/:id/shared/file", getGroupSharedFile);
+app.get("/api/guild/groups/:id/shared/raw", getGroupSharedRaw);
+app.get("/api/guild/groups/:id/shared/manifest", getGroupSharedManifest);
+app.get("/api/guild/file", getGuildArtifactFile);
+
 // 提供前端静态文件（生产环境）
 const publicPath = join(__dirname, "..", "public");
 app.use(express.static(publicPath));
@@ -184,4 +266,16 @@ app.listen(port, async () => {
   // 启动定时任务调度器
   serverLogger.info("Starting scheduler...");
   await schedulerManager.start();
+  serverLogger.info("Starting guild autonomous scheduler...");
+  guildAutonomousScheduler.start();
+
+  // Backfill: roll up any historical requirements whose subtasks finished
+  // before the rollup logic existed.
+  try {
+    let total = 0;
+    for (const g of listGroups()) total += reconcileRequirementRollups(g.id);
+    if (total > 0) serverLogger.info(`Reconciled ${total} requirement task(s) on startup`);
+  } catch (err) {
+    serverLogger.warn(`Requirement reconcile skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
 });

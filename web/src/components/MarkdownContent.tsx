@@ -308,6 +308,19 @@ function CodeBlock({
 
 export default function MarkdownContent({ children, className = "", transformImageUrl, variant = "default", disableMermaid = false }: Props) {
   const shareCls = variant === "share" ? "share-markdown" : "";
+  // Lightbox state — opening one image at a time keeps the overlay stack
+  // shallow and avoids race conditions when a fast clicker swaps targets.
+  const [lightbox, setLightbox] = useState<{ src: string; alt: string } | null>(null);
+
+  // ESC closes the lightbox without disturbing the underlying scroll position.
+  // Listener only attaches while the lightbox is open so we don't pay the
+  // cost on every render of every markdown block on the page.
+  useEffect(() => {
+    if (!lightbox) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLightbox(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox]);
 
   const components = useMemo(() => ({
     p: ({ children }: { children?: React.ReactNode }) => <p className="mb-3 last:mb-0">{children}</p>,
@@ -392,7 +405,20 @@ export default function MarkdownContent({ children, className = "", transformIma
 
     img: ({ src, alt }: { src?: string; alt?: string }) => {
       const resolved = src && transformImageUrl ? transformImageUrl(src) : src;
-      return <img src={resolved} alt={alt ?? ""} className="max-w-full rounded-lg my-3 border border-[var(--color-border)]" loading="lazy" />;
+      // Constrain inline rendering: max ~28rem wide / 18rem tall, contained
+      // so portrait + landscape both stay reasonable. Click opens a full
+      // viewport lightbox; cursor-zoom-in gives the user a hint before they
+      // commit. `object-contain` matters because hard width/height crop a
+      // mismatched aspect ratio otherwise.
+      return (
+        <img
+          src={resolved}
+          alt={alt ?? ""}
+          loading="lazy"
+          className="max-w-md max-h-72 object-contain rounded-lg my-3 border border-[var(--color-border)] cursor-zoom-in transition-shadow hover:shadow-md"
+          onClick={() => { if (resolved) setLightbox({ src: resolved, alt: alt ?? "" }); }}
+        />
+      );
     },
 
     // GFM tables
@@ -425,9 +451,39 @@ export default function MarkdownContent({ children, className = "", transformIma
         remarkPlugins={[remarkGfm]}
         rehypePlugins={[rehypeHighlight]}
         components={components}
+        // Default urlTransform sanitizes unrecognized URL schemes — including
+        // bare relative paths whose first segment contains a colon (which is
+        // common for Chinese filenames using full-width "：" or any path with
+        // a literal colon). That collapses the src to "" before our img
+        // component override runs, breaking artifact previews. Identity
+        // pass-through is safe here because:
+        //   1) we render markdown sourced only from trusted agent output, and
+        //   2) `transformImageUrl` (when set) re-resolves img URLs to a known
+        //      same-origin shape before they reach the DOM.
+        urlTransform={(url) => url}
       >
         {children}
       </ReactMarkdown>
+      {lightbox && (
+        // Fullscreen lightbox: 95% viewport so a wide PNG isn't cropped by the
+        // backdrop. z-[90] sits above guild modals (z-[80]) and below toasts.
+        // Click anywhere outside the image (including the image itself) closes
+        // — no separate close button needed for an image-only view.
+        <div
+          className="fixed inset-0 z-[90] flex items-center justify-center cursor-zoom-out"
+          style={{ background: "rgba(0,0,0,0.85)" }}
+          onClick={() => setLightbox(null)}
+          role="dialog"
+          aria-modal="true"
+          aria-label={lightbox.alt || "图片预览"}
+        >
+          <img
+            src={lightbox.src}
+            alt={lightbox.alt}
+            className="max-w-[95vw] max-h-[95vh] object-contain rounded-lg shadow-2xl"
+          />
+        </div>
+      )}
     </div>
   );
 }

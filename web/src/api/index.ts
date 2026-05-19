@@ -615,3 +615,44 @@ export async function testClaudeCode(model?: string): Promise<ClaudeCodeTestResu
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+// ─── User Profile API ────────────────────────────────
+export interface UserProfile {
+  id: string;
+  username: string;
+  nickname?: string;
+  email?: string;
+  phone?: string;
+  avatar?: string;
+  bio?: string;
+  createdAt: string;
+}
+
+export interface UpdateProfileRequest {
+  nickname?: string;
+  email?: string;
+  phone?: string;
+  bio?: string;
+}
+
+export const userApi = {
+  async getProfile(): Promise<UserProfile> {
+    const r = await fetch(`${BASE}/profile`, {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  },
+  async updateProfile(data: UpdateProfileRequest): Promise<UserProfile> {
+    const r = await fetch(`${BASE}/profile`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(data),
+    });
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+}

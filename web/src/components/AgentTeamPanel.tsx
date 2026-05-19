@@ -52,12 +52,14 @@ function AgentForm({
   globalEnhancements,
   onSave,
   onCancel,
+  saving,
 }: {
   initial?: AgentFormData;
   availableTools: string[];
   globalEnhancements?: { loopDetection?: boolean; evalGuard?: boolean; evalSkipReadOnly?: boolean; replan?: boolean; autoApproveReplan?: boolean; outerRetry?: boolean } | null;
   onSave: (data: AgentFormData) => void;
   onCancel: () => void;
+  saving?: boolean;
 }) {
   const defaultHarness = {
     loopDetection: globalEnhancements?.loopDetection ?? true,
@@ -296,11 +298,11 @@ function AgentForm({
         </button>
         <button
           className="px-4 py-1.5 rounded-lg text-sm text-white"
-          style={{ background: "var(--color-accent)" }}
+          style={{ background: saving ? "var(--color-text-muted)" : "var(--color-accent)" }}
           onClick={() => onSave(form)}
-          disabled={!form.name.trim()}
+          disabled={!form.name.trim() || saving}
         >
-          保存
+          {saving ? "保存中…" : "保存"}
         </button>
       </div>
     </div>
@@ -328,11 +330,13 @@ function TeamForm({
   allAgents,
   onSave,
   onCancel,
+  saving,
 }: {
   initial?: TeamFormData;
   allAgents: AgentDef[];
   onSave: (data: TeamFormData) => void;
   onCancel: () => void;
+  saving?: boolean;
 }) {
   const [form, setForm] = useState<TeamFormData>(initial ?? emptyTeamForm);
 
@@ -436,11 +440,11 @@ function TeamForm({
         </button>
         <button
           className="px-4 py-1.5 rounded-lg text-sm text-white"
-          style={{ background: "var(--color-accent)" }}
+          style={{ background: saving ? "var(--color-text-muted)" : "var(--color-accent)" }}
           onClick={() => onSave(form)}
-          disabled={!form.name.trim() || form.agents.length === 0}
+          disabled={!form.name.trim() || form.agents.length === 0 || saving}
         >
-          保存
+          {saving ? "保存中…" : "保存"}
         </button>
       </div>
     </div>
@@ -465,6 +469,10 @@ export default function AgentTeamPanel({ onClose }: Props) {
   // Team editing
   const [editingTeamId, setEditingTeamId] = useState<string | null>(null);
   const [creatingTeam, setCreatingTeam] = useState(false);
+
+  // Saving
+  const [savingAgent, setSavingAgent] = useState(false);
+  const [savingTeam, setSavingTeam] = useState(false);
 
   // Delete confirmation
   const [deletingAgentId, setDeletingAgentId] = useState<string | null>(null);
@@ -503,6 +511,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
 
   // ─── Agent handlers ───
   const handleSaveAgent = async (data: AgentFormData) => {
+    setSavingAgent(true);
     try {
       if (editingAgentId) {
         await updateAgentDef(editingAgentId, data);
@@ -517,6 +526,8 @@ export default function AgentTeamPanel({ onClose }: Props) {
       loadData();
     } catch (e) {
       toast(String(e), "error");
+    } finally {
+      setSavingAgent(false);
     }
   };
 
@@ -536,6 +547,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
 
   // ─── Team handlers ───
   const handleSaveTeam = async (data: TeamFormData) => {
+    setSavingTeam(true);
     try {
       const payload = {
         ...data,
@@ -553,6 +565,8 @@ export default function AgentTeamPanel({ onClose }: Props) {
       loadData();
     } catch (e) {
       toast(String(e), "error");
+    } finally {
+      setSavingTeam(false);
     }
   };
 
@@ -658,6 +672,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                     } : aiGeneratedData ?? undefined}
                     onSave={handleSaveAgent}
                     onCancel={() => { setEditingAgentId(null); setCreatingAgent(false); setAiGeneratedData(null); }}
+                    saving={savingAgent}
                   />
                 </div>
               )}
@@ -772,6 +787,7 @@ export default function AgentTeamPanel({ onClose }: Props) {
                     } : undefined}
                     onSave={handleSaveTeam}
                     onCancel={() => { setEditingTeamId(null); setCreatingTeam(false); }}
+                    saving={savingTeam}
                   />
                 </div>
               )}
