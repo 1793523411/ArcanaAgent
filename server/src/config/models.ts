@@ -20,6 +20,22 @@ export interface ModelSpec {
   input?: string[];
   /** 是否支持深度思考（返回 reasoning_content） */
   reasoning?: boolean;
+  /** Anthropic thinking mode. Defaults are inferred from model id when omitted. */
+  reasoningMode?: ReasoningMode;
+  /** Soft guidance for Anthropic adaptive thinking depth. */
+  reasoningEffort?: ReasoningEffort;
+  /** Token budget for Anthropic manual extended thinking. */
+  reasoningBudgetTokens?: number;
+}
+
+export type ReasoningMode = "manual" | "adaptive";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export interface ModelReasoningConfig {
+  enabled: boolean;
+  mode: ReasoningMode;
+  effort: ReasoningEffort;
+  budgetTokens: number;
 }
 
 export interface ProviderConfig {
@@ -37,6 +53,65 @@ export interface ModelInfo {
   maxTokens: number;
   supportsImage?: boolean;
   supportsReasoning?: boolean;
+  reasoningMode?: ReasoningMode;
+  reasoningEffort?: ReasoningEffort;
+}
+
+const DEFAULT_REASONING_EFFORT: ReasoningEffort = "high";
+const DEFAULT_REASONING_BUDGET_TOKENS = 8000;
+
+function isReasoningMode(value: unknown): value is ReasoningMode {
+  return value === "manual" || value === "adaptive";
+}
+
+function isReasoningEffort(value: unknown): value is ReasoningEffort {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max";
+}
+
+function getPositiveInteger(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+export function inferAnthropicReasoningMode(modelId: string): ReasoningMode {
+  const normalized = modelId.toLowerCase();
+  if (
+    normalized.includes("claude-opus-4-7") ||
+    normalized.includes("claude-opus-4-6") ||
+    normalized.includes("claude-sonnet-4-6") ||
+    normalized.includes("claude-mythos-preview")
+  ) {
+    return "adaptive";
+  }
+  return "manual";
+}
+
+function requiresAnthropicAdaptiveThinking(modelId: string): boolean {
+  return modelId.toLowerCase().includes("claude-opus-4-7");
+}
+
+function supportsAnthropicXHighEffort(modelId: string): boolean {
+  return modelId.toLowerCase().includes("claude-opus-4-7");
+}
+
+export function resolveModelReasoningConfig(model: ModelSpec | undefined, api?: string): ModelReasoningConfig {
+  const requestedMode = isReasoningMode(model?.reasoningMode)
+    ? model.reasoningMode
+    : api === "anthropic-messages" && model
+      ? inferAnthropicReasoningMode(model.id)
+      : "manual";
+  const requestedEffort = isReasoningEffort(model?.reasoningEffort) ? model.reasoningEffort : DEFAULT_REASONING_EFFORT;
+  const isAnthropic = api === "anthropic-messages" && model;
+  const mode = isAnthropic && requiresAnthropicAdaptiveThinking(model.id) ? "adaptive" : requestedMode;
+  const effort = isAnthropic && requestedEffort === "xhigh" && !supportsAnthropicXHighEffort(model.id)
+    ? DEFAULT_REASONING_EFFORT
+    : requestedEffort;
+
+  return {
+    enabled: model?.reasoning === true,
+    mode,
+    effort,
+    budgetTokens: getPositiveInteger(model?.reasoningBudgetTokens, DEFAULT_REASONING_BUDGET_TOKENS),
+  };
 }
 
 /** 读取 providers 配置 */
@@ -84,6 +159,7 @@ export function listModels(): ModelInfo[] {
     const c = cfg as ProviderConfig;
     for (const m of c.models ?? []) {
       const input = Array.isArray((m as { input?: string[] }).input) ? (m as { input: string[] }).input : [];
+      const reasoningConfig = resolveModelReasoningConfig(m, m.api || c.api);
       out.push({
         id: `${provider}:${m.id}`,
         name: m.name,
@@ -91,11 +167,38 @@ export function listModels(): ModelInfo[] {
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
         supportsImage: input.includes("image"),
-        supportsReasoning: (m as { reasoning?: boolean }).reasoning === true,
+        supportsReasoning: reasoningConfig.enabled,
+        ...(reasoningConfig.enabled ? { reasoningMode: reasoningConfig.mode, reasoningEffort: reasoningConfig.effort } : {}),
       });
     }
   }
   return out;
+}
+
+/**
+ * 判断 JSON 里的 apiKey 是不是"没真填"——空字符串或类似 YOUR_XXX_API_KEY 的占位符。
+ * 只有当 JSON 没真填时，才让 env var 顶上去。
+ * 这样 UI/JSON 改完 key 永远立即生效，env 只作为"未配置时的兜底"。
+ */
+function isPlaceholderApiKey(key: string | undefined): boolean {
+  if (!key) return true;
+  const trimmed = key.trim();
+  if (!trimmed) return true;
+  return /^YOUR[_-]?.*API[_-]?KEY/i.test(trimmed) || trimmed === "your-api-key-here";
+}
+
+function resolveProviderApiKey(providerName: string, providerCfg: ProviderConfig): string {
+  const jsonKey = providerCfg.apiKey;
+  if (!isPlaceholderApiKey(jsonKey)) {
+    return jsonKey;
+  }
+  if (providerName === "volcengine" && process.env.VOLCENGINE_API_KEY) {
+    return process.env.VOLCENGINE_API_KEY;
+  }
+  if (providerName === "deepseek" && process.env.DEEPSEEK_API_KEY) {
+    return process.env.DEEPSEEK_API_KEY;
+  }
+  return jsonKey;
 }
 
 export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: string; modelId: string; api: string } {
@@ -103,13 +206,15 @@ export function loadModelConfig(modelId?: string): { baseUrl: string; apiKey: st
   const resolved = resolveModel(modelId, providers);
   let model = resolved?.model;
   let providerCfg = resolved?.providerCfg;
+  let providerName = resolved?.providerName ?? "";
   if (!model || !providerCfg) {
     const volc = providers.volcengine as ProviderConfig | undefined;
     providerCfg = volc;
     model = volc?.models?.[0];
+    providerName = volc ? "volcengine" : "";
   }
   if (!model || !providerCfg) throw new Error("No model configured");
-  const apiKey = process.env.VOLCENGINE_API_KEY ?? providerCfg.apiKey;
+  const apiKey = resolveProviderApiKey(providerName, providerCfg);
   return {
     baseUrl: providerCfg.baseUrl,
     apiKey,
@@ -128,10 +233,21 @@ export function getModelContextWindow(modelId?: string): number {
 
 /** 模型是否支持思考（返回 reasoning_content） */
 export function getModelReasoning(modelId?: string): boolean {
+  return getModelReasoningConfig(modelId).enabled;
+}
+
+/** 获取完整 reasoning/thinking 配置 */
+export function getModelReasoningConfig(modelId?: string): ModelReasoningConfig {
   const providers = readProviders();
   const resolved = resolveModel(modelId, providers);
-  const model = resolved?.model ?? (providers.volcengine as ProviderConfig | undefined)?.models?.[0];
-  return (model as ModelSpec | undefined)?.reasoning === true;
+  const fallbackProvider = providers.volcengine as ProviderConfig | undefined;
+  const model = resolved?.model ?? fallbackProvider?.models?.[0];
+  // Always include the provider-level api (resolved provider or the fallback)
+  // so reasoning-mode inference (which depends on api === "anthropic-messages")
+  // doesn't accidentally fall back to "manual" just because the model entry
+  // omits an explicit `api` field.
+  const api = model?.api || resolved?.providerCfg.api || fallbackProvider?.api;
+  return resolveModelReasoningConfig(model, api);
 }
 
 // ─── Provider CRUD ──────────────────────────────────

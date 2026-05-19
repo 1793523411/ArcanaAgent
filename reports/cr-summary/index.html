@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CR 复核总结</title>
+  <style>
+    :root {
+      --ink: #172033;
+      --muted: #66748a;
+      --paper: #fbfaf7;
+      --panel: #ffffff;
+      --line: #d9e0ea;
+      --soft: #eef3f8;
+      --accent: #0f766e;
+      --accent-2: #b45309;
+      --danger: #b42318;
+      --ok: #087443;
+      --shadow: 0 22px 70px rgba(23, 32, 51, 0.10);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(115deg, rgba(15, 118, 110, 0.08), transparent 34%),
+        linear-gradient(245deg, rgba(180, 83, 9, 0.08), transparent 30%),
+        var(--paper);
+      font-family: "Avenir Next", "PingFang SC", "Noto Sans SC", sans-serif;
+      line-height: 1.65;
+    }
+
+    main {
+      width: min(1180px, calc(100vw - 40px));
+      margin: 0 auto;
+      padding: 48px 0 64px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: 1.35fr 0.65fr;
+      gap: 24px;
+      align-items: stretch;
+      margin-bottom: 24px;
+    }
+
+    .hero-card,
+    .panel {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(10px);
+    }
+
+    .hero-card {
+      min-height: 292px;
+      padding: 34px;
+      border-radius: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -30px -80px auto;
+      width: 260px;
+      height: 260px;
+      border: 1px solid rgba(15, 118, 110, 0.22);
+      transform: rotate(18deg);
+    }
+
+    .eyebrow {
+      margin: 0 0 18px;
+      color: var(--accent);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 760px;
+      font-family: "Iowan Old Style", "Songti SC", "Noto Serif SC", Georgia, serif;
+      font-size: clamp(34px, 5vw, 66px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+
+    .hero-copy {
+      margin: 24px 0 0;
+      max-width: 800px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .verdict {
+      border-radius: 18px;
+      padding: 24px;
+      background: var(--ink);
+      color: white;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 292px;
+    }
+
+    .verdict strong {
+      display: block;
+      font-size: 15px;
+      color: #b7f7eb;
+      margin-bottom: 10px;
+    }
+
+    .verdict .big {
+      font-family: "Iowan Old Style", "Songti SC", "Noto Serif SC", Georgia, serif;
+      font-size: 46px;
+      line-height: 1;
+      margin: 0;
+    }
+
+    .verdict p {
+      margin: 18px 0 0;
+      color: #dbe7f3;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 18px;
+    }
+
+    .panel {
+      border-radius: 16px;
+      padding: 24px;
+    }
+
+    .span-4 {
+      grid-column: span 4;
+    }
+
+    .span-6 {
+      grid-column: span 6;
+    }
+
+    .span-8 {
+      grid-column: span 8;
+    }
+
+    .span-12 {
+      grid-column: span 12;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      letter-spacing: 0;
+    }
+
+    .finding {
+      display: grid;
+      grid-template-columns: 66px 1fr;
+      gap: 14px;
+      padding: 16px 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .finding:first-of-type {
+      border-top: 0;
+      padding-top: 0;
+    }
+
+    .badge {
+      display: inline-flex;
+      justify-content: center;
+      align-items: center;
+      height: 30px;
+      border-radius: 999px;
+      font-weight: 800;
+      font-size: 12px;
+      background: var(--soft);
+      color: var(--accent);
+    }
+
+    .badge.hot {
+      background: #fff1e7;
+      color: var(--accent-2);
+    }
+
+    .badge.danger {
+      background: #fff0ef;
+      color: var(--danger);
+    }
+
+    .finding h3 {
+      margin: 0 0 4px;
+      font-size: 16px;
+    }
+
+    .finding p,
+    .panel p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .table {
+      display: grid;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      overflow: hidden;
+      background: var(--panel);
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1.5fr 1.2fr;
+      gap: 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .row:first-child {
+      border-top: 0;
+      background: var(--soft);
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    .cell {
+      padding: 13px 14px;
+      border-left: 1px solid var(--line);
+      min-width: 0;
+    }
+
+    .cell:first-child {
+      border-left: 0;
+    }
+
+    .ok {
+      color: var(--ok);
+      font-weight: 800;
+    }
+
+    .warn {
+      color: var(--accent-2);
+      font-weight: 800;
+    }
+
+    code {
+      display: inline-block;
+      max-width: 100%;
+      padding: 2px 6px;
+      border-radius: 6px;
+      background: #eef2f7;
+      color: #24324a;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 0.92em;
+      overflow-wrap: anywhere;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    li + li {
+      margin-top: 8px;
+    }
+
+    .command {
+      margin-top: 12px;
+      padding: 14px;
+      border-radius: 12px;
+      background: #111827;
+      color: #d6fbe9;
+      font-family: "SFMono-Regular", Consolas, monospace;
+      font-size: 13px;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: right;
+    }
+
+    @media (max-width: 860px) {
+      main {
+        width: min(100vw - 24px, 720px);
+        padding-top: 24px;
+      }
+
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .span-4,
+      .span-6,
+      .span-8,
+      .span-12 {
+        grid-column: span 12;
+      }
+
+      .row {
+        grid-template-columns: 1fr;
+      }
+
+      .cell {
+        border-left: 0;
+        border-top: 1px solid var(--line);
+      }
+
+      .cell:first-child {
+        border-top: 0;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="hero">
+      <div class="hero-card">
+        <div>
+          <p class="eyebrow">Code Review Report</p>
+          <h1>这轮改动已经复核，并补掉了新的边界风险。</h1>
+          <p class="hero-copy">
+            结论：Claude 4.7 报错修复方向正确，但 CR 发现两个配置兼容性风险和两个 plan 展示边界问题。我已经在后端兜底，避免再由前端配置或流式时序把同类问题带回来。
+          </p>
+        </div>
+      </div>
+
+      <aside class="verdict">
+        <div>
+          <strong>当前状态</strong>
+          <p class="big">可继续验证</p>
+          <p>后端构建通过，server 测试全绿。前端构建仍被既有 ProfilePage 类型错误阻塞，不是这次改动引入。</p>
+        </div>
+      </aside>
+    </section>
+
+    <section class="grid">
+      <article class="panel span-8">
+        <h2>CR 发现并修复的问题</h2>
+        <div class="finding">
+          <span class="badge danger">P1</span>
+          <div>
+            <h3>Opus 4.7 不能被配置覆盖成 manual thinking</h3>
+            <p>之前虽然默认走 adaptive，但用户在模型配置里选 manual 仍可能重新触发 400。现在 <code>claude-opus-4-7</code> 在解析层强制 adaptive。</p>
+          </div>
+        </div>
+        <div class="finding">
+          <span class="badge hot">P2</span>
+          <div>
+            <h3>非 Opus 4.7 不应发送 xhigh effort</h3>
+            <p><code>xhigh</code> 官方只标给 Opus 4.7。现在 Sonnet 4.6 / Opus 4.6 如果配置了 xhigh，会降回 <code>high</code>。</p>
+          </div>
+        </div>
+        <div class="finding">
+          <span class="badge hot">P2</span>
+          <div>
+            <h3>plan completed 后不能再回退成 running</h3>
+            <p>补最终答复的流式 token 可能晚于 completed 事件到达。现在加了终态保护，避免前端计划状态闪回。</p>
+          </div>
+        </div>
+        <div class="finding">
+          <span class="badge">P3</span>
+          <div>
+            <h3>plan 文本识别不能把否定句当完成</h3>
+            <p>收紧了“未完成 / 不通过”的识别边界，并补了单测。</p>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel span-4">
+        <h2>影响面判断</h2>
+        <ul>
+          <li>模型请求影响集中在 Anthropic thinking 参数构造。</li>
+          <li>OpenAI 兼容模型只保留原有 reasoning 开关和 temperature 行为。</li>
+          <li>plan 修复只影响流式 plan event，不改最终答案内容。</li>
+          <li>配置 UI 新增字段会被后端再次校验，不能直接发出不支持参数。</li>
+        </ul>
+      </article>
+
+      <article class="panel span-12">
+        <h2>验证矩阵</h2>
+        <div class="table">
+          <div class="row">
+            <div class="cell">验证项</div>
+            <div class="cell">结果</div>
+            <div class="cell">说明</div>
+          </div>
+          <div class="row">
+            <div class="cell"><code>pnpm --dir server build</code></div>
+            <div class="cell"><span class="ok">通过</span></div>
+            <div class="cell">TypeScript 编译通过。</div>
+          </div>
+          <div class="row">
+            <div class="cell">server tests</div>
+            <div class="cell"><span class="ok">21 files / 197 tests passed</span></div>
+            <div class="cell">新增模型配置、Anthropic payload、plan 推断测试均覆盖。</div>
+          </div>
+          <div class="row">
+            <div class="cell">runtime payload</div>
+            <div class="cell"><span class="ok">Opus 4.7 为 adaptive</span></div>
+            <div class="cell"><code>thinking.type=adaptive</code>，<code>output_config.effort=high</code>。</div>
+          </div>
+          <div class="row">
+            <div class="cell"><code>pnpm --dir web build</code></div>
+            <div class="cell"><span class="warn">仍失败</span></div>
+            <div class="cell"><code>ProfilePage.tsx</code> 既有类型错误：缺少 <code>UserProfile</code> / <code>UpdateProfileRequest</code>，toast 参数类型不匹配。</div>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel span-6">
+        <h2>改动文件</h2>
+        <ul>
+          <li><code>server/src/config/models.ts</code>：reasoning 配置解析与兼容兜底。</li>
+          <li><code>server/src/llm/adapter.ts</code>：Anthropic adaptive/manual payload 构造。</li>
+          <li><code>server/src/agent/index.ts</code>：可见文本驱动 plan running 更新，completed 后锁定终态。</li>
+          <li><code>server/src/agent/planTracker.ts</code>：文本进度推断与否定边界。</li>
+          <li><code>web/src/components/ModelsPanel.tsx</code>：配置 UI 保存 thinking mode / effort。</li>
+        </ul>
+      </article>
+
+      <article class="panel span-6">
+        <h2>提交前提醒</h2>
+        <p>
+          当前工作区存在 staged 和 unstaged 混合状态。刚刚 CR 补掉的保护逻辑在 unstaged 里，提交前需要统一检查，避免只提交 staged 导致修复漏掉。
+        </p>
+        <div class="command">git status --short</div>
+      </article>
+    </section>
+
+    <div class="footer">生成时间：2026-05-12 21:00 Asia/Shanghai</div>
+  </main>
+</body>
+</html>

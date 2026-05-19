@@ -108,6 +108,7 @@ arcana-agent open   # Opens in browser
 This file configures AI model providers. You can add multiple providers:
 
 - **volcengine**: VolcEngine/Doubao models
+- **deepseek**: [DeepSeek 官方 API](https://api.deepseek.com)（`deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-chat`、`deepseek-reasoner`）
 - **openai**: OpenAI models (GPT-4, GPT-3.5, etc.)
 - **anthropic**: Claude models (requires Anthropic-compatible endpoint)
 - **custom**: Any OpenAI-compatible API
@@ -126,6 +127,9 @@ This file configures AI model providers. You can add multiple providers:
 - `maxTokens`: Maximum output tokens
 - `input`: Array of supported input types (`["text"]` or `["text", "image"]`)
 - `reasoning`: Whether model supports reasoning/thinking mode
+- `reasoningMode`: Optional Anthropic thinking mode override (`"adaptive"` or `"manual"`). When omitted, Claude Opus 4.7/4.6 and Sonnet 4.6 default to adaptive thinking; older Claude models default to manual `budget_tokens`. Claude Opus 4.7 always uses adaptive thinking because manual `budget_tokens` is rejected by the API.
+- `reasoningEffort`: Optional Anthropic adaptive thinking effort (`"low"`, `"medium"`, `"high"`, `"xhigh"`, or `"max"`). Defaults to `"high"`. `xhigh` is only sent for Claude Opus 4.7; other Anthropic models fall back to `"high"` to avoid unsupported requests.
+- `reasoningBudgetTokens`: Optional Anthropic manual thinking budget. Defaults to `8000`.
 
 ### user-config.json
 
@@ -166,6 +170,9 @@ DATA_DIR=/custom/path arcana-agent start
 
 # Volcengine API key (overrides models.json)
 VOLCENGINE_API_KEY=your-key arcana-agent start
+
+# DeepSeek API key (overrides models.json deepseek provider)
+DEEPSEEK_API_KEY=your-key arcana-agent start
 ```
 
 ## Editing Configuration While Running

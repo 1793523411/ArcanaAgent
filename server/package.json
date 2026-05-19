@@ -13,7 +13,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.83",
     "@huggingface/transformers": "^3.8.1",
     "@lancedb/lancedb": "^0.27.1",
-    "@langchain/anthropic": "^0.3.34",
+    "@langchain/anthropic": "~0.3.34",
     "@langchain/core": "^0.3.28",
     "@langchain/langgraph": "^0.2.74",
     "@langchain/openai": "^0.3.14",

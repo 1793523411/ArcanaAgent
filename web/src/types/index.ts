@@ -244,7 +244,16 @@ export interface UserConfig {
   mcpServers: McpServerConfig[];
   availableToolIds?: string[];
   modelId?: string;
-  availableModels?: Array<{ id: string; name: string; provider: string; contextWindow: number; maxTokens: number }>;
+  availableModels?: Array<{
+    id: string;
+    name: string;
+    provider: string;
+    contextWindow: number;
+    maxTokens: number;
+    supportsReasoning?: boolean;
+    reasoningMode?: "manual" | "adaptive";
+    reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  }>;
   context?: ContextStrategyConfig;
   planning?: PlanningConfig;
   mcpStatus?: McpStatusItem[];
@@ -329,6 +338,9 @@ export interface ModelSpec {
   maxTokens: number;
   input?: string[];
   reasoning?: boolean;
+  reasoningMode?: "manual" | "adaptive";
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  reasoningBudgetTokens?: number;
 }
 
 export interface ProviderInfo {
