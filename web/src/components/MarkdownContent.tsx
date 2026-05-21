@@ -33,15 +33,47 @@ function isMermaidDiagram(code: string): boolean {
   return MERMAID_KEYWORDS.test(cleanMermaidCode(code));
 }
 
+function quoteMermaidText(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("\"") || trimmed.startsWith("`")) return trimmed;
+  if (/^[A-Za-z0-9_.-]+$/.test(trimmed)) return trimmed;
+  return `"${trimmed.replace(/"/g, "'")}"`;
+}
+
+function normalizeQuadrantChartCode(code: string): string {
+  const lines = code.split("\n");
+  const firstContentLine = lines.find((line) => line.trim());
+  if (!firstContentLine || !/^quadrantChart\b/i.test(firstContentLine.trim())) return code;
+
+  return lines.map((line) => {
+    const axisMatch = line.match(/^(\s*[xy]-axis\s+)(.*?)\s*--+>\s*(.*?)\s*$/i);
+    if (axisMatch) {
+      return `${axisMatch[1]}${quoteMermaidText(axisMatch[2])} --> ${quoteMermaidText(axisMatch[3])}`;
+    }
+
+    const quadrantMatch = line.match(/^(\s*quadrant-[1-4]\s+)(.*?)\s*$/i);
+    if (quadrantMatch) {
+      return `${quadrantMatch[1]}${quoteMermaidText(quadrantMatch[2])}`;
+    }
+
+    const pointMatch = line.match(/^(\s*)([^:\n]+?)\s*:\s*(\[\s*(?:1|0(?:\.\d+)?)\s*,\s*(?:1|0(?:\.\d+)?)\s*\].*)$/);
+    if (pointMatch) {
+      return `${pointMatch[1]}${quoteMermaidText(pointMatch[2])}: ${pointMatch[3]}`;
+    }
+
+    return line;
+  }).join("\n");
+}
+
 /** 清理 mermaid 代码：去除行号前缀（如 "2|flowchart TD"） */
 function cleanMermaidCode(code: string): string {
   const lines = code.split("\n");
   // 检测是否大部分行有 "数字|" 前缀
   const prefixed = lines.filter((l) => /^\d+\|/.test(l)).length;
   if (prefixed > lines.length * 0.5) {
-    return lines.map((l) => l.replace(/^\d+\|/, "")).join("\n").trim();
+    return normalizeQuadrantChartCode(lines.map((l) => l.replace(/^\d+\|/, "")).join("\n").trim());
   }
-  return code.trim();
+  return normalizeQuadrantChartCode(code.trim());
 }
 
 /** 从 ReactNode children 提取纯文本，用于生成标题 id */
@@ -62,6 +94,303 @@ export function slugify(text: string): string {
 
 let mermaidCounter = 0;
 const svgCache = new Map<string, { svg?: string; error?: string }>();
+
+type LooseMarkdownBlock =
+  | { type: "markdown"; content: string; normalizeInlineHtml: boolean }
+  | { type: "table"; rows: LooseTableRow[] }
+  | { type: "grid"; cols: number; columns: LooseGridColumn[] }
+  | { type: "callout"; emoji: string; tone: CalloutTone; content: string };
+
+interface LooseTableCell {
+  tag: "th" | "td";
+  content: string;
+}
+
+type LooseTableRow = LooseTableCell[];
+
+interface LooseGridColumn {
+  width?: string;
+  content: string;
+}
+
+type CalloutTone = "default" | "warning" | "success" | "error" | "info";
+
+interface QuadrantPoint {
+  label: string;
+  x: number;
+  y: number;
+}
+
+interface QuadrantData {
+  title?: string;
+  xLeft?: string;
+  xRight?: string;
+  yBottom?: string;
+  yTop?: string;
+  quadrants: Partial<Record<1 | 2 | 3 | 4, string>>;
+  points: QuadrantPoint[];
+}
+
+function decodeHtmlEntities(value: string): string {
+  if (typeof document === "undefined") return value;
+  const textarea = document.createElement("textarea");
+  textarea.innerHTML = value;
+  return textarea.value;
+}
+
+function normalizeLooseMarkup(source: string): string {
+  return source
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\s*(?:b|strong)\s*>/gi, "**")
+    .replace(/<\s*\/\s*(?:b|strong)\s*>/gi, "**")
+    .replace(/<\s*(?:i|em)\s*>/gi, "*")
+    .replace(/<\s*\/\s*(?:i|em)\s*>/gi, "*");
+}
+
+function nodeListToMarkdown(nodes: Iterable<ChildNode>): string {
+  return Array.from(nodes).map(htmlNodeToMarkdown).join("");
+}
+
+function htmlNodeToMarkdown(node: ChildNode): string {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+  if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+  const element = node as HTMLElement;
+  const tag = element.tagName.toLowerCase();
+  const inner = nodeListToMarkdown(element.childNodes);
+
+  if (tag === "br") return "\n";
+  if (tag === "b" || tag === "strong") return `**${inner}**`;
+  if (tag === "i" || tag === "em") return `*${inner}*`;
+  if (tag === "code") return `\`${inner.trim()}\``;
+  if (tag === "li") return `- ${inner.trim()}\n`;
+  if (tag === "ul" || tag === "ol") return `\n${inner.trim()}\n`;
+  if (/^h[1-6]$/.test(tag)) return `\n${"#".repeat(Number(tag[1]))} ${inner.trim()}\n\n`;
+  if (tag === "p" || tag === "div") return `${inner.trim()}\n\n`;
+  return inner;
+}
+
+function htmlLikeToMarkdown(source: string): string {
+  const normalized = normalizeLooseMarkup(source);
+  if (typeof DOMParser === "undefined") {
+    return decodeHtmlEntities(normalized.replace(/<[^>]+>/g, "")).trim();
+  }
+
+  const doc = new DOMParser().parseFromString(`<div>${source}</div>`, "text/html");
+  const wrapper = doc.body.firstElementChild;
+  if (!wrapper) return decodeHtmlEntities(normalized.replace(/<[^>]+>/g, "")).trim();
+  return nodeListToMarkdown(wrapper.childNodes).trim();
+}
+
+function getLooseAttr(attrs: string, name: string): string | undefined {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = attrs.match(new RegExp(`${escaped}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, "i"));
+  return match?.[1] ?? match?.[2] ?? match?.[3];
+}
+
+function parseLooseTableWithRegex(raw: string): LooseTableRow[] {
+  const rows: LooseTableRow[] = [];
+  const rowMatches = raw.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/gi);
+  for (const rowMatch of rowMatches) {
+    const cells: LooseTableCell[] = [];
+    const cellMatches = rowMatch[1].matchAll(/<(th|td)\b[^>]*>([\s\S]*?)<\/\1>/gi);
+    for (const cellMatch of cellMatches) {
+      cells.push({ tag: cellMatch[1].toLowerCase() === "th" ? "th" : "td", content: htmlLikeToMarkdown(cellMatch[2]) });
+    }
+    if (cells.length > 0) rows.push(cells);
+  }
+  return rows;
+}
+
+function parseLooseTable(raw: string): LooseTableRow[] {
+  if (typeof DOMParser === "undefined") return parseLooseTableWithRegex(raw);
+
+  const doc = new DOMParser().parseFromString(raw, "text/html");
+  const table = doc.querySelector("table");
+  if (!table) return parseLooseTableWithRegex(raw);
+
+  const rows = Array.from(table.querySelectorAll("tr")).map((row) => {
+    return Array.from(row.children)
+      .filter((cell) => ["th", "td"].includes(cell.tagName.toLowerCase()))
+      .map((cell): LooseTableCell => ({
+        tag: cell.tagName.toLowerCase() === "th" ? "th" : "td",
+        content: htmlLikeToMarkdown(cell.innerHTML),
+      }));
+  }).filter((row) => row.length > 0);
+
+  return rows.length > 0 ? rows : parseLooseTableWithRegex(raw);
+}
+
+function parseLooseGrid(raw: string): { cols: number; columns: LooseGridColumn[] } {
+  const openTag = raw.match(/^<grid\b([^>]*)>/i);
+  const declaredCols = Number(getLooseAttr(openTag?.[1] ?? "", "cols"));
+  const columns = Array.from(raw.matchAll(/<column\b([^>]*)>([\s\S]*?)<\/column>/gi)).map((match) => ({
+    width: getLooseAttr(match[1], "width"),
+    content: htmlLikeToMarkdown(match[2]),
+  }));
+
+  return {
+    cols: Number.isFinite(declaredCols) && declaredCols > 0 ? Math.min(declaredCols, 4) : Math.min(Math.max(columns.length, 1), 4),
+    columns: columns.length > 0 ? columns : [{ content: htmlLikeToMarkdown(raw.replace(/^<grid\b[^>]*>/i, "").replace(/<\/grid>$/i, "")) }],
+  };
+}
+
+function parseCalloutTone(background?: string): CalloutTone {
+  const value = (background ?? "").toLowerCase();
+  if (value.includes("yellow") || value.includes("orange")) return "warning";
+  if (value.includes("green")) return "success";
+  if (value.includes("red") || value.includes("pink")) return "error";
+  if (value.includes("blue") || value.includes("cyan")) return "info";
+  return "default";
+}
+
+function parseLooseCallout(raw: string): { emoji: string; tone: CalloutTone; content: string } {
+  const openTag = raw.match(/^<callout\b([^>]*)>/i);
+  const attrs = openTag?.[1] ?? "";
+  const content = raw.replace(/^<callout\b[^>]*>/i, "").replace(/<\/callout>$/i, "");
+  const tone = parseCalloutTone(getLooseAttr(attrs, "background-color") ?? getLooseAttr(attrs, "color"));
+  const fallbackEmoji = tone === "warning" ? "⚠️" : tone === "success" ? "✅" : tone === "error" ? "❌" : tone === "info" ? "ℹ️" : "💡";
+
+  return {
+    emoji: getLooseAttr(attrs, "emoji") ?? fallbackEmoji,
+    tone,
+    content: htmlLikeToMarkdown(content),
+  };
+}
+
+function splitFencedMarkdown(source: string): Array<{ content: string; fenced: boolean }> {
+  const segments: Array<{ content: string; fenced: boolean }> = [];
+  const lines = source.match(/[^\n]*(?:\n|$)/g) ?? [];
+  let cursor = 0;
+  let offset = 0;
+  let fenceStart: number | null = null;
+  let fenceChar = "";
+  let fenceLength = 0;
+
+  for (const line of lines) {
+    if (!line && offset >= source.length) break;
+    const match = line.match(/^ {0,3}(```+|~~~+)/);
+    if (match) {
+      const marker = match[1];
+      if (fenceStart === null) {
+        if (offset > cursor) segments.push({ content: source.slice(cursor, offset), fenced: false });
+        fenceStart = offset;
+        fenceChar = marker[0];
+        fenceLength = marker.length;
+      } else if (marker[0] === fenceChar && marker.length >= fenceLength) {
+        segments.push({ content: source.slice(fenceStart, offset + line.length), fenced: true });
+        cursor = offset + line.length;
+        fenceStart = null;
+        fenceChar = "";
+        fenceLength = 0;
+      }
+    }
+    offset += line.length;
+  }
+
+  if (fenceStart !== null) {
+    segments.push({ content: source.slice(fenceStart), fenced: true });
+    cursor = source.length;
+  }
+  if (cursor < source.length) segments.push({ content: source.slice(cursor), fenced: false });
+  return segments.filter((segment) => segment.content.length > 0);
+}
+
+function parseLooseBlocksInText(text: string): LooseMarkdownBlock[] {
+  const blocks: LooseMarkdownBlock[] = [];
+  const blockRe = /<(table|grid|callout)\b[^>]*>[\s\S]*?<\/\1>/gi;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = blockRe.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      blocks.push({ type: "markdown", content: text.slice(lastIndex, match.index), normalizeInlineHtml: true });
+    }
+
+    const raw = match[0];
+    const tag = match[1].toLowerCase();
+    if (tag === "table") {
+      blocks.push({ type: "table", rows: parseLooseTable(raw) });
+    } else if (tag === "grid") {
+      const parsed = parseLooseGrid(raw);
+      blocks.push({ type: "grid", ...parsed });
+    } else {
+      const parsed = parseLooseCallout(raw);
+      blocks.push({ type: "callout", ...parsed });
+    }
+
+    lastIndex = match.index + raw.length;
+  }
+
+  if (lastIndex < text.length) {
+    blocks.push({ type: "markdown", content: text.slice(lastIndex), normalizeInlineHtml: true });
+  }
+
+  return blocks;
+}
+
+function parseLooseMarkdownBlocks(source: string): LooseMarkdownBlock[] {
+  return splitFencedMarkdown(source).flatMap((segment) => (
+    segment.fenced
+      ? [{ type: "markdown" as const, content: segment.content, normalizeInlineHtml: false }]
+      : parseLooseBlocksInText(segment.content)
+  ));
+}
+
+function unquoteLooseMermaidText(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("`") && trimmed.endsWith("`"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed.startsWith("\"`") && trimmed.endsWith("`\"")) return trimmed.slice(2, -2);
+  return trimmed;
+}
+
+function parseQuadrantChart(code: string): QuadrantData | null {
+  const lines = code.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.some((line) => /^quadrantChart\b/i.test(line))) return null;
+
+  const data: QuadrantData = { quadrants: {}, points: [] };
+  for (const line of lines) {
+    const titleMatch = line.match(/^title\s+(.+)$/i);
+    if (titleMatch) {
+      data.title = unquoteLooseMermaidText(titleMatch[1]);
+      continue;
+    }
+
+    const axisMatch = line.match(/^([xy])-axis\s+(.+?)\s*--+>\s*(.+)$/i);
+    if (axisMatch) {
+      if (axisMatch[1].toLowerCase() === "x") {
+        data.xLeft = unquoteLooseMermaidText(axisMatch[2]);
+        data.xRight = unquoteLooseMermaidText(axisMatch[3]);
+      } else {
+        data.yBottom = unquoteLooseMermaidText(axisMatch[2]);
+        data.yTop = unquoteLooseMermaidText(axisMatch[3]);
+      }
+      continue;
+    }
+
+    const quadrantMatch = line.match(/^quadrant-([1-4])\s+(.+)$/i);
+    if (quadrantMatch) {
+      data.quadrants[Number(quadrantMatch[1]) as 1 | 2 | 3 | 4] = unquoteLooseMermaidText(quadrantMatch[2]);
+      continue;
+    }
+
+    const pointMatch = line.match(/^(.+?)\s*:\s*\[\s*(1|0(?:\.\d+)?)\s*,\s*(1|0(?:\.\d+)?)\s*\]/);
+    if (pointMatch) {
+      data.points.push({
+        label: unquoteLooseMermaidText(pointMatch[1]),
+        x: Math.min(1, Math.max(0, Number(pointMatch[2]))),
+        y: Math.min(1, Math.max(0, Number(pointMatch[3]))),
+      });
+    }
+  }
+
+  return data.points.length > 0 ? data : null;
+}
 
 // ─── 全局全屏查看器（脱离组件树，不受父组件重渲染影响） ─────
 let fullscreenRoot: HTMLDivElement | null = null;
@@ -151,6 +480,66 @@ function openMermaidFullscreen(svgHtml: string) {
   };
 }
 
+function QuadrantChartFallback({ data, code }: { data: QuadrantData; code: string }) {
+  const [showCode, setShowCode] = useState(false);
+  const quadrantClass = "absolute flex items-center justify-center p-3 text-center text-xs font-semibold text-[var(--color-text-muted)]";
+
+  return (
+    <div className="my-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-1.5 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
+        <span className="text-[11px] text-[var(--color-text-muted)] font-mono">quadrantChart</span>
+        <button
+          type="button"
+          onClick={() => setShowCode((v) => !v)}
+          className="text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+        >
+          {showCode ? "图表" : "源码"}
+        </button>
+      </div>
+      {showCode ? (
+        <pre className="p-4 overflow-x-auto text-[13px] bg-[var(--color-bg)]"><code>{code}</code></pre>
+      ) : (
+        <div className="bg-[var(--color-bg)] p-4">
+          {data.title && <div className="mb-3 text-center text-sm font-semibold text-[var(--color-text)]">{data.title}</div>}
+          <div className="overflow-x-auto">
+            <div className="relative mx-auto min-w-[520px] max-w-3xl">
+              <div className="relative aspect-[1.45] rounded-lg border border-[var(--color-border)] bg-[var(--color-surface)] overflow-hidden">
+                <div className={`${quadrantClass} left-1/2 top-0 h-1/2 w-1/2 bg-[var(--color-success-bg)]`}>{data.quadrants[1]}</div>
+                <div className={`${quadrantClass} left-0 top-0 h-1/2 w-1/2 bg-[var(--color-accent-alpha)]`}>{data.quadrants[2]}</div>
+                <div className={`${quadrantClass} left-0 top-1/2 h-1/2 w-1/2 bg-[var(--color-warning-bg)]`}>{data.quadrants[3]}</div>
+                <div className={`${quadrantClass} left-1/2 top-1/2 h-1/2 w-1/2 bg-[var(--color-error-bg)]`}>{data.quadrants[4]}</div>
+                <div className="absolute left-1/2 top-0 h-full w-px bg-[var(--color-border)]" />
+                <div className="absolute left-0 top-1/2 h-px w-full bg-[var(--color-border)]" />
+                {data.points.map((point) => (
+                  <div
+                    key={`${point.label}-${point.x}-${point.y}`}
+                    className="absolute z-10 flex items-center gap-1.5 -translate-x-1.5 -translate-y-1/2"
+                    style={{ left: `${point.x * 100}%`, top: `${(1 - point.y) * 100}%` }}
+                    title={`${point.label}: [${point.x}, ${point.y}]`}
+                  >
+                    <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[var(--color-accent)] ring-2 ring-[var(--color-bg)]" />
+                    <span className="max-w-24 truncate rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-1.5 py-0.5 text-[11px] leading-tight text-[var(--color-text)] shadow-sm">
+                      {point.label}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 flex justify-between text-[11px] text-[var(--color-text-muted)]">
+                <span>{data.xLeft}</span>
+                <span>{data.xRight}</span>
+              </div>
+              <div className="pointer-events-none absolute -left-3 top-0 flex h-[calc(100%-1.35rem)] -translate-x-full flex-col justify-between text-[11px] text-[var(--color-text-muted)]">
+                <span>{data.yTop}</span>
+                <span>{data.yBottom}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── MermaidBlock ────────────────────────────────
 
 function MermaidBlock({ code }: { code: string }) {
@@ -196,6 +585,11 @@ function MermaidBlock({ code }: { code: string }) {
   }, [cleaned]);
 
   if (error) {
+    const quadrantData = parseQuadrantChart(cleaned);
+    if (quadrantData) {
+      return <QuadrantChartFallback data={quadrantData} code={cleaned} />;
+    }
+
     return (
       <div className="my-3 rounded-lg border border-[var(--color-border)] overflow-hidden">
         <div className="flex items-center justify-between px-4 py-1.5 bg-[var(--color-bg)] border-b border-[var(--color-border)]">
@@ -302,6 +696,108 @@ function CodeBlock({
         <code className={className}>{children}</code>
       </pre>
       <CopyButton text={text.replace(/\n$/, "")} />
+    </div>
+  );
+}
+
+function RichTable({
+  rows,
+  renderMarkdown,
+}: {
+  rows: LooseTableRow[];
+  renderMarkdown: (content: string, key: string) => React.ReactNode;
+}) {
+  const hasHeader = rows[0]?.some((cell) => cell.tag === "th") ?? false;
+  const bodyRows = hasHeader ? rows.slice(1) : rows;
+
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="overflow-x-auto my-3 rounded-lg border border-[var(--color-border)]">
+      <table className="w-full text-sm border-collapse">
+        {hasHeader && (
+          <thead className="bg-[var(--color-surface-hover)]">
+            <tr className="divide-x divide-[var(--color-border)]">
+              {rows[0].map((cell, index) => (
+                <th key={`head-${index}`} className="px-4 py-2 text-left font-semibold text-[var(--color-text)] whitespace-nowrap">
+                  {renderMarkdown(cell.content, `head-${index}`)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+        )}
+        <tbody className="divide-y divide-[var(--color-border)]">
+          {bodyRows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`} className="divide-x divide-[var(--color-border)]">
+              {row.map((cell, cellIndex) => (
+                <td key={`cell-${rowIndex}-${cellIndex}`} className="px-4 py-2 text-[var(--color-text)] align-top">
+                  {renderMarkdown(cell.content, `cell-${rowIndex}-${cellIndex}`)}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function gridColumnClass(cols: number): string {
+  if (cols >= 4) return "md:grid-cols-2 xl:grid-cols-4";
+  if (cols === 3) return "md:grid-cols-3";
+  if (cols === 2) return "md:grid-cols-2";
+  return "grid-cols-1";
+}
+
+function RichGrid({
+  cols,
+  columns,
+  renderBlocks,
+}: {
+  cols: number;
+  columns: LooseGridColumn[];
+  renderBlocks: (content: string, keyPrefix: string) => React.ReactNode;
+}) {
+  if (columns.length === 0) return null;
+
+  return (
+    <div className={`my-3 grid grid-cols-1 gap-3 ${gridColumnClass(cols)}`}>
+      {columns.map((column, index) => (
+        <div
+          key={`column-${index}`}
+          className="min-w-0 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)] p-4"
+          style={column.width ? { flexBasis: `${column.width}%` } : undefined}
+        >
+          {renderBlocks(column.content, `grid-${index}`)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function calloutClass(tone: CalloutTone): string {
+  if (tone === "warning") return "border-[var(--color-warning-border)] bg-[var(--color-warning-bg)]";
+  if (tone === "success") return "border-[var(--color-success-border)] bg-[var(--color-success-bg)]";
+  if (tone === "error") return "border-red-400/50 bg-[var(--color-error-bg)]";
+  if (tone === "info") return "border-[var(--color-accent)] bg-[var(--color-accent-alpha)]";
+  return "border-[var(--color-border)] bg-[var(--color-surface-hover)]";
+}
+
+function RichCallout({
+  emoji,
+  tone,
+  content,
+  renderBlocks,
+}: {
+  emoji: string;
+  tone: CalloutTone;
+  content: string;
+  renderBlocks: (content: string, keyPrefix: string) => React.ReactNode;
+}) {
+  return (
+    <div className={`my-3 flex gap-3 rounded-lg border px-4 py-3 ${calloutClass(tone)}`}>
+      <span className="mt-0.5 shrink-0 text-base leading-none">{emoji}</span>
+      <div className="min-w-0 flex-1">{renderBlocks(content, "callout")}</div>
     </div>
   );
 }
@@ -443,27 +939,54 @@ export default function MarkdownContent({ children, className = "", transformIma
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [variant, disableMermaid, transformImageUrl]);
 
+  const looseBlocks = useMemo(() => parseLooseMarkdownBlocks(children), [children]);
+
+  const renderMarkdownFragment = (content: string, key: string, normalizeInlineHtml = true) => (
+    <ReactMarkdown
+      key={key}
+      remarkPlugins={[remarkGfm]}
+      rehypePlugins={[rehypeHighlight]}
+      components={components}
+      urlTransform={(url) => url}
+    >
+      {normalizeInlineHtml ? normalizeLooseMarkup(content) : content}
+    </ReactMarkdown>
+  );
+
+  const renderLooseBlocks = (blocks: LooseMarkdownBlock[], keyPrefix: string): React.ReactNode => blocks.map((block, index) => {
+    const key = `${keyPrefix}-${index}`;
+    if (block.type === "markdown") {
+      return renderMarkdownFragment(block.content, key, block.normalizeInlineHtml);
+    }
+    if (block.type === "table") {
+      return <RichTable key={key} rows={block.rows} renderMarkdown={(content, cellKey) => renderMarkdownFragment(content, `${key}-${cellKey}`)} />;
+    }
+    if (block.type === "grid") {
+      return (
+        <RichGrid
+          key={key}
+          cols={block.cols}
+          columns={block.columns}
+          renderBlocks={(content, childPrefix) => renderLooseBlocks(parseLooseMarkdownBlocks(content), `${key}-${childPrefix}`)}
+        />
+      );
+    }
+    return (
+      <RichCallout
+        key={key}
+        emoji={block.emoji}
+        tone={block.tone}
+        content={block.content}
+        renderBlocks={(content, childPrefix) => renderLooseBlocks(parseLooseMarkdownBlocks(content), `${key}-${childPrefix}`)}
+      />
+    );
+  });
+
   return (
     <div
       className={["markdown-content", "break-words", "text-[var(--color-text)]", "text-sm", "leading-relaxed", shareCls, className].filter(Boolean).join(" ")}
     >
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeHighlight]}
-        components={components}
-        // Default urlTransform sanitizes unrecognized URL schemes — including
-        // bare relative paths whose first segment contains a colon (which is
-        // common for Chinese filenames using full-width "：" or any path with
-        // a literal colon). That collapses the src to "" before our img
-        // component override runs, breaking artifact previews. Identity
-        // pass-through is safe here because:
-        //   1) we render markdown sourced only from trusted agent output, and
-        //   2) `transformImageUrl` (when set) re-resolves img URLs to a known
-        //      same-origin shape before they reach the DOM.
-        urlTransform={(url) => url}
-      >
-        {children}
-      </ReactMarkdown>
+      {renderLooseBlocks(looseBlocks, "root")}
       {lightbox && (
         // Fullscreen lightbox: 95% viewport so a wide PNG isn't cropped by the
         // backdrop. z-[90] sits above guild modals (z-[80]) and below toasts.
