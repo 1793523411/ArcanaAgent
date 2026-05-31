@@ -1,6 +1,7 @@
 import { BaseMessage, AIMessage, ToolMessage, HumanMessage } from "@langchain/core/messages";
 import { estimateBaseMessageTokens } from "../lib/tokenizer.js";
 import { serverLogger } from "../lib/logger.js";
+import { createAIMessageWithReasoning } from "../lib/messages.js";
 import { MAX_CONVERSATION_TOKENS } from "./messageUtils.js";
 import { applyMicrocompact } from "./microcompact.js";
 
@@ -117,9 +118,10 @@ export function pruneConversationIfNeeded(messages: BaseMessage[], tokenCap = MA
       if (argStr.length <= 200) return tc;
       return { ...tc, args: { _truncated: argStr.slice(0, 200) + "... [truncated]" } };
     });
-    cloned[idx] = new AIMessage({
+    cloned[idx] = createAIMessageWithReasoning({
       content: typeof msg.content === "string" ? msg.content : "",
       tool_calls: truncatedCalls,
+      additional_kwargs: msg.additional_kwargs,
     });
     currentTotal = estimateBaseMessageTokens(cloned);
   }
